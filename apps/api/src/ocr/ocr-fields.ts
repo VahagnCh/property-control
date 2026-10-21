@@ -10,12 +10,15 @@ import { canonicalizeMxText } from './ocr-locale.js';
 
 const MAX_CENTAVOS = 2_147_483_647;
 /**
- * Rejected, not stripped.
+ * Rejected, not stripped. Trust security brief v1.2 rev f.5 §8.3:
+ * `notes` and maintenance `description` are multi-line, limited to 2,000
+ * UTF-16 code units after normalization. Every other text field is single-line.
+ *
  * Bidi controls: U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069.
  * Also C0 (including NUL, tab, and DEL), C1, zero-width (U+200B–U+200D, U+2060, U+FEFF),
  * soft hyphen U+00AD, U+180E, invisible operators U+2061–U+2064, and lone surrogates.
  * Single-line fields also reject line and paragraph separators U+2028 and U+2029.
- * Notes allow U+000A after CR and CRLF become LF.
+ * Multi-line fields allow U+000A after CR and CRLF become LF.
  *
  * maxLength counts UTF-16 code units (`string.length`), the same measure as
  * Mobile's counter. 1000 emoji pass. 1001 emoji fail.
@@ -36,7 +39,7 @@ interface FieldRule {
   kind: 'amount' | 'date' | 'text';
   entities: readonly OcrTargetEntityType[];
   maxLength?: number;
-  /** Notes only. Other text fields are single-line and reject every C0 character. */
+  /** §8.3: multi-line for notes and maintenance description. Every other text field is single-line. */
   multiline?: boolean;
 }
 
