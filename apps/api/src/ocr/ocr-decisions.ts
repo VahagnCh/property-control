@@ -21,6 +21,9 @@ function decisionsFromBody(body: unknown): unknown[] {
   if (isAcceptAll(body)) {
     throw bulkAcceptAll();
   }
+  if ('clientPriorValue' in body) {
+    throw new UnprocessableEntityException('clientPriorValue is not accepted.');
+  }
   for (const key of Object.keys(body)) {
     if (key !== 'decisions') {
       throw new BadRequestException('Unknown field.');

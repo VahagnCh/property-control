@@ -33,8 +33,8 @@ export interface OcrJob {
   evidenceId?: string;
   status: OcrJobStatus;
   vendor?: string;
-  /** Alta ≥ 0.90, media ≥ 0.80. The same numbers the mobile bands use. */
-  confidenceBands: { alta: 0.9; media: 0.8 };
+  /** Configured cutoffs. Defaults are alta 0.90 and media 0.80. */
+  confidenceBands: { alta: number; media: number };
   /** Stable extract failure code. Raw extractor text is never copied here. */
   errorCode?: string;
   createdAt: string;
@@ -113,8 +113,8 @@ export interface OcrConfirmResult {
   applied: OcrAppliedField[];
   audits: OcrReplaceAudit[];
   /**
-   * Scaffold marker. confirm() records the decision in memory and does not
-   * write Obligation, Payment, Property, or Document rows.
+   * True only when this confirm committed every saveValue write.
+   * False when nothing was written to a saved field.
    */
-  persisted: false;
+  persisted: boolean;
 }

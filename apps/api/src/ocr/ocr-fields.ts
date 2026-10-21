@@ -14,6 +14,9 @@ const MAX_CENTAVOS = 2_147_483_647;
  */
 const REJECTED_TEXT =
   /[\u0000-\u001F\u007F-\u009F\u200B-\u200D\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/u;
+/** Same as REJECTED_TEXT, except U+000A is allowed after CR and CRLF become LF. */
+const MULTILINE_REJECTED_TEXT =
+  /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\u200B-\u200D\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/u;
 const WHITESPACE_ONLY = /^[\s\u00A0]*$/u;
 
 export interface FieldValueContext {
@@ -25,6 +28,8 @@ interface FieldRule {
   kind: 'amount' | 'date' | 'text';
   entities: readonly OcrTargetEntityType[];
   maxLength?: number;
+  /** Notes only. Other text fields are single-line and reject every C0 character. */
+  multiline?: boolean;
 }
 
 const FIELDS = new Map<string, FieldRule>([
@@ -32,25 +37,40 @@ const FIELDS = new Map<string, FieldRule>([
   ['nextDueDate', { kind: 'date', entities: ['obligation'] }],
   ['providerName', { kind: 'text', entities: ['obligation'], maxLength: 200 }],
   ['title', { kind: 'text', entities: ['document_meta', 'property'], maxLength: 300 }],
+  ['notes', { kind: 'text', entities: ['obligation', 'payment'], maxLength: 2000, multiline: true }],
 ]);
 
 const FORBIDDEN_PATHS = new Set(['__proto__', 'constructor', 'prototype']);
 
-/** Revisa is below 0.80. Alta starts at 0.90. Same cutoffs as the mobile bands. */
-export const CONFIDENCE_BANDS = { alta: 0.9, media: 0.8 } as const;
-
 export type ConfidenceBandName = 'alta' | 'media' | 'revisa';
 
-export const LOW_CONFIDENCE_THRESHOLD = CONFIDENCE_BANDS.media;
+export interface ConfidenceBandThresholds {
+  alta: number;
+  media: number;
+}
 
-export function confidenceBand(confidence: number | null): ConfidenceBandName {
-  if (confidence === null || !Number.isFinite(confidence)) {
+/**
+ * Band from the configured thresholds. A low-confidence flag, a missing score,
+ * a non-numeric score, or a score outside 0..1 is always revisa.
+ */
+export function confidenceBand(
+  confidence: number | null,
+  lowConfidence: boolean,
+  bands: ConfidenceBandThresholds,
+): ConfidenceBandName {
+  if (
+    lowConfidence ||
+    confidence === null ||
+    !Number.isFinite(confidence) ||
+    confidence < 0 ||
+    confidence > 1
+  ) {
     return 'revisa';
   }
-  if (confidence >= CONFIDENCE_BANDS.alta) {
+  if (confidence >= bands.alta) {
     return 'alta';
   }
-  if (confidence >= CONFIDENCE_BANDS.media) {
+  if (confidence >= bands.media) {
     return 'media';
   }
   return 'revisa';
@@ -75,7 +95,7 @@ export function canonicalizeFieldValue(
   if (field.kind === 'date') {
     return assertCanonicalDate(value, context);
   }
-  return assertCanonicalText(value, field.maxLength ?? 200);
+  return assertCanonicalText(value, field.maxLength ?? 200, field.multiline === true);
 }
 
 function assertCanonicalAmount(value: unknown): string {
@@ -122,16 +142,20 @@ function assertCanonicalDate(value: unknown, context?: FieldValueContext): strin
   return value;
 }
 
-function assertCanonicalText(value: unknown, maxLength: number): string {
+function assertCanonicalText(value: unknown, maxLength: number, multiline: boolean): string {
   if (typeof value !== 'string') {
     throw badValue();
   }
-  const normalized = canonicalizeMxText(value);
+  let normalized = canonicalizeMxText(value);
+  if (multiline) {
+    normalized = normalized.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  }
+  const rejected = multiline ? MULTILINE_REJECTED_TEXT : REJECTED_TEXT;
   if (
     normalized.length === 0 ||
     normalized.length > maxLength ||
     WHITESPACE_ONLY.test(normalized) ||
-    REJECTED_TEXT.test(normalized)
+    rejected.test(normalized)
   ) {
     throw badValue();
   }

@@ -21,6 +21,15 @@ export function assertIanaTimeZone(timeZone: string): void {
   }
 }
 
+export function isIanaTimeZone(timeZone: string): boolean {
+  try {
+    assertIanaTimeZone(timeZone);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function calendarDateInTimeZone(instant: Date, timeZone: string): string {
   const parts = zonedParts(instant, timeZone);
   return formatIsoDate(parts.year, parts.month, parts.day);

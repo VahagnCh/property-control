@@ -11,19 +11,19 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_PROPERTY_TIMEZONE } from '../common/property-calendar.js';
+import { DEFAULT_PROPERTY_TIMEZONE, isIanaTimeZone } from '../common/property-calendar.js';
 import { isTraversal, isUuid } from '../common/path-safety.js';
 import { CLOCK, SystemClock, type Clock } from './clock.js';
 import { parseDecisions } from './ocr-decisions.js';
 import { OCR_EXTRACTOR, StubOcrExtractor, type ExtractedField, type OcrExtractor } from './ocr-extractor.js';
-import {
-  CONFIDENCE_BANDS,
-  LOW_CONFIDENCE_THRESHOLD,
-  canonicalizeFieldValue,
-  confidenceBand,
-} from './ocr-fields.js';
+import { canonicalizeFieldValue, confidenceBand } from './ocr-fields.js';
 import { parseMxAmount, parseMxDate } from './ocr-locale.js';
-import { OCR_RUNTIME, loadOcrRuntime, type OcrRuntime } from './ocr-runtime.js';
+import {
+  OCR_RUNTIME,
+  loadOcrRuntime,
+  resolveConfidenceBands,
+  type OcrRuntime,
+} from './ocr-runtime.js';
 import { FailClosedOcrTargetLookup, OCR_TARGET_LOOKUP, type OcrTargetLookup } from './ocr-target-lookup.js';
 import type {
   OcrAppliedField,
@@ -101,7 +101,7 @@ export class OcrService {
         propertyId,
         documentId,
         status: 'pending',
-        confidenceBands: CONFIDENCE_BANDS,
+        confidenceBands: resolveConfidenceBands(this.runtime),
         createdAt: now,
         updatedAt: now,
       },
@@ -166,19 +166,13 @@ export class OcrService {
     }
     const decisions = parseDecisions(input);
     const plan = this.plan(record, decisions, actorUserId);
+    const persisted = this.commitWrites(record, plan);
 
     const applied: OcrAppliedField[] = [];
     const audits: OcrReplaceAudit[] = [];
     for (const step of plan) {
       if (step.decision.action === 'reject' || !step.entityId) {
         step.suggestion.applyStatus = 'rejected';
-        continue;
-      }
-      if (step.kept) {
-        step.suggestion.applyStatus = 'accepted';
-        if (step.decision.action === 'edit' || step.decision.action === 'replace') {
-          step.suggestion.userEditedValue = step.value;
-        }
         continue;
       }
       step.suggestion.targetEntityId = step.entityId;
@@ -189,16 +183,7 @@ export class OcrService {
       if (step.audit) {
         audits.push(step.audit);
       }
-      if (step.write) {
-        this.lookup.saveValue?.(
-          {
-            propertyId: record.job.propertyId,
-            entityType: step.suggestion.targetEntityType,
-            entityId: step.entityId,
-            fieldPath: step.suggestion.fieldPath,
-          },
-          step.value,
-        );
+      if (step.write && step.entityId) {
         applied.push({
           suggestionId: step.suggestion.id,
           entityType: step.suggestion.targetEntityType,
@@ -217,8 +202,69 @@ export class OcrService {
       suggestions: snapshot.suggestions,
       applied,
       audits,
-      persisted: false,
+      persisted,
     };
+  }
+
+  /**
+   * Writes run only after plan() has validated every decision.
+   * A failed save restores the fields this confirm already wrote.
+   * persisted is true only when those saves commit.
+   */
+  private commitWrites(
+    record: JobRecord,
+    plan: Array<{
+      suggestion: OcrSuggestion;
+      decision: OcrDecision;
+      entityId?: string;
+      value?: unknown;
+      write?: boolean;
+    }>,
+  ): boolean {
+    const writes = plan.filter((step) => step.write && step.entityId);
+    if (writes.length === 0 || !this.lookup.saveValue) {
+      return false;
+    }
+    const committed: Array<{
+      query: {
+        propertyId: string;
+        entityType: OcrSuggestion['targetEntityType'];
+        entityId: string;
+        fieldPath: string;
+      };
+      previous: { present: false } | { present: true; value: unknown };
+    }> = [];
+    try {
+      for (const step of writes) {
+        const entityId = step.entityId;
+        if (!entityId) {
+          continue;
+        }
+        const query = {
+          propertyId: record.job.propertyId,
+          entityType: step.suggestion.targetEntityType,
+          entityId,
+          fieldPath: step.suggestion.fieldPath,
+        };
+        const previous = this.readSaved(record.job.propertyId, step.suggestion, entityId);
+        this.lookup.saveValue(query, step.value);
+        committed.push({ query, previous });
+      }
+    } catch (error) {
+      for (const { query, previous } of committed.reverse()) {
+        try {
+          if (previous.present) {
+            this.lookup.saveValue(query, previous.value);
+          } else {
+            this.lookup.saveValue(query, null);
+          }
+        } catch {
+          // The original write error is the one confirm reports.
+        }
+      }
+      throw error;
+    }
+    return true;
   }
 
   private plan(
@@ -247,9 +293,12 @@ export class OcrService {
     }
     const missing = record.suggestions.filter((suggestion) => !seen.has(suggestion.id));
     if (missing.length > 0) {
-      throw new UnprocessableEntityException(
-        'Every suggestion needs an explicit accept, replace, reject, or edit.',
-      );
+      const suggestionId = missing[0]?.id;
+      throw new UnprocessableEntityException({
+        statusCode: 422,
+        message: 'Every suggestion needs an explicit accept, replace, reject, or edit.',
+        suggestionId,
+      });
     }
 
     const steps: Array<{
@@ -263,7 +312,7 @@ export class OcrService {
     }> = [];
     const context = {
       now: new Date(this.clock.now()),
-      timeZone: this.lookup.timeZone?.(record.job.propertyId) ?? DEFAULT_PROPERTY_TIMEZONE,
+      timeZone: this.propertyTimeZone(record.job.propertyId),
     };
     for (const decision of decisions) {
       const suggestion = known.get(decision.suggestionId);
@@ -282,8 +331,13 @@ export class OcrService {
       const value = this.canonicalize(suggestion, rawValue, context);
       const saved = this.readSaved(record.job.propertyId, suggestion, entityId);
       if (saved.present && decision.action !== 'replace') {
-        steps.push({ suggestion, decision, entityId, value, kept: true });
-        continue;
+        throw new ConflictException({
+          statusCode: 409,
+          message: 'The field already has a saved value.',
+          error: 'field_already_set',
+          suggestionId: suggestion.id,
+          field: suggestion.fieldPath,
+        });
       }
       if (decision.action === 'replace') {
         const audit: OcrReplaceAudit = saved.present
@@ -373,13 +427,39 @@ export class OcrService {
     if (!this.targetBelongs(record, suggestion, entityId)) {
       throw new NotFoundException('Not found.');
     }
-    if (
-      suggestion.targetEntityType === 'payment' &&
-      this.lookup.paymentStatus?.({ propertyId: record.job.propertyId, entityId }) === 'voided'
-    ) {
-      throw new UnprocessableEntityException('A voided payment cannot be a confirm target.');
+    if (suggestion.targetEntityType === 'payment') {
+      this.assertPaymentRecorded(record.job.propertyId, entityId);
     }
     return entityId;
+  }
+
+  private assertPaymentRecorded(propertyId: string, entityId: string): void {
+    if (!this.lookup.paymentStatus) {
+      throw new UnprocessableEntityException('A payment target must be checked before confirm.');
+    }
+    const status = this.lookup.paymentStatus({ propertyId, entityId });
+    if (status === 'recorded') {
+      return;
+    }
+    throw new UnprocessableEntityException(
+      status === 'voided'
+        ? 'A voided payment cannot be a confirm target.'
+        : 'A payment target must be checked before confirm.',
+    );
+  }
+
+  private propertyTimeZone(propertyId: string): string {
+    let raw: string | undefined;
+    try {
+      raw = this.lookup.timeZone?.(propertyId);
+    } catch {
+      return DEFAULT_PROPERTY_TIMEZONE;
+    }
+    const trimmed = raw?.trim() ?? '';
+    if (trimmed.length === 0 || !isIanaTimeZone(trimmed)) {
+      return DEFAULT_PROPERTY_TIMEZONE;
+    }
+    return trimmed;
   }
 
   private targetBelongs(record: JobRecord, suggestion: OcrSuggestion, entityId: string): boolean {
@@ -424,7 +504,9 @@ export class OcrService {
   }
 
   private toSuggestion(record: JobRecord, field: ExtractedField): OcrSuggestion {
+    const bands = resolveConfidenceBands(this.runtime);
     const confidence = readConfidence(field.confidence);
+    const lowConfidence = isLowConfidence(field.fieldPath, field.suggestedValue, confidence, bands.media);
     const targetEntityId =
       field.targetEntityType === 'document_meta'
         ? record.job.documentId
@@ -437,8 +519,8 @@ export class OcrService {
       fieldPath: field.fieldPath,
       suggestedValue: field.suggestedValue,
       confidence,
-      band: confidenceBand(confidence),
-      lowConfidence: isLowConfidence(field.fieldPath, field.suggestedValue, confidence),
+      band: confidenceBand(confidence, lowConfidence, bands),
+      lowConfidence,
       userEditedValue: null,
       applyStatus: 'pending',
     };
@@ -490,7 +572,7 @@ export class OcrService {
       status: job.status,
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
-      confidenceBands: CONFIDENCE_BANDS,
+      confidenceBands: resolveConfidenceBands(this.runtime),
     };
     if (job.evidenceId !== undefined) {
       publicJob.evidenceId = job.evidenceId;
@@ -557,15 +639,26 @@ function assertUuidPair(left: string, right: string): void {
   }
 }
 
-function readConfidence(value: number | null | undefined): number | null {
+function readConfidence(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return null;
   }
   return value;
 }
 
-function isLowConfidence(fieldPath: string, value: unknown, confidence: number | null): boolean {
-  if (confidence === null || confidence < LOW_CONFIDENCE_THRESHOLD) {
+function isLowConfidence(
+  fieldPath: string,
+  value: unknown,
+  confidence: number | null,
+  mediaThreshold: number,
+): boolean {
+  if (
+    confidence === null ||
+    !Number.isFinite(confidence) ||
+    confidence < 0 ||
+    confidence > 1 ||
+    confidence < mediaThreshold
+  ) {
     return true;
   }
   if (typeof value !== 'string') {

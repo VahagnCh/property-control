@@ -103,7 +103,7 @@ Accept checks run in this order. The first match is the response, and an earlier
 
 ## 9. OCR replace
 
-Confirm decisions are per field: accept, replace, reject, or edit. There is no silent prefill at any confidence. accept does not overwrite a saved non-null value. replace is the only decision that does. A bulk accept-all shape returns 422. The API rejects clientPriorValue with 422 and does not store unsaved typed text.
+Confirm decisions are per field: accept, replace, reject, or edit. There is no silent prefill at any confidence. accept or edit of a saved non-null value returns 409 field_already_set. replace is the only decision that overwrites it. A bulk accept-all shape returns 422. The API rejects clientPriorValue with 422 and does not store unsaved typed text.
 
-- **EC-9.1** When a saved field already has a persisted value, replace writes an audit with the server-side previous value, the new value, action replace, the suggestionId, and the actor. accept leaves that value unchanged. reject leaves it unchanged.
+- **EC-9.1** When a saved field already has a persisted value, replace writes an audit with the server-side previous value, the new value, action replace, the suggestionId, and the actor. accept or edit returns 409 with error field_already_set and does not mark the suggestion accepted. reject leaves the value unchanged.
 - **EC-9.2** Before a record is saved, a replace audit stores only the suggestionId, the field, decision replaced, and the suggested value. It does not store a client-typed previous value. On save, the payment create audit records source ocr_replace and the suggestionId. A request that contains clientPriorValue returns 422. A bulk accept-all returns 422.

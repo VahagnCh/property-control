@@ -74,7 +74,7 @@ JOB=$(curl -s -X POST http://localhost:3000/v1/properties/$PROPERTY_ID/documents
 echo "$JOB"      # status "suggested", vendor "stub", no storageKey
 ```
 
-The stub finishes the extract synchronously with four fixed suggestions, all `applyStatus: "pending"`. There is no model call. `confirm` requires a decision for every suggestion, needs a UUID `targetEntityId` before accepting an unbound field, and returns `persisted: false` because nothing is written anywhere. The in-memory map is capped and jobs expire. Full behavior: [docs/OCR.md](../../docs/OCR.md).
+The stub finishes the extract synchronously with four fixed suggestions, all `applyStatus: "pending"`. There is no model call. `confirm` requires one decision per suggestion and a UUID `targetEntityId` before accepting an unbound field. `persisted` is true only when the confirm's saves commit. The in-memory map is capped and jobs expire. Full behavior: [docs/OCR.md](../../docs/OCR.md).
 
 Set `OCR_STUB_ENABLED` to `1`, `true`, `yes`, or `on` or every OCR route stays **501**. `CORS_ORIGINS` is the browser allow-list; leave it empty to refuse cross-origin access. Do not set it to `*`.
 

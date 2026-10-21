@@ -4,7 +4,7 @@ export interface ExtractedField {
   targetEntityType: OcrTargetEntityType;
   fieldPath: string;
   suggestedValue: unknown;
-  confidence?: number | null;
+  confidence?: unknown;
   targetEntityId?: string;
 }
 

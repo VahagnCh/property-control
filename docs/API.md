@@ -239,16 +239,19 @@ GET  /v1/properties/:propertyId/documents/:documentId/ocr-jobs
 GET  /v1/properties/:propertyId/ocr-jobs/:ocrJobId
        → 200 { job, suggestions }
 POST /v1/properties/:propertyId/ocr-jobs/:ocrJobId/confirm
-       Body: { decisions: Array<{ suggestionId, action: "accept" | "replace" | "reject" | "edit",
-                                  editedValue?, targetEntityId? }> }
-       → 200 { job, suggestions, applied, audits }
+       Body: { decisions: [{ suggestionId, action: accept|reject|edit|replace, editedValue?, targetEntityId? }] }
+       → 200 { job, suggestions, applied, audits, persisted }
 ```
 
 Path ids are UUIDs. A non-UUID id on any matched route is **400**. The in-memory map has a cap (`OCR_JOBS_MAX`, default 50) and a TTL (`OCR_JOB_TTL_MS`, default 15 minutes). Expired jobs can be dropped. An unexpired suggested job is never evicted; a full map returns **429**. Confirming an expired job returns **410**. Confirming a job that is not `suggested`, including a second confirm, returns **409**.
 
-Each suggestion carries `band`: `alta` at or above 0.90, `media` from 0.80 up to 0.90, and `revisa` below 0.80 or when the score is missing. `lowConfidence` is true for `revisa` and for an ambiguous amount such as `1,234`. The job also returns `confidenceBands` `{ alta: 0.9, media: 0.8 }`.
+Confirm requires one decision for every suggestion. The body is exactly `{ decisions: [{ suggestionId, action: accept|reject|edit|replace, editedValue?, targetEntityId? }] }`. A missing decision is **422** and the body names that `suggestionId`.
 
-`accept` does not overwrite a saved non-null field. `replace` does. `reject` leaves the value. There is no silent prefill. A body with `acceptAll: true`, or a decision whose action is `accept-all`, returns **422**. A decision that includes `clientPriorValue` returns **422**. The API does not accept or store unsaved typed text.
+Each suggestion carries `band`: `alta` at or above the configured alta cutoff, `media` from the media cutoff up to alta, and `revisa` below the media cutoff. The defaults are 0.90 and 0.80, read from `OCR_CONFIDENCE_ALTA` and `OCR_CONFIDENCE_MEDIA`. A low-confidence flag forces `revisa` whatever the score, including an ambiguous amount such as `1,234`. A score above 1, below 0, NaN, or non-numeric is also `revisa`. The job returns the configured `confidenceBands`.
+
+`accept` and `edit` of a saved non-null field return **409** `field_already_set` and do not mark the suggestion accepted. `replace` is the only overwrite, and it writes the replace audit. `reject` leaves the value. There is no silent prefill. Confirm validates every decision, then writes the accepted set together. If one write fails, the earlier writes in that confirm are restored and no suggestion changes status. `persisted` is true only when those writes commit. A body with `acceptAll: true`, or a decision whose action is `accept-all`, returns **422**. `clientPriorValue` on the body or on a decision returns **422**. The API does not accept or store unsaved typed text.
+
+Single-line text rejects every C0 character, including tab, CR, and LF. The `notes` field is the multi-line exception: it allows LF, and CR or CRLF is stored as LF. A tab in notes is still rejected. An invalid property `timezone` is **422** on write. A stored invalid timezone falls back to `America/Mexico_City` and does not raise 500.
 
 When the field is already saved, the replace audit is `{ suggestionId, field, action: "replace", actorUserId, previousValue, newValue }`. `previousValue` is the persisted server value. Before the record is saved, the audit is `{ suggestionId, field, decision: "replaced", suggestedValue }` and has no previous value. On payment create, that field's audit source is `ocr_replace` with the `suggestionId`.
 
@@ -259,7 +262,7 @@ Suggestion apply statuses: `pending` → `accepted` | `rejected`.
 
 Responses never include `storageKey`, `storage_key`, or a raw bucket path. The stub may build a private key from the validated UUIDs and then leave it off the payload.
 
-What the stub does differently: it finishes the extract synchronously with four fixed suggestions and `vendor: "stub"`, keeps everything in memory, requires a decision for every suggestion, and returns `persisted: false`. There is no model call. Details in [OCR.md](OCR.md).
+What the stub does differently: it finishes the extract synchronously with four fixed suggestions and `vendor: "stub"`, keeps the job in memory, and requires one decision per suggestion. `persisted` is true only when the confirm's saves commit. There is no model call. Details in [OCR.md](OCR.md).
 
 CORS is an allow-list from `CORS_ORIGINS` (comma-separated origins). The default is no cross-origin access. `*` is ignored and is never reflected.
 
@@ -311,7 +314,8 @@ Reminder channels: `email`, `push`, `in_app`. The unique key is (parent, `schedu
 | :---- | :---- |
 | Missing, invalid, or expired JWT | 401 |
 | Non-UUID path id, path traversal, or unknown `fieldPath` | 400 |
-| Bad `editedValue` (body includes `suggestionId` and `field`), same-property retarget of a bound target, voided payment target, `clientPriorValue`, or bulk accept-all | 422 |
+| Bad `editedValue` (body includes `suggestionId` and `field`), missing decision (body includes `suggestionId`), same-property retarget of a bound target, voided or unchecked payment target, `clientPriorValue`, bulk accept-all, or invalid property timezone on write | 422 |
+| Accept or edit of a field that already has a saved value | 409 `field_already_set` |
 | Valid JWT, no active membership for `:propertyId`, or the property is unknown or soft-deleted | 404 |
 | Viewer write, such as void, OCR enqueue, or OCR confirm | 403 |
 | Unknown invite token, or accept from the wrong account | 404 |
