@@ -33,7 +33,8 @@ export interface OcrJob {
   evidenceId?: string;
   status: OcrJobStatus;
   vendor?: string;
-  error?: string;
+  /** Stable extract failure code. Raw extractor text is never copied here. */
+  errorCode?: string;
   createdAt: string;
   updatedAt: string;
 }

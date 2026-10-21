@@ -17,7 +17,7 @@ describe("DueRecord edge-case rules", () => {
 
   it.todo("EC-1.7 A void recomputes that period from its non-voided sum and then sets nextDueDate to the earliest candidate that is not settled. A sum of 0 deletes the outcome row, and the period then reads as open when its due date is today or later in the property timezone, or overdue when the due date is before today. A sum greater than 0 and below expectedAmount stores outcome partial with overpaidAmount 0. A sum greater than or equal to expectedAmount stores outcome paid with overpaidAmount equal to the sum minus expectedAmount.");
 
-  it.todo("EC-1.8 Void requires write access on that property. Any other caller, including a viewer and a caller with no membership, receives 404 and never 403, including when the payment id is unknown.");
+  it.todo("EC-1.8 Void requires write access on that property. A viewer receives 403. A caller with no membership receives 404, including when the payment id is unknown.");
 
   it.todo("EC-1.9 A void requires an Idempotency-Key header. A missing key returns 400. The same key and the same body return the original response and change nothing further. The same key with a different body returns 409. The key is stored on idempotency_records with route key POST /payments/:id/void and does not reuse the payment's create key, so replaying the create key does not void the payment.");
 

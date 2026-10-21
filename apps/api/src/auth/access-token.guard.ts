@@ -5,7 +5,7 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { ACCESS_TOKEN_VERIFIER, type AccessTokenVerifier } from './access-token.verifier.js';
+import { ACCESS_TOKEN_VERIFIER, verifyBearer, type AccessTokenVerifier } from './access-token.verifier.js';
 
 interface RequestWithAuth {
   headers: Record<string, string | string[] | undefined>;
@@ -23,20 +23,9 @@ export class AccessTokenGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<RequestWithAuth>();
     const header = request.headers.authorization ?? request.headers.Authorization;
-    const value = Array.isArray(header) ? header[0] : header;
-    if (!value || !value.startsWith('Bearer ')) {
-      throw new UnauthorizedException('Missing access token.');
-    }
-    const token = value.slice('Bearer '.length).trim();
-    if (!token) {
-      throw new UnauthorizedException('Missing access token.');
-    }
-    const verdict = this.verifier.verify(token);
-    if (verdict === 'expired') {
-      throw new UnauthorizedException('Expired access token.');
-    }
-    if (!verdict || verdict === 'invalid' || typeof verdict.sub !== 'string' || verdict.sub.length === 0) {
-      throw new UnauthorizedException('Invalid access token.');
+    const verdict = verifyBearer(this.verifier, header);
+    if (!verdict.ok) {
+      throw new UnauthorizedException(verdict.message);
     }
     request.accessToken = { sub: verdict.sub };
     return true;

@@ -2,7 +2,10 @@ export const OCR_RUNTIME = Symbol('OCR_RUNTIME');
 
 export interface OcrRuntime {
   enabled: boolean;
+  /** Cap on jobs that hold a slot for one property. */
   jobsMax: number;
+  /** Safety ceiling across every property. Defaults to 20 × jobsMax when omitted. */
+  jobsGlobalMax?: number;
   jobTtlMs: number;
 }
 
@@ -33,6 +36,7 @@ export function loadOcrRuntime(env: NodeJS.ProcessEnv = process.env): OcrRuntime
   return {
     enabled: isOcrStubEnabled(env.OCR_STUB_ENABLED),
     jobsMax: positiveInt(env.OCR_JOBS_MAX, 50),
+    jobsGlobalMax: positiveInt(env.OCR_JOBS_GLOBAL_MAX, 1000),
     jobTtlMs: positiveInt(env.OCR_JOB_TTL_MS, 15 * 60 * 1000),
   };
 }

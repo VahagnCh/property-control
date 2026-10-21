@@ -196,6 +196,20 @@ describe('OCR lockdown HTTP', () => {
         expectNoLeak(response.body);
       }
     });
+
+    it('returns 401 before a bad path or an oversized body', async () => {
+      const server = app.getHttpServer();
+      const malformed = await request(server)
+        .post('/v1/properties/property-1/documents/document-1/ocr-jobs')
+        .expect(401);
+      const oversized = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A}/ocr-jobs`)
+        .set('Content-Type', 'application/json')
+        .send(`{"pad":"${'x'.repeat(40_000)}"}`);
+      expect(oversized.status).toBe(401);
+      expectNoLeak(malformed.body);
+      expectNoLeak(oversized.body);
+    });
   });
 
   describe('flag on with stubbed auth', () => {
@@ -220,6 +234,21 @@ describe('OCR lockdown HTTP', () => {
       await request(server).post(path).expect(401);
       await request(server).post(path).set('Authorization', 'Bearer nope').expect(401);
       await request(server).post(path).set('Authorization', 'Bearer expired').expect(401);
+    });
+
+    it('returns 400 and 413 after a valid token', async () => {
+      const server = app.getHttpServer();
+      await request(server)
+        .post('/v1/properties/property-1/documents/document-1/ocr-jobs')
+        .set(authA)
+        .expect(400);
+      const oversized = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A}/ocr-jobs`)
+        .set(authA)
+        .set('Content-Type', 'application/json')
+        .send(`{"pad":"${'x'.repeat(40_000)}"}`);
+      expect(oversized.status).toBe(413);
+      expectNoLeak(oversized.body);
     });
 
     it('returns 404 for an unknown property, document, or other account, and never 403', async () => {
@@ -510,6 +539,11 @@ describe('OCR lockdown HTTP', () => {
       expectNoLeak(blocked.body);
       const still = await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}`).set(authA).expect(200);
       expect(still.body.job.status).toBe('suggested');
+      const other = await request(server)
+        .post(`/v1/properties/${PROPERTY_B}/documents/${DOCUMENT_B}/ocr-jobs`)
+        .set(authB)
+        .expect(201);
+      expect(other.body.status).toBe('suggested');
       clock.nowMs += 1_000;
       const expired = await request(server)
         .post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}/confirm`)

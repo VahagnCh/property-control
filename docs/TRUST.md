@@ -33,7 +33,7 @@ Resolution order:
 3. If the route is not property-scoped (`GET /v1/me`, `POST /v1/properties`, `POST /v1/invites/accept`), stop here. Accept then checks that the signed-in email matches the invite.
 4. Otherwise load the membership where `property_id = :propertyId AND user_id = :userId AND status = 'active' AND deleted_at IS NULL`, and the property is not soft-deleted.
 5. No membership, or a missing or soft-deleted property, is **404** — not 403. The API does not reveal which properties exist.
-6. A membership whose role is not in `requiredRoles` is **403**, except `POST .../payments/:paymentId/void`: a caller without write access receives **404**, never 403, so the route does not reveal that the payment exists.
+6. A membership whose role is not in `requiredRoles` is **403**. A viewer who voids a payment receives **403**. A caller with no membership receives **404**, including when the payment id is unknown.
 7. Attach `{ user, membership, propertyId }` to the request for the handler.
 
 ## 403 against 404
@@ -42,7 +42,7 @@ Resolution order:
 | :---- | :---- |
 | Missing, invalid, or expired JWT | 401 |
 | Valid JWT, no active membership, or the property is unknown or soft-deleted | **404** |
-| Active membership, role too low | 403, except payment void, which is 404 |
+| Active membership, role too low, including a viewer void | 403 |
 | Soft-deleted child resource under a property the caller belongs to | 404 |
 
 Returning 403 for a property the caller cannot see would confirm that it exists. 404 does not.

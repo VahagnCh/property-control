@@ -85,6 +85,9 @@ export function parseMxAmount(input: string): MxAmountParse | null {
     if (parts.length === 2 && parts[1] && parts[1].length <= 2 && /^\d+$/.test(parts[0] ?? '')) {
       return confidentDecimal(`${parts[0]}.${(parts[1] ?? '').padEnd(2, '0')}`);
     }
+    if (parts.length === 2 && parts[1]?.length === 3) {
+      return { canonical: null, lowConfidence: true };
+    }
     if (
       parts.every(
         (part, index) =>

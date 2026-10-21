@@ -29,6 +29,7 @@ describe('es-MX OCR parsing', () => {
     expect(parseMxAmount('MXN 1 234,56')).toEqual({ canonical: '1234.56', lowConfidence: false });
     expect(parseMxAmount('1234')).toEqual({ canonical: '1234', lowConfidence: false });
     expect(parseMxAmount('1.234')).toEqual({ canonical: null, lowConfidence: true });
+    expect(parseMxAmount('1,234')).toEqual({ canonical: null, lowConfidence: true });
   });
 
   it('parses dates as dd/mm and month-year', () => {

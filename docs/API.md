@@ -114,7 +114,7 @@ POST   /v1/properties/:propertyId/payments/:paymentId/void
          → 200 Payment
 ```
 
-There is no `DELETE` for a payment. A correction is the void route. It sets `voidedAt`, `voidedBy`, and `voidReason`. A second void returns 409 and changes nothing. A void cannot be undone. The same Idempotency-Key returns the original void response. A caller without write access, including a viewer, receives 404 and never 403.
+There is no `DELETE` for a payment. A correction is the void route. It sets `voidedAt`, `voidedBy`, and `voidReason`. A second void returns 409 and changes nothing. A void cannot be undone. The same Idempotency-Key returns the original void response. A viewer receives 403. A caller with no membership, including when the payment id is unknown, receives 404.
 
 This records a payment the person already made somewhere else. The API does not charge a card, debit an account, or hold a balance. `method` and `reference` are descriptive text — "SPEI", a folio — not instructions to a payment processor.
 
@@ -214,10 +214,12 @@ OCR is off unless `OCR_STUB_ENABLED` is exactly `1`, `true`, `yes`, or `on` (any
 
 When the flag is on, the gates run in this order:
 
-1. A missing, invalid, or expired access token is **401**. The default verifier rejects every token. This API never mints one.
-2. An unknown property, an unknown document, a missing membership, or another account is **404**. A viewer may read a job and receives **403** on enqueue and confirm.
-3. Path ids that are not UUIDs, and traversal in the path, are **400**. `targetEntityId` must be a UUID for the suggestion's entity type in the same property, or the response is **404**. `document_meta` cannot be retargeted off the job's own document.
-4. `editedValue` is checked against `fieldPath`. Amounts are canonical peso strings (`19000.00` or `1234`), dates are ISO `YYYY-MM-DD`, and text is NFC. A type mismatch, an unknown `fieldPath`, or a prototype key is **400**.
+1. A missing, invalid, or expired access token is **401**, before path checks and before the JSON body is read. A non-UUID path or an oversized body with no token is still **401**. The default verifier rejects every token. This API never mints one.
+2. Path ids that are not UUIDs, and traversal in the path, are **400**. Malformed JSON is **400**. A body over 32kb is **413**.
+3. An unknown property, an unknown document, a missing membership, or another account is **404**. A viewer may read a job and receives **403** on enqueue and confirm.
+4. `targetEntityId` must be a UUID for the suggestion's entity type in the same property, or the response is **404**. `document_meta` cannot be retargeted off the job's own document. `editedValue` is checked against `fieldPath`. Amounts are canonical peso strings (`19000.00` or `1234`), dates are ISO `YYYY-MM-DD`, and text is NFC. A type mismatch, an unknown `fieldPath`, or a prototype key is **400**.
+
+`OCR_JOBS_MAX` (default 50) is the cap for one property. `OCR_JOBS_GLOBAL_MAX` (default 1000) is the ceiling across properties. Either limit returns **429** and does not evict an unexpired suggested job. A suggested job with no suggestions does not take a slot.
 
 ```text
 POST /v1/properties/:propertyId/documents/:documentId/ocr-jobs
@@ -319,7 +321,7 @@ Required on `POST .../payments`, `POST .../payments/:paymentId/void`, `POST .../
 | :---- | :---- | :---- | :---- |
 | Read the property and its lists | yes | yes | yes |
 | Create or update an obligation, payment, task, or document | yes | yes | no |
-| Void a payment | yes | yes | 404, never 403 |
+| Void a payment | yes | yes | 403 |
 | Pause, resume, archive, unarchive, or mark N/A | yes | yes | no |
 | Invite, resend, or revoke an invite | yes | no | no |
 | Upload evidence | yes | yes | no |

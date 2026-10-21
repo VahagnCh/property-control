@@ -77,7 +77,8 @@ export class OcrService {
     }
 
     this.dropExpired();
-    if (this.jobs.size >= this.runtime.jobsMax) {
+    const globalMax = this.runtime.jobsGlobalMax ?? this.runtime.jobsMax * 20;
+    if (this.capCount(propertyId) >= this.runtime.jobsMax || this.capCount() >= globalMax) {
       throw new HttpException(
         { statusCode: HttpStatus.TOO_MANY_REQUESTS, message: 'OCR job capacity is full.' },
         HttpStatus.TOO_MANY_REQUESTS,
@@ -126,7 +127,16 @@ export class OcrService {
 
   confirm(propertyId: string, ocrJobId: string, input: unknown): Promise<OcrConfirmResult> {
     assertUuidPair(propertyId, ocrJobId);
+    const existing = this.jobs.get(ocrJobId);
+    if (!existing || existing.job.propertyId !== propertyId) {
+      throw new NotFoundException('Not found.');
+    }
     return this.exclusive(ocrJobId, () => this.confirmExclusive(propertyId, ocrJobId, input));
+  }
+
+  /** In-flight confirm chains. Tests assert this returns to 0 after the chain settles. */
+  confirmQueueSize(): number {
+    return this.tails.size;
   }
 
   private confirmExclusive(propertyId: string, ocrJobId: string, input: unknown): OcrConfirmResult {
@@ -262,7 +272,7 @@ export class OcrService {
     record.job.vendor = 'stub';
     if (extracted.outcome === 'failed') {
       record.job.status = 'failed';
-      record.job.error = extracted.error ?? 'Extract failed.';
+      record.job.errorCode = 'extract_failed';
       record.suggestions = [];
       record.job.updatedAt = new Date(this.clock.now()).toISOString();
       return;
@@ -353,22 +363,42 @@ export class OcrService {
     if (job.vendor !== undefined) {
       publicJob.vendor = job.vendor;
     }
-    if (job.error !== undefined) {
-      publicJob.error = job.error;
+    if (job.errorCode !== undefined) {
+      publicJob.errorCode = job.errorCode;
     }
     return publicJob;
+  }
+
+  private holdsCapSlot(record: JobRecord): boolean {
+    return !(record.job.status === 'suggested' && record.suggestions.length === 0);
+  }
+
+  private capCount(propertyId?: string): number {
+    let count = 0;
+    for (const record of this.jobs.values()) {
+      if (propertyId !== undefined && record.job.propertyId !== propertyId) {
+        continue;
+      }
+      if (this.holdsCapSlot(record)) {
+        count += 1;
+      }
+    }
+    return count;
   }
 
   private exclusive<T>(key: string, fn: () => T): Promise<T> {
     const previous = this.tails.get(key) ?? Promise.resolve();
     const run = previous.then(() => fn());
-    this.tails.set(
-      key,
-      run.then(
-        () => undefined,
-        () => undefined,
-      ),
+    const settled = run.then(
+      () => undefined,
+      () => undefined,
     );
+    this.tails.set(key, settled);
+    void settled.then(() => {
+      if (this.tails.get(key) === settled) {
+        this.tails.delete(key);
+      }
+    });
     return run;
   }
 }
@@ -387,7 +417,7 @@ function readConfidence(value: number | null | undefined): number | null {
 }
 
 function isLowConfidence(fieldPath: string, value: unknown, confidence: number | null): boolean {
-  if (confidence !== null && confidence < LOW_CONFIDENCE_THRESHOLD) {
+  if (confidence === null || confidence < LOW_CONFIDENCE_THRESHOLD) {
     return true;
   }
   if (typeof value !== 'string') {

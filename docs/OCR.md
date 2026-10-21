@@ -90,11 +90,11 @@ The response contains the job, the updated suggestions, and `applied`, which lis
 
 | Behavior | Detail |
 | :---- | :---- |
-| Storage | A `Map` in the Nest process. Jobs vanish on restart. Cap `OCR_JOBS_MAX` (default 50) and TTL `OCR_JOB_TTL_MS` (default 15 minutes). Expired jobs may be dropped. An unexpired suggested job is never evicted; a full map returns 429. |
+| Storage | A `Map` in the Nest process. Jobs vanish on restart. `OCR_JOBS_MAX` (default 50) caps one property. `OCR_JOBS_GLOBAL_MAX` (default 1000) caps every property together. TTL `OCR_JOB_TTL_MS` (default 15 minutes). Expired jobs may be dropped. An unexpired suggested job is never evicted; a full property or a full global ceiling returns 429. A suggested job with no suggestions does not take a slot. |
 | Flag | Off unless `OCR_STUB_ENABLED` is `1`, `true`, `yes`, or `on`. Off returns 501 before path or body parsing. |
 | Auth | Access token first (401), then property membership. Unknown property, document, or membership is 404. A viewer can read and cannot enqueue or confirm (403). |
 | Extract | `enqueue()` runs through `processing` synchronously and returns `suggested` with `vendor: "stub"` |
-| Suggestions | Four fixed rows: obligation `expectedAmount` (`"18450.00"`), `nextDueDate`, and `providerName`, plus document `title`. Only the document row is pre-bound, and only to the source document. A confidence below 0.5, or an ambiguous es-MX amount, sets `lowConfidence` and stays `pending`. |
+| Suggestions | Four fixed rows: obligation `expectedAmount` (`"18450.00"`), `nextDueDate`, and `providerName`, plus document `title`. Only the document row is pre-bound, and only to the source document. A missing confidence, a confidence below 0.5, or an ambiguous es-MX amount sets `lowConfidence` and stays `pending`. A failed extract returns `errorCode: "extract_failed"` and not the extractor's text. |
 | Reuse | Posting again for the same document while a job is open and unexpired returns 200 and the existing job instead of creating a second one |
 | Decisions | Whitelisted keys only. Every suggestion needs an explicit accept, reject, or edit. A missing one is 422. A duplicate is 400. An edit with no `editedValue` is 400. `targetEntityId` must be a UUID in the same property and of the suggestion's type, or the response is 404. |
 | `document_meta` | Applies only to the job's source document. Another document is 400 when it is in the property, and 404 when it is not. |

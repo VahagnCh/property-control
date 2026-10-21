@@ -48,6 +48,7 @@ function serviceWith(
     extractor?: OcrExtractor;
     storage?: PrivateObjectStorage;
     jobsMax?: number;
+    jobsGlobalMax?: number;
     jobTtlMs?: number;
   } = {},
 ): OcrService {
@@ -55,6 +56,7 @@ function serviceWith(
     {
       enabled: true,
       jobsMax: overrides.jobsMax ?? 50,
+      ...(overrides.jobsGlobalMax !== undefined ? { jobsGlobalMax: overrides.jobsGlobalMax } : {}),
       jobTtlMs: overrides.jobTtlMs ?? 15 * 60 * 1000,
     },
     overrides.lookup ?? lookup(),
@@ -434,7 +436,9 @@ describe('OcrService', () => {
         })),
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
-    expect(suggestions.every((row) => row.applyStatus === 'pending')).toBe(true);
+    expect(
+      suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
+    ).toBe(true);
   });
 
   it('keeps an empty extraction suggested and does not auto-apply', () => {
@@ -494,6 +498,8 @@ describe('OcrService', () => {
     });
     const failedJob = failed.enqueue(PROPERTY, DOCUMENT).job;
     expect(failedJob.status).toBe('failed');
+    expect(failedJob.errorCode).toBe('extract_failed');
+    expect(JSON.stringify(failedJob)).not.toMatch(/corrupt/);
     expect(failed.getJob(PROPERTY, failedJob.id).suggestions).toEqual([]);
     await expect(failed.confirm(PROPERTY, failedJob.id, [])).rejects.toBeInstanceOf(ConflictException);
 
@@ -550,6 +556,74 @@ describe('OcrService', () => {
     }
     expect(service.getJob(PROPERTY, first.id).job.status).toBe('suggested');
     expect(service.getJob(PROPERTY, second.id).job.status).toBe('suggested');
+  });
+
+  it('lets another property enqueue when this property is at its cap', () => {
+    const otherProperty = '11111111-1111-4111-8111-222222222222';
+    const service = serviceWith({ jobsMax: 1 });
+    const held = service.enqueue(PROPERTY, DOCUMENT).job;
+    expect(() => service.enqueue(PROPERTY, DOCUMENT_2)).toThrow(HttpException);
+    const other = service.enqueue(otherProperty, DOCUMENT);
+    expect(other.created).toBe(true);
+    expect(service.getJob(PROPERTY, held.id).job.status).toBe('suggested');
+  });
+
+  it('does not let an empty suggested job occupy a cap slot', () => {
+    const service = serviceWith({
+      jobsMax: 1,
+      extractor: { extract: () => ({ outcome: 'suggested', suggestions: [] }) },
+    });
+    expect(service.enqueue(PROPERTY, DOCUMENT).created).toBe(true);
+    expect(service.enqueue(PROPERTY, DOCUMENT_2).created).toBe(true);
+  });
+
+  it('stops at the global ceiling without evicting a suggested job', () => {
+    const otherProperty = '11111111-1111-4111-8111-222222222222';
+    const service = serviceWith({ jobsMax: 5, jobsGlobalMax: 1 });
+    const held = service.enqueue(PROPERTY, DOCUMENT).job;
+    expect(() => service.enqueue(otherProperty, DOCUMENT)).toThrow(HttpException);
+    expect(service.getJob(PROPERTY, held.id).job.status).toBe('suggested');
+  });
+
+  it('rejects an unknown job before queueing and clears the confirm tail', async () => {
+    const service = serviceWith();
+    expect(() => service.confirm(PROPERTY, FORGED, { decisions: [] })).toThrow(NotFoundException);
+    expect(service.confirmQueueSize()).toBe(0);
+
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    expect(() => service.confirm(DOCUMENT, job.id, [])).toThrow(NotFoundException);
+    expect(service.confirmQueueSize()).toBe(0);
+
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    await service.confirm(
+      PROPERTY,
+      job.id,
+      suggestions.map((row) => ({ suggestionId: row.id, action: 'reject' as const })),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(service.confirmQueueSize()).toBe(0);
+  });
+
+  it('flags a suggestion with no confidence as low confidence', () => {
+    const service = serviceWith({
+      extractor: {
+        extract: () => ({
+          outcome: 'suggested',
+          suggestions: [
+            {
+              targetEntityType: 'obligation',
+              fieldPath: 'providerName',
+              suggestedValue: 'Predial Coyoacán',
+            },
+          ],
+        }),
+      },
+    });
+    const suggestions = suggestionMap(service, PROPERTY, service.enqueue(PROPERTY, DOCUMENT).job.id);
+    expect(suggestions[0]?.confidence).toBeNull();
+    expect(suggestions[0]?.lowConfidence).toBe(true);
+    expect(suggestions[0]?.applyStatus).toBe('pending');
   });
 
   it('expires a job for confirm with 410 and drops it only to make room', async () => {
