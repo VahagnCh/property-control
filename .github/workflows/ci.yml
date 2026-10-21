@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - cursor/scaffold-monorepo-6ea7
+  pull_request:
+    branches:
+      - cursor/scaffold-monorepo-6ea7
+      - main
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      OCR_STUB_ENABLED: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm api:typecheck
+      - run: pnpm api:test
+      - run: pnpm api:build
+      - run: pnpm mobile:typecheck
+      - run: pnpm mobile:test
