@@ -104,4 +104,39 @@ describe('OcrSuggestionReview', () => {
     expect(body).not.toContain('previousValue');
     expect(body).not.toContain('clientPriorValue');
   });
+
+  it('restores the pre-tap value when this field is edited before Mantener', () => {
+    const onFormChange = jest.fn();
+    const onConfirm = jest.fn();
+    const view = render(reviewTree({ amount: '1.00', note: '' }, onFormChange, onConfirm));
+
+    fireEvent.press(screen.getByRole('button', { name: 'Reemplazar' }));
+    const replaced = onFormChange.mock.calls[0]?.[0] as OcrReviewForm;
+    expect(replaced.amount).toBe('1250.00');
+    view.rerender(reviewTree({ ...replaced }, onFormChange, onConfirm));
+
+    fireEvent.changeText(screen.getByLabelText('Monto'), '4.50');
+    const edited = onFormChange.mock.calls.at(-1)?.[0] as OcrReviewForm;
+    expect(edited).toEqual({ amount: '4.50', note: '' });
+    view.rerender(reviewTree({ ...edited }, onFormChange, onConfirm));
+    expect(shownAmount()).toBe('4.50');
+
+    fireEvent.press(screen.getByRole('button', { name: 'Mantener lo que escribí' }));
+    const kept = onFormChange.mock.calls.at(-1)?.[0] as OcrReviewForm;
+    expect(kept).toEqual({ amount: '1.00', note: '' });
+    view.rerender(reviewTree(kept, onFormChange, onConfirm));
+
+    expect(shownAmount()).toBe('1.00');
+    expect(screen.getByDisplayValue('1.00')).toBeTruthy();
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    const body = onConfirm.mock.calls[0]?.[0] as string;
+    expect(JSON.parse(body)).toEqual({
+      decisions: [{ suggestionId: 'sug-9', action: 'reject', targetEntityId: target }],
+    });
+    expect(body).not.toContain('1.00');
+    expect(body).not.toContain('4.50');
+    expect(body).not.toContain('1250.00');
+    expect(body).not.toContain('previousValue');
+    expect(body).not.toContain('clientPriorValue');
+  });
 });

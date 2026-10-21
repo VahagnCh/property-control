@@ -658,6 +658,55 @@ describe('AC-OCR-11 replaceField', () => {
     expect(savedBody).not.toContain('clientPriorValue');
   });
 
+  it('restores the pre-tap value when the form object changes before Mantener', () => {
+    const target = '11111111-1111-4111-8111-111111111111';
+    const typed = { amount: '1.00', paidDate: '', note: '' };
+    const suggestion = confirmOcrSuggestion(
+      suggestOcrField('amount', '1250.00', 0.99, { suggestionId: 'sug-9', targetEntityId: target }),
+    );
+    const expectKept = (form: { amount: string; paidDate: string; note: string }, decisions: NonNullable<ReturnType<typeof tapReemplazar>['decision']>[]) => {
+      const request = confirmOnRegistrar(form, [suggestion], decisions);
+      expect(request.form).toEqual(form);
+      expect(request.request?.decisions).toEqual([
+        { suggestionId: 'sug-9', action: 'reject', targetEntityId: target },
+      ]);
+      const body = serializeConfirmPayload(request.request?.decisions ?? []);
+      expect(body).not.toContain('1.00');
+      expect(body).not.toContain('4.50');
+      expect(body).not.toContain('1250.00');
+      expect(body).not.toContain('folio 2');
+      expect(body).not.toContain('previousValue');
+      expect(body).not.toContain('clientPriorValue');
+    };
+
+    const once = tapReemplazar(typed, suggestion, 'amount');
+    const copied = { ...once.form };
+    const replacedCopy = tapReemplazar(copied, suggestion, 'amount', { previousValue: once.previousValue });
+    expect(replacedCopy.previousValue).toBe('1.00');
+    expect(replacedCopy.form.amount).toBe('1250.00');
+    const keptCopy = keepTypedField(replacedCopy.form, suggestion, 'amount', {
+      previousValue: replacedCopy.previousValue,
+    });
+    expect(keptCopy.form).toEqual({ amount: '1.00', paidDate: '', note: '' });
+    expectKept(keptCopy.form, [once.decision!, replacedCopy.decision!, keptCopy.decision!]);
+
+    const otherField = { ...once.form, note: 'folio 2' };
+    const replacedOther = tapReemplazar(otherField, suggestion, 'amount', { previousValue: once.previousValue });
+    expect(replacedOther.form).toEqual({ amount: '1250.00', paidDate: '', note: 'folio 2' });
+    expect(replacedOther.previousValue).toBe('1.00');
+    const keptOther = keepTypedField(replacedOther.form, suggestion, 'amount', {
+      previousValue: replacedOther.previousValue,
+    });
+    expect(keptOther.form).toEqual({ amount: '1.00', paidDate: '', note: 'folio 2' });
+    expectKept(keptOther.form, [once.decision!, replacedOther.decision!, keptOther.decision!]);
+
+    const editedField = { ...once.form, amount: '4.50' };
+    const keptEdit = keepTypedField(editedField, suggestion, 'amount', { previousValue: once.previousValue });
+    expect(keptEdit.form).toEqual({ amount: '1.00', paidDate: '', note: '' });
+    expect(editedField.amount).toBe('4.50');
+    expectKept(keptEdit.form, [once.decision!, keptEdit.decision!]);
+  });
+
   it('names the suggestion row that blocks confirm when the target is missing', () => {
     const form = { amount: '' };
     const suggestion = confirmOcrSuggestion(suggestOcrField('amount', '10.00', 0.9, { suggestionId: 'sug-open' }));

@@ -30,7 +30,14 @@ export function OcrSuggestionReview({
 }) {
   return (
     <View>
-      <TextInput accessibilityLabel="Monto" testID={`ocr-field-${field}`} value={form[field] ?? ''} />
+      <TextInput
+        accessibilityLabel="Monto"
+        testID={`ocr-field-${field}`}
+        value={form[field] ?? ''}
+        onChangeText={(text) => {
+          onFormChange({ ...form, [field]: text });
+        }}
+      />
       <TextInput
         accessibilityLabel="Nota"
         testID={`ocr-field-${otherField}`}
