@@ -1,4 +1,5 @@
 import { calendarDaysBetween } from '../dates/propertyCalendar';
+import { withDeviceLocalBlocked } from '../test/withDeviceLocalBlocked';
 import { paidDateWindow, validatePaidDate } from './paidDate';
 
 const MEXICO_CITY = 'America/Mexico_City';
@@ -68,6 +69,7 @@ describe('paid date limits', () => {
   });
 
   it('moves the window at 23:59, 00:00, and 00:01 in America/Mexico_City', () => {
+    withDeviceLocalBlocked(() => {
     const at2359 = new Date('2026-10-22T05:59:00.000Z');
     const at0000 = new Date('2026-10-22T06:00:00.000Z');
     const at0001 = new Date('2026-10-22T06:01:00.000Z');
@@ -87,9 +89,11 @@ describe('paid date limits', () => {
     expect(paidDateWindow(at0001, MEXICO_CITY).max).toBe('2026-10-22');
     expect(validatePaidDate('2026-10-22', at0001, MEXICO_CITY).ok).toBe(true);
     expect(validatePaidDate('2026-10-23', at0001, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_future' });
+    });
   });
 
   it('does not use the device zone when the property zone is not Mexico City', () => {
+    withDeviceLocalBlocked(() => {
     const instant = new Date('2026-10-22T06:30:00.000Z');
     expect(paidDateWindow(instant, MEXICO_CITY).today).toBe('2026-10-22');
     expect(paidDateWindow(instant, TIJUANA).today).toBe('2026-10-21');
@@ -107,6 +111,7 @@ describe('paid date limits', () => {
     expect(validatePaidDate('2026-10-22', cancunMidnight, MEXICO_CITY)).toEqual({
       ok: false,
       reason: 'too_future',
+    });
     });
   });
 

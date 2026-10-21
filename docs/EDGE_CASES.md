@@ -107,3 +107,13 @@ Confirm decisions are per field: accept, replace, reject, or edit. There is no s
 
 - **EC-9.1** When a saved field already has a persisted value, replace writes an audit with the server-side previous value, the new value, action replace, the suggestionId, and the actor. accept or edit returns 409 with error field_already_set and does not mark the suggestion accepted. reject leaves the value unchanged.
 - **EC-9.2** Before a record is saved, a replace audit stores only the suggestionId, the field, decision replaced, and the suggested value. It does not store a client-typed previous value. On save, the payment create audit records source ocr_replace and the suggestionId. A request that contains clientPriorValue returns 422. A bulk accept-all returns 422.
+
+## 10. Mobile notification links
+
+This section is the mobile client. It does not add an API test id.
+
+- A `duerecord://notificaciones/<uuid>` link, and the same path on an Expo Go `exp://…/--/` link, opens a stub screen. The nid is an 8-4-4-4-12 hex id. The path is exactly those two segments. `..`, an empty segment, a trailing slash, or a host or port opens Inicio.
+- The stub shows the same not-found copy for every nid: “Esta notificación ya no está disponible”, “Puede que se haya eliminado o que no tengas acceso.”, and “Ir a Inicio”. The call to action opens Inicio. The screen does not render the nid or any other text taken from the URL.
+- Without a session the link stops on sign-in. Ahora no and Cancelar drop it and open Inicio. There is no auth storage in this client. Tokens, when they land, use expo-secure-store and never AsyncStorage.
+- Query and fragment are removed before a route receives params. `property-control://` is not handled. The Expo Go prefix is registered only while running in Expo Go or a dev build, not in a store or TestFlight build.
+- Follow-up: fetch the notification through the API, check membership, and keep this generic not-found for a foreign or unknown nid. [Notification detail: fetch via API with membership check](https://github.com/VahagnCh/property-control/issues/13).

@@ -1,3 +1,4 @@
+import { withDeviceLocalBlocked } from '../test/withDeviceLocalBlocked';
 import { dueLabel } from './dueLabel';
 import {
   DEFAULT_PROPERTY_TIMEZONE,
@@ -16,34 +17,6 @@ const AT_0001_MEXICO_CITY = new Date('2026-10-22T06:01:00.000Z');
 const AT_0030_SPLIT = new Date('2026-10-22T06:30:00.000Z');
 const AT_CANCUN_MIDNIGHT = new Date('2026-10-22T05:30:00.000Z');
 
-function withDeviceLocalBlocked<T>(run: () => T): T {
-  const proto = Date.prototype as unknown as Record<string, (...args: unknown[]) => unknown>;
-  const names = [
-    'getFullYear',
-    'getMonth',
-    'getDate',
-    'getHours',
-    'getMinutes',
-    'getSeconds',
-    'getDay',
-    'getTimezoneOffset',
-  ];
-  const originals = new Map<string, (...args: unknown[]) => unknown>();
-  for (const name of names) {
-    originals.set(name, proto[name]);
-    proto[name] = () => {
-      throw new Error(`device local ${name}`);
-    };
-  }
-  try {
-    return run();
-  } finally {
-    for (const name of names) {
-      proto[name] = originals.get(name) as (...args: unknown[]) => unknown;
-    }
-  }
-}
-
 describe('due labels in the property time zone', () => {
   it('defaults the property zone to America/Mexico_City and ignores the device zone', () => {
     expect(DEFAULT_PROPERTY_TIMEZONE).toBe('America/Mexico_City');
@@ -56,6 +29,7 @@ describe('due labels in the property time zone', () => {
   });
 
   it('keeps 23:59 as today and 00:00 through 00:01 as the next local day', () => {
+    withDeviceLocalBlocked(() => {
     expect(dueLabel('2026-10-21', AT_2359_MEXICO_CITY, MEXICO_CITY)).toBe('Vence hoy');
     expect(dueLabel('2026-10-22', AT_2359_MEXICO_CITY, MEXICO_CITY)).toBe('Vence mañana');
 
@@ -69,9 +43,11 @@ describe('due labels in the property time zone', () => {
 
     expect(calendarDateInTimeZone(AT_0000_MEXICO_CITY, MEXICO_CITY)).toBe('2026-10-22');
     expect(calendarDateInTimeZone(AT_0001_MEXICO_CITY, MEXICO_CITY)).toBe('2026-10-22');
+    });
   });
 
   it('uses the property time zone passed in when it is not Mexico City', () => {
+    withDeviceLocalBlocked(() => {
     expect(calendarDateInTimeZone(AT_0030_SPLIT, MEXICO_CITY)).toBe('2026-10-22');
     expect(calendarDateInTimeZone(AT_0030_SPLIT, TIJUANA)).toBe('2026-10-21');
     expect(dueLabel('2026-10-21', AT_0030_SPLIT, MEXICO_CITY)).toBe('Venció hace 1 día');
@@ -82,6 +58,7 @@ describe('due labels in the property time zone', () => {
     expect(calendarDateInTimeZone(AT_CANCUN_MIDNIGHT, MEXICO_CITY)).toBe('2026-10-21');
     expect(dueLabel('2026-10-22', AT_CANCUN_MIDNIGHT, CANCUN)).toBe('Vence hoy');
     expect(dueLabel('2026-10-22', AT_CANCUN_MIDNIGHT, MEXICO_CITY)).toBe('Vence mañana');
+    });
   });
 
   it('rejects an unknown time zone instead of falling back to the device', () => {

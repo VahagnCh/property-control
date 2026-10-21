@@ -1,6 +1,6 @@
 # @property-control/mobile
 
-Expo React Native + TypeScript client for DueRecord. This is the navigation shell: the five locked tabs with placeholder Spanish copy. There is no data fetching, no auth storage, and no real screen yet. The Expo display name is DueRecord. The package name stays `@property-control/mobile`, and the slug stays `property-control`. The URL scheme is `duerecord`.
+Expo React Native + TypeScript client for DueRecord. This is the navigation shell: the five locked tabs with placeholder Spanish copy. There is no data fetching, no auth storage, and no real screen yet. The Expo display name is DueRecord. The package name stays `@property-control/mobile`, and the slug stays `property-control`. The URL scheme is `duerecord`. A notification link opens a stub that says the notification is no longer available. It does not show the id from the URL. Fetching that notification and checking membership is [issue 13](https://github.com/VahagnCh/property-control/issues/13).
 
 ## Run
 
@@ -37,8 +37,8 @@ Five tabs, Spanish labels, locked by Product: **Inicio · Propiedades · Pagos �
 ```text
 App.tsx                           SafeAreaProvider → AppShell
 index.ts                          registerRootComponent
-src/navigation/AppShell.tsx       duerecord://notificaciones/<nid>, or Inicio
-src/navigation/linking.ts         NavigationContainer prefixes: duerecord://
+src/navigation/AppShell.tsx       Linking subscription; notification stub or Inicio
+src/navigation/linking.ts         duerecord://, plus exp:// only in Expo Go or dev
 src/navigation/tabs.tsx           the five-tab bottom navigator
 src/screens/PlaceholderScreen.tsx shared placeholder
 src/components/ScreenState.tsx    empty, loading, and error
