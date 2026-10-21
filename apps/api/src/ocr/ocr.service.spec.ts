@@ -340,6 +340,8 @@ describe('OcrService', () => {
       { fieldPath: 'providerName', editedValue: 'bad\u0000name' },
       { fieldPath: 'providerName', editedValue: 'line\nbreak' },
       { fieldPath: 'providerName', editedValue: 'x'.repeat(201) },
+      { fieldPath: 'title', editedValue: 'x'.repeat(301) },
+      { fieldPath: 'title', editedValue: '' },
     ];
 
     for (const testCase of cases) {
@@ -501,6 +503,15 @@ describe('OcrService', () => {
     const pendingJob = pending.enqueue(PROPERTY, DOCUMENT_2).job;
     expect(pendingJob.status).toBe('pending');
     await expect(pending.confirm(PROPERTY, pendingJob.id, { decisions: [] })).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+
+    const processing = serviceWith({
+      extractor: { extract: () => ({ outcome: 'processing' }) },
+    });
+    const processingJob = processing.enqueue(PROPERTY, DOCUMENT).job;
+    expect(processingJob.status).toBe('processing');
+    await expect(processing.confirm(PROPERTY, processingJob.id, [])).rejects.toBeInstanceOf(
       ConflictException,
     );
   });
