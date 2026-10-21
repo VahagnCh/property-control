@@ -1,0 +1,45 @@
+# Staging blueprint for Render Free. Secret values are entered in the
+# dashboard. This file must not contain them.
+# The web service does not hold the owner URL. Run migrations from a shell
+# that has the owner connection, before the first deploy and after each
+# migration. See docs/DEPLOY.md.
+services:
+  - type: web
+    name: property-control-api
+    runtime: node
+    plan: free
+    region: ohio
+    healthCheckPath: /v1/health
+    buildCommand: corepack enable && corepack prepare pnpm@10.33.3 --activate && pnpm install --frozen-lockfile && pnpm --filter @property-control/api exec prisma generate && pnpm api:build
+    startCommand: pnpm --filter @property-control/api start:prod
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: OCR_STUB_ENABLED
+        value: "false"
+      - key: HSTS_MAX_AGE
+        value: "31536000"
+      - key: HSTS_INCLUDE_SUBDOMAINS
+        value: "false"
+      - key: HSTS_PRELOAD
+        value: "false"
+      - key: DATABASE_URL
+        sync: false
+      - key: SERVER_SECRET
+        sync: false
+      - key: AVISO_VERSION
+        sync: false
+      - key: AVISO_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: OBJECT_STORAGE_ENDPOINT
+        sync: false
+      - key: OBJECT_STORAGE_REGION
+        sync: false
+      - key: OBJECT_STORAGE_BUCKET
+        sync: false
+      - key: OBJECT_STORAGE_ACCESS_KEY_ID
+        sync: false
+      - key: OBJECT_STORAGE_SECRET_ACCESS_KEY
+        sync: false

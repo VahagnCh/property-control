@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { ConflictException, ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
+import { scramSha256Password } from '../prisma/scram-password.mjs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PrismaIdempotencyKeys } from '../src/auth/idempotency-keys.js';
 import { PrismaRateLimits, authSubjectHmac, bucketKey } from '../src/auth/rate-limit.js';
 import { PrismaRefreshTokens } from '../src/auth/prisma-refresh-tokens.js';
 import { hashToken } from '../src/auth/refresh-tokens.js';
+import { assertRuntimeRole, readNamedRole, readRuntimeRole } from '../src/auth/runtime-role.js';
 import { TEST_SERVER_SECRET } from './test-server-secret.js';
 import { PrismaConsentRepository } from '../src/consent/prisma-consent.repository.js';
 import { ConsentService } from '../src/consent/consent.service.js';
@@ -451,8 +453,15 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       AVISO_URL: 'https://example.com/aviso',
     };
     await purgeAppendOnly({ avisoVersion: 'seed-v1' });
-    await seedDatabase(prisma, env);
-    await seedDatabase(prisma, env);
+    await expect(seedDatabase(prisma, env)).rejects.toThrow(/SEED_DEMO_DATA/);
+    await seedDatabase(prisma, { ...env, SEED_DEMO_DATA: 'true' });
+    expect(await prisma.avisoVersion.findUnique({ where: { version: 'seed-v1' } })).toBeNull();
+    await publishAvisoVersion(prisma, {
+      version: 'seed-v1',
+      url: 'https://example.com/aviso',
+      text: AVISO_TEXT,
+    });
+    await seedDatabase(prisma, { ...env, SEED_DEMO_DATA: 'true' });
     const obligation = await prisma.obligation.findUnique({ where: { id: DEMO_OBLIGATION_ID } });
     expect(obligation?.title).toBe('CFE');
     expect(obligation?.expectedAmount).toBe(85000n);
@@ -814,6 +823,93 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       expect(JSON.stringify(stored)).not.toContain(email.toLowerCase());
     } finally {
       await deleteFixture(prisma, fixture, version);
+    }
+  });
+
+  it('boots only as the app role and refuses the owner connection', async () => {
+    const appRole = await readRuntimeRole(prisma);
+    expect(appRole.currentUser).toBe('property_control_app');
+    expect(appRole.superuser).toBe(false);
+    expect(appRole.databaseOwner).toBe(false);
+    expect(() => assertRuntimeRole(appRole)).not.toThrow();
+    const ownerRole = await readRuntimeRole(owner);
+    expect(ownerRole.currentUser).not.toBe('property_control_app');
+    expect(ownerRole.superuser || ownerRole.databaseOwner).toBe(true);
+    expect(() => assertRuntimeRole(ownerRole)).toThrow(
+      /property_control_app, not the database owner or a superuser/,
+    );
+    expect(appRole.privilegedMembership).toBe(false);
+    expect(appRole.createRole).toBe(false);
+    expect(appRole.createDb).toBe(false);
+    expect(appRole.replication).toBe(false);
+    expect(appRole.bypassRls).toBe(false);
+  });
+
+  it('refuses membership in the owner and elevated role attributes', async () => {
+    const suffix = randomUUID().replaceAll('-', '');
+    const names = {
+      elevated: `pc_elev_${suffix}`,
+      member: `pc_mem_${suffix}`,
+      child: `pc_child_${suffix}`,
+      reader: `pc_read_${suffix}`,
+    };
+    const ownerName = (
+      await owner.$queryRaw<Array<{ current_user: string }>>`SELECT current_user`
+    )[0]?.current_user;
+    expect(ownerName).toMatch(/^[A-Za-z_][A-Za-z0-9_]*$/);
+    try {
+      await owner.$executeRawUnsafe(
+        `CREATE ROLE "${names.elevated}" NOLOGIN CREATEDB CREATEROLE REPLICATION BYPASSRLS`,
+      );
+      await owner.$executeRawUnsafe(`CREATE ROLE "${names.member}" NOLOGIN`);
+      await owner.$executeRawUnsafe(`CREATE ROLE "${names.child}" NOLOGIN`);
+      await owner.$executeRawUnsafe(`CREATE ROLE "${names.reader}" NOLOGIN`);
+      await owner.$executeRawUnsafe(`GRANT "${ownerName}" TO "${names.member}"`);
+      await owner.$executeRawUnsafe(`GRANT "${names.member}" TO "${names.child}"`);
+      await owner.$executeRawUnsafe(`GRANT pg_read_all_data TO "${names.reader}"`);
+
+      const elevated = await readNamedRole(owner, names.elevated);
+      expect(elevated.createDb).toBe(true);
+      expect(elevated.createRole).toBe(true);
+      expect(elevated.replication).toBe(true);
+      expect(elevated.bypassRls).toBe(true);
+      expect(elevated.privilegedMembership).toBe(false);
+
+      const member = await readNamedRole(owner, names.member);
+      expect(member.privilegedMembership).toBe(true);
+      const child = await readNamedRole(owner, names.child);
+      expect(child.privilegedMembership).toBe(true);
+      const reader = await readNamedRole(owner, names.reader);
+      expect(reader.privilegedMembership).toBe(true);
+      for (const role of [elevated, member, child, reader]) {
+        expect(() => assertRuntimeRole({ ...role, currentUser: 'property_control_app' })).toThrow(
+          /property_control_app/,
+        );
+      }
+    } finally {
+      await owner.$executeRawUnsafe(`DROP ROLE IF EXISTS "${names.child}"`);
+      await owner.$executeRawUnsafe(`DROP ROLE IF EXISTS "${names.reader}"`);
+      await owner.$executeRawUnsafe(`DROP ROLE IF EXISTS "${names.member}"`);
+      await owner.$executeRawUnsafe(`DROP ROLE IF EXISTS "${names.elevated}"`);
+    }
+  });
+
+  it('logs in with a pre-hashed SCRAM-SHA-256 password', async () => {
+    const name = `pc_scram_${randomUUID().replaceAll('-', '')}`;
+    const password = randomUUID().replaceAll('-', '');
+    const hash = scramSha256Password(password);
+    expect(hash.startsWith('SCRAM-SHA-256$')).toBe(true);
+    expect(hash).not.toContain(password);
+    const ownerUrl = new URL(process.env.DIRECT_URL ?? '');
+    const client = new PrismaClient({
+      datasourceUrl: `postgresql://${name}:${encodeURIComponent(password)}@${ownerUrl.host}${ownerUrl.pathname}`,
+    });
+    try {
+      await owner.$executeRawUnsafe(`CREATE ROLE "${name}" LOGIN PASSWORD '${hash.replaceAll("'", "''")}'`);
+      await client.$queryRaw`SELECT 1`;
+    } finally {
+      await client.$disconnect();
+      await owner.$executeRawUnsafe(`DROP ROLE IF EXISTS "${name}"`);
     }
   });
 });

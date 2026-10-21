@@ -394,7 +394,7 @@ Auth-code attempts and rate-limit buckets are rows in Postgres. The attempt subj
 
 The membership role stays `member`. It is not renamed to `editor`, because the invite check and [EDGE_CASES.md](EDGE_CASES.md) EC-8.3 lock `member`.
 
-Test hosting is Render, Neon, Cloudflare R2, and Resend. The code stays provider-neutral: `DATABASE_URL` is the pooled connection, `DIRECT_URL` is the direct connection used by migrations, and object storage is an S3-compatible endpoint, region, bucket, and key pair. No provider SDK is imported. Upload signing is not implemented. When it is, the signed PUT headers include `Cache-Control: no-store`.
+Test hosting is Render, Neon, Cloudflare R2, and Resend. The code stays provider-neutral: `DATABASE_URL` is the pooled app-role connection, migrations run outside the web service with `DATABASE_URL` pointed at the owner, and object storage is an S3-compatible endpoint, region, bucket, and key pair. Tests still use `DIRECT_URL` as that owner connection. The web service does not receive it. No provider SDK is imported. Upload signing is not implemented. When it is, the signed PUT headers include `Cache-Control: no-store`.
 
 ## Status codes
 
