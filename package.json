@@ -15,7 +15,8 @@
     "mobile:start": "pnpm --filter @property-control/mobile start",
     "mobile:android": "pnpm --filter @property-control/mobile android",
     "mobile:ios": "pnpm --filter @property-control/mobile ios",
-    "mobile:typecheck": "pnpm --filter @property-control/mobile typecheck"
+    "mobile:typecheck": "pnpm --filter @property-control/mobile typecheck",
+    "mobile:test": "pnpm --filter @property-control/mobile test"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

@@ -1,6 +1,6 @@
-# Property Control
+# DueRecord
 
-Property Control is a Mexico-first portfolio OS for people who own more than one property. It tracks what is owed, when it is due, what was paid, and the proof: predial, CFE, water, mortgages and their documents, plus the other recurring obligations on a property.
+DueRecord is a Mexico-first portfolio OS for people who own more than one property. It tracks what is owed, when it is due, what was paid, and the proof: predial, CFE, water, mortgages and their documents, plus the other recurring obligations on a property.
 
 The product **records** payments a person already made. It does **not** move money. There is no wallet, payout, bank connection, or payment rail in this repository, and none of those belong in the MVP.
 
@@ -176,7 +176,7 @@ pnpm install
 pnpm mobile:start
 ```
 
-Then open the project in Expo Go, an emulator, or a simulator (`pnpm mobile:android`, `pnpm mobile:ios`). `pnpm mobile:typecheck` checks types without a device. The five tabs render placeholder Spanish copy. They do not call the API. The OCR review screen is called out on **Documentos** and is not built. More: [apps/mobile/README.md](apps/mobile/README.md).
+Then open the project in Expo Go, an emulator, or a simulator (`pnpm mobile:android`, `pnpm mobile:ios`). `pnpm mobile:typecheck` checks types without a device. `pnpm mobile:test` runs the Jest suite in `apps/mobile`. The five tabs render placeholder Spanish copy. They do not call the API. The OCR review screen is called out on **Documentos** and is not built. More: [apps/mobile/README.md](apps/mobile/README.md).
 
 ## Docs in this repo
 

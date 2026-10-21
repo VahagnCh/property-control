@@ -1,6 +1,6 @@
 # @property-control/mobile
 
-Expo React Native + TypeScript client for Property Control. This is the navigation shell: the five locked tabs with placeholder Spanish copy. There is no data fetching, no auth, and no real screen yet.
+Expo React Native + TypeScript client for DueRecord. This is the navigation shell: the five locked tabs with placeholder Spanish copy. There is no data fetching, no auth, and no real screen yet. The Expo display name is DueRecord. The package name stays `@property-control/mobile`, and the slug and scheme stay `property-control`.
 
 ## Run
 
@@ -19,6 +19,15 @@ Type check:
 pnpm --filter @property-control/mobile typecheck
 ```
 
+Tests, from the repository root or from this directory:
+
+```bash
+pnpm mobile:test
+pnpm test
+```
+
+The runner is Jest with the `jest-expo` preset and React Native Testing Library. `pnpm mobile:typecheck` includes the test files. Covered cases, and the tests to add when the outbox, API client, auth refresh, and evidence upload land, are in [TESTING.md](TESTING.md).
+
 A first `expo start` downloads native dependencies, so it needs network. The workspace sets `node-linker=hoisted` in `.npmrc` because Metro and Expo autolinking expect a flat `node_modules`.
 
 ## Tabs
@@ -30,6 +39,8 @@ App.tsx                           SafeAreaProvider → NavigationContainer → A
 index.ts                          registerRootComponent
 src/navigation/tabs.tsx           the five-tab bottom navigator
 src/screens/PlaceholderScreen.tsx shared placeholder
+src/components/ScreenState.tsx    empty, loading, and error
+TESTING.md                        edge-case matrix
 ```
 
 Each tab renders `PlaceholderScreen` with the job that screen will do. Replace them one at a time as the UX specs land; [docs/UX.md](../../docs/UX.md) has the screen inventory and the IDs (H1, P3, Pay3, D-OCR, and the rest).

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Property Control API. Records obligations and payments the user already made.",
+  "description": "DueRecord API. Records obligations and payments the user already made.",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "start": "node --import tsx src/main.ts",

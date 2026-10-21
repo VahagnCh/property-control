@@ -1,17 +1,27 @@
 import { StyleSheet, Text, View } from 'react-native';
+import { ScreenState, type ScreenPhase } from '../components/ScreenState';
+import { PRODUCT_NAME } from '../copy/userFacing';
 
 export function PlaceholderScreen({
   title,
   body,
+  phase = 'ready',
+  onRetry,
 }: {
   title: string;
   body: string;
+  phase?: ScreenPhase;
+  onRetry?: () => void;
 }) {
   return (
     <View style={styles.screen}>
-      <Text style={styles.kicker}>Property Control</Text>
+      <Text style={styles.kicker}>{PRODUCT_NAME}</Text>
       <Text style={styles.title}>{title}</Text>
-      <Text style={styles.body}>{body}</Text>
+      {phase === 'ready' ? (
+        <Text style={styles.body}>{body}</Text>
+      ) : (
+        <ScreenState phase={phase} contextLabel={title} onRetry={onRetry} />
+      )}
     </View>
   );
 }

@@ -1,6 +1,6 @@
 # Contributing
 
-Property Control is a tracking product. Pull requests that charge money, connect a bank, or write OCR fields without an explicit confirm request will be rejected. Those boundaries are [ADR 0001](docs/adr/0001-tracking-not-money-movement.md) and [ADR 0002](docs/adr/0002-ocr-suggest-then-confirm.md).
+DueRecord is a tracking product. Pull requests that charge money, connect a bank, or write OCR fields without an explicit confirm request will be rejected. Those boundaries are [ADR 0001](docs/adr/0001-tracking-not-money-movement.md) and [ADR 0002](docs/adr/0002-ocr-suggest-then-confirm.md).
 
 ## Setup
 
@@ -11,6 +11,7 @@ pnpm install
 pnpm api:test
 pnpm api:build
 pnpm mobile:typecheck
+pnpm mobile:test
 ```
 
 `apps/api` is a native ES module because Nest 12 ships as ESM: relative imports need a `.js` extension, and providers take an explicit `@Inject(Token)` so the source works under both the `tsc` build and Vitest's oxc transform.
@@ -30,7 +31,7 @@ Commit messages should say what the change does in the imperative mood: `Add in-
 | :---- | :---- |
 | `apps/api` | `pnpm api:test`, `pnpm api:typecheck`, and `pnpm api:build` |
 | Prisma schema | `pnpm api:prisma:validate` with `apps/api/.env` present |
-| `apps/mobile` | `pnpm mobile:typecheck` |
+| `apps/mobile` | `pnpm mobile:typecheck` and `pnpm mobile:test` |
 | Docs only | Read the linked Drive doc and keep the non-goals accurate |
 
 The API test suite covers health, the 501 payment placeholder, and the OCR rule that suggestions stay pending until confirm.

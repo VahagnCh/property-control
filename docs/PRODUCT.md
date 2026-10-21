@@ -130,4 +130,4 @@ Not build-blocking. Freemium is the likely shape: a free tier with caps on prope
 
 ## Change control
 
-Material scope changes go through Product and are announced in the Property Control channel. Field and enum flexibility inside this boundary is fine.
+Material scope changes go through Product and are announced in the DueRecord channel. Field and enum flexibility inside this boundary is fine.

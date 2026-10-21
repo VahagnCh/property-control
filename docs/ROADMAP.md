@@ -1,6 +1,6 @@
 # Roadmap
 
-Near-term board. Dates are the committed delivery dates from the Property Control channel as of 2 Oct 2026.
+Near-term board. Dates are the committed delivery dates from the DueRecord channel as of 2 Oct 2026.
 
 ## Now
 

@@ -1,6 +1,6 @@
 # DueRecord: edge-case behavior spec
 
-Locked by Product on 20 Oct 2026. DueRecord is the public product name. Packages, app ids, and UI copy in this repository still say Property Control.
+Locked by Product on 20 Oct 2026. DueRecord is the public product name. Packages, the Expo slug, and code identifiers stay property-control. The app display name and UI copy say DueRecord.
 
 Each rule below is one checkable statement. A test in `apps/api/test/edge-cases.spec.ts` carries the same id and sentence. "Period" means one due instance of an Obligation, keyed by the obligation and a calendar due date. "Settled" means the period outcome is `paid` or `not_applicable`. "Non-voided sum" means the sum of `amount` over payments for that period whose status is `recorded`. "Write access" means an active PropertyMembership with role `owner` or `member`. "Today" means the current calendar date in the property's IANA timezone. A "candidate" due date is a date produced by the schedule in section 6 that is not a skipped pause date. A skipped pause date lies inside a pause interval and is after that interval's `lastScheduledDueDate`.
 

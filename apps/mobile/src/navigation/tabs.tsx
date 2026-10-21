@@ -1,58 +1,48 @@
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import type { ScreenPhase } from '../components/ScreenState';
+import { TAB_BODIES, TAB_LABELS, TabLabel } from '../copy/userFacing';
 import { PlaceholderScreen } from '../screens/PlaceholderScreen';
+import { BRAND_TEAL, TAB_INACTIVE_TINT } from '../theme/brand';
 
 const Tab = createBottomTabNavigator();
 
-export function AppTabs() {
+export const tabScreenOptions = {
+  headerTitleAlign: 'center' as const,
+  tabBarActiveTintColor: BRAND_TEAL,
+  tabBarInactiveTintColor: TAB_INACTIVE_TINT,
+  tabBarLabelStyle: { fontSize: 11 },
+  lazy: false,
+};
+
+export function AppTabs({
+  phase = 'ready',
+  onRetry,
+}: {
+  phase?: ScreenPhase;
+  onRetry?: (tab: TabLabel) => void;
+}) {
   return (
-    <Tab.Navigator
-      screenOptions={{
-        headerTitleAlign: 'center',
-        tabBarActiveTintColor: '#0F6E56',
-        tabBarInactiveTintColor: '#5C6B66',
-        tabBarLabelStyle: { fontSize: 11 },
-      }}
-    >
-      <Tab.Screen name="Inicio">
-        {() => (
-          <PlaceholderScreen
-            title="Inicio"
-            body="Aquí verás lo atrasado y lo que vence pronto en todas tus propiedades."
-          />
-        )}
-      </Tab.Screen>
-      <Tab.Screen name="Propiedades">
-        {() => (
-          <PlaceholderScreen
-            title="Propiedades"
-            body="El portafolio y, dentro de cada propiedad, sus obligaciones."
-          />
-        )}
-      </Tab.Screen>
-      <Tab.Screen name="Pagos">
-        {() => (
-          <PlaceholderScreen
-            title="Pagos"
-            body="Registrar un pago anota lo que ya pagaste. El comprobante es opcional. Esta app no mueve dinero."
-          />
-        )}
-      </Tab.Screen>
-      <Tab.Screen name="Mantenimiento">
-        {() => (
-          <PlaceholderScreen
-            title="Mantenimiento"
-            body="Tareas ligeras de la propiedad. El flujo completo llega después."
-          />
-        )}
-      </Tab.Screen>
-      <Tab.Screen name="Documentos">
-        {() => (
-          <PlaceholderScreen
-            title="Documentos"
-            body="Los archivos de cada propiedad viven aquí. La pantalla para revisar sugerencias de OCR y confirmarlas llega después. Nada se guarda en obligaciones o pagos hasta que la persona confirma."
-          />
-        )}
-      </Tab.Screen>
+    <Tab.Navigator screenOptions={tabScreenOptions}>
+      {TAB_LABELS.map((name) => (
+        <Tab.Screen
+          key={name}
+          name={name}
+          options={{
+            tabBarAccessibilityLabel: name,
+            tabBarButtonTestID: `tab-${name}`,
+            tabBarAllowFontScaling: true,
+          }}
+        >
+          {() => (
+            <PlaceholderScreen
+              title={name}
+              body={TAB_BODIES[name]}
+              phase={phase}
+              onRetry={onRetry ? () => onRetry(name) : undefined}
+            />
+          )}
+        </Tab.Screen>
+      ))}
     </Tab.Navigator>
   );
 }

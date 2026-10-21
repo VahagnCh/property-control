@@ -6,7 +6,7 @@
 
 ## Context
 
-Property Control helps a multi-property owner in Mexico see what is owed, when it is due, what was paid, and the proof. "Pay the predial for me" is a natural next thought, and it is a different product.
+DueRecord helps a multi-property owner in Mexico see what is owed, when it is due, what was paid, and the proof. "Pay the predial for me" is a natural next thought, and it is a different product.
 
 Moving money means a payment processor or a bank integration, custody of funds in some form, PCI scope, money transmission licensing in Mexico, chargeback and dispute handling, reconciliation against a ledger that must balance, and a support obligation when a payment fails at 11pm on a due date. Each of those is larger than the tracking product, and none of them is needed to answer the question the user actually has, which is "what do I owe and did I pay it".
 
@@ -40,6 +40,6 @@ Accepted costs:
 
 ## Enforcement
 
-A pull request that adds a payment processor SDK, a bank aggregation client, a stored payment instrument, or a balance field contradicts this ADR and should be rejected. Reopening this is a Product decision announced in the Property Control channel, not a code review outcome.
+A pull request that adds a payment processor SDK, a bank aggregation client, a stored payment instrument, or a balance field contradicts this ADR and should be rejected. Reopening this is a Product decision announced in the DueRecord channel, not a code review outcome.
 
 In this scaffold: the Prisma schema has no instrument, balance, or clearing column; `overpaidAmount` is the excess recorded on one period and is not a credit the next period can draw; `PaymentsController` records and voids and nothing else; and the Pagos tab in `apps/mobile` says the app does not move money.

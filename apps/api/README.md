@@ -1,6 +1,6 @@
 # @property-control/api
 
-NestJS + TypeScript API for Property Control. It records obligations, payments a person already made, files, reminders, and OCR suggestions. It does not move money.
+NestJS + TypeScript API for DueRecord. It records obligations, payments a person already made, files, reminders, and OCR suggestions. It does not move money.
 
 Route shapes follow [Backend formal v0](../../docs/API.md). Most of them are placeholders.
 
