@@ -1,6 +1,75 @@
-import { ConflictException, UnprocessableEntityException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  GoneException,
+  HttpException,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
+import { ManualClock } from './clock.js';
+import type { OcrExtractor } from './ocr-extractor.js';
+import type { OcrTargetLookup } from './ocr-target-lookup.js';
+import { canonicalizeMxText } from './ocr-locale.js';
 import { OcrService } from './ocr.service.js';
+import type { OcrDecision, OcrSuggestion } from './ocr.types.js';
+import { PrivateObjectStorage } from './object-storage.js';
+
+const PROPERTY = '11111111-1111-4111-8111-111111111111';
+const DOCUMENT = '22222222-2222-4222-8222-222222222222';
+const DOCUMENT_2 = '22222222-2222-4222-8222-333333333333';
+const OBLIGATION = '33333333-3333-4333-8333-333333333333';
+const OTHER_OBLIGATION = '33333333-3333-4333-8333-444444444444';
+const PAYMENT = '44444444-4444-4444-8444-444444444444';
+const FORGED = '55555555-5555-4555-8555-555555555555';
+
+function lookup(documents: string[] = [DOCUMENT]): OcrTargetLookup {
+  const docs = new Set(documents);
+  return {
+    belongsToProperty({ entityType, entityId }) {
+      if (entityType === 'obligation') {
+        return entityId === OBLIGATION;
+      }
+      if (entityType === 'payment') {
+        return entityId === PAYMENT;
+      }
+      if (entityType === 'document_meta') {
+        return docs.has(entityId);
+      }
+      return false;
+    },
+  };
+}
+
+function serviceWith(
+  overrides: {
+    lookup?: OcrTargetLookup;
+    clock?: ManualClock;
+    extractor?: OcrExtractor;
+    storage?: PrivateObjectStorage;
+    jobsMax?: number;
+    jobTtlMs?: number;
+  } = {},
+): OcrService {
+  return new OcrService(
+    {
+      enabled: true,
+      jobsMax: overrides.jobsMax ?? 50,
+      jobTtlMs: overrides.jobTtlMs ?? 15 * 60 * 1000,
+    },
+    overrides.lookup ?? lookup(),
+    overrides.clock,
+    overrides.extractor,
+    overrides.storage,
+  );
+}
+
+function decisions(
+  suggestions: OcrSuggestion[],
+  map: (row: OcrSuggestion) => OcrDecision,
+): OcrDecision[] {
+  return suggestions.map(map);
+}
 
 describe('OcrService', () => {
   function suggestionMap(service: OcrService, propertyId: string, jobId: string) {
@@ -8,36 +77,48 @@ describe('OcrService', () => {
   }
 
   it('stops the stub worker at suggested and leaves every suggestion pending', () => {
-    const service = new OcrService();
-    const { job, created } = service.enqueue('property-1', 'document-1');
+    const storage = new PrivateObjectStorage();
+    const service = serviceWith({ storage });
+    const { job, created } = service.enqueue(PROPERTY, DOCUMENT);
 
     expect(created).toBe(true);
     expect(job.status).toBe('suggested');
     expect(job.vendor).toBe('stub');
-    expect(job.storageKey.startsWith('properties/')).toBe(true);
-    expect(job.storageKey.includes('://')).toBe(false);
+    expect(job).not.toHaveProperty('storageKey');
+    expect(JSON.stringify(job)).not.toMatch(/storageKey|storage_key|properties\//i);
+    expect(storage.calls).toEqual([`properties/${PROPERTY}/documents/${DOCUMENT}/ocr-stub`]);
 
-    const suggestions = suggestionMap(service, 'property-1', job.id);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
     expect(suggestions.length).toBeGreaterThan(0);
     expect(suggestions.every((row) => row.applyStatus === 'pending')).toBe(true);
+    expect(suggestions.every((row) => row.lowConfidence === false)).toBe(true);
+  });
+
+  it('rejects a non-UUID property or document id before building a storage key', () => {
+    const storage = new PrivateObjectStorage();
+    const service = serviceWith({ storage });
+    expect(() => service.enqueue('property-1', DOCUMENT)).toThrow(BadRequestException);
+    expect(() => service.enqueue(PROPERTY, 'document-1')).toThrow(BadRequestException);
+    expect(storage.calls).toEqual([]);
   });
 
   it('reuses an open job for the same document', () => {
-    const service = new OcrService();
-    const first = service.enqueue('property-1', 'document-1');
-    const second = service.enqueue('property-1', 'document-1');
+    const service = serviceWith();
+    const first = service.enqueue(PROPERTY, DOCUMENT);
+    const second = service.enqueue(PROPERTY, DOCUMENT);
 
     expect(second.created).toBe(false);
     expect(second.job.id).toBe(first.job.id);
+    expect(second.job).not.toHaveProperty('storageKey');
   });
 
-  it('rejects a job when every suggestion is rejected and writes nothing', () => {
-    const service = new OcrService();
-    const { job } = service.enqueue('property-1', 'document-1');
-    const suggestions = suggestionMap(service, 'property-1', job.id);
+  it('rejects a job when every suggestion is rejected and writes nothing', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
 
-    const result = service.confirm(
-      'property-1',
+    const result = await service.confirm(
+      PROPERTY,
       job.id,
       suggestions.map((row) => ({ suggestionId: row.id, action: 'reject' as const })),
     );
@@ -45,53 +126,77 @@ describe('OcrService', () => {
     expect(result.job.status).toBe('rejected');
     expect(result.applied).toEqual([]);
     expect(result.persisted).toBe(false);
+    expect(result.job).not.toHaveProperty('storageKey');
     expect(result.suggestions.every((row) => row.applyStatus === 'rejected')).toBe(true);
   });
 
-  it('requires a target before accepting an unbound obligation field', () => {
-    const service = new OcrService();
-    const { job } = service.enqueue('property-1', 'document-1');
-    const suggestions = suggestionMap(service, 'property-1', job.id);
+  it('requires a target before accepting an unbound obligation field', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
 
-    expect(() =>
+    await expect(
       service.confirm(
-        'property-1',
+        PROPERTY,
         job.id,
         suggestions.map((row) => ({ suggestionId: row.id, action: 'accept' as const })),
       ),
-    ).toThrow(UnprocessableEntityException);
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
 
     expect(
-      suggestionMap(service, 'property-1', job.id).every((row) => row.applyStatus === 'pending'),
+      suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
     ).toBe(true);
   });
 
-  it('records accept and edit only from confirm, without a persistence call', () => {
-    const service = new OcrService();
-    const { job } = service.enqueue('property-1', 'document-1');
-    const suggestions = suggestionMap(service, 'property-1', job.id);
+  it('records accept and edit only from confirm, without a persistence call', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
     const amount = suggestions.find((row) => row.fieldPath === 'expectedAmount');
     const due = suggestions.find((row) => row.fieldPath === 'nextDueDate');
     expect(amount).toBeDefined();
     expect(due).toBeDefined();
 
-    const result = service.confirm(
-      'property-1',
+    const nonUuid = decisions(suggestions, (row) => {
+      if (row.id === amount?.id) {
+        return {
+          suggestionId: row.id,
+          action: 'edit' as const,
+          editedValue: { amount: '19000.00', currency: 'MXN' },
+          targetEntityId: 'obligation-9',
+        };
+      }
+      if (row.targetEntityType === 'obligation') {
+        return {
+          suggestionId: row.id,
+          action: 'accept' as const,
+          targetEntityId: 'obligation-9',
+        };
+      }
+      return { suggestionId: row.id, action: 'reject' as const };
+    });
+    await expect(service.confirm(PROPERTY, job.id, nonUuid)).rejects.toBeInstanceOf(BadRequestException);
+    expect(
+      suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
+    ).toBe(true);
+
+    const result = await service.confirm(
+      PROPERTY,
       job.id,
-      suggestions.map((row) => {
+      decisions(suggestions, (row) => {
         if (row.id === amount?.id) {
           return {
             suggestionId: row.id,
             action: 'edit' as const,
-            editedValue: { amount: '19000.00', currency: 'MXN' },
-            targetEntityId: 'obligation-9',
+            editedValue: '19000.00',
+            targetEntityId: OBLIGATION,
           };
         }
         if (row.targetEntityType === 'obligation') {
           return {
             suggestionId: row.id,
             action: 'accept' as const,
-            targetEntityId: 'obligation-9',
+            targetEntityId: OBLIGATION,
           };
         }
         return { suggestionId: row.id, action: 'reject' as const };
@@ -99,6 +204,7 @@ describe('OcrService', () => {
     );
 
     expect(result.persisted).toBe(false);
+    expect(result.job).not.toHaveProperty('storageKey');
     expect(result.job.status).toBe('confirmed');
     expect(result.applied.map((row) => row.fieldPath).sort()).toEqual([
       'expectedAmount',
@@ -107,8 +213,363 @@ describe('OcrService', () => {
     ]);
     const edited = result.suggestions.find((row) => row.id === amount?.id);
     expect(edited?.applyStatus).toBe('accepted');
-    expect(edited?.userEditedValue).toEqual({ amount: '19000.00', currency: 'MXN' });
-    expect(() => service.confirm('property-1', job.id, [])).toThrow(ConflictException);
+    expect(edited?.userEditedValue).toBe('19000.00');
+    await expect(service.confirm(PROPERTY, job.id, [])).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('rejects a non-UUID targetEntityId', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    await expect(
+      service.confirm(
+        PROPERTY,
+        job.id,
+        suggestions.map((row) =>
+          row.targetEntityType === 'document_meta'
+            ? { suggestionId: row.id, action: 'reject' as const }
+            : { suggestionId: row.id, action: 'accept' as const, targetEntityId: 'obligation-9' },
+        ),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects numeric, null, and array targetEntityId values and unknown decision fields', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    const amount = suggestions.find((row) => row.fieldPath === 'expectedAmount');
+    expect(amount).toBeDefined();
+    const rest = suggestions
+      .filter((row) => row.id !== amount?.id)
+      .map((row) => ({ suggestionId: row.id, action: 'reject' as const }));
+
+    await expect(
+      service.confirm(PROPERTY, job.id, [
+        { suggestionId: amount?.id, action: 'accept', targetEntityId: 12 },
+        ...rest,
+      ]),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.confirm(PROPERTY, job.id, [
+        { suggestionId: amount?.id, action: 'accept', targetEntityId: null },
+        ...rest,
+      ]),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.confirm(PROPERTY, job.id, [
+        { suggestionId: amount?.id, action: 'accept', targetEntityId: [OBLIGATION] },
+        ...rest,
+      ]),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.confirm(PROPERTY, job.id, [
+        { suggestionId: amount?.id, action: 'accept', targetEntityId: OBLIGATION, extra: true },
+        ...rest,
+      ]),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(
+      suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
+    ).toBe(true);
+  });
+
+  it('returns 404 for a forged, foreign, or wrong-type target', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    const amount = suggestions.find((row) => row.fieldPath === 'expectedAmount');
+    expect(amount).toBeDefined();
+    const body = (targetEntityId: string) =>
+      suggestions.map((row) =>
+        row.id === amount?.id
+          ? { suggestionId: row.id, action: 'accept' as const, targetEntityId }
+          : { suggestionId: row.id, action: 'reject' as const },
+      );
+
+    await expect(service.confirm(PROPERTY, job.id, body(FORGED))).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.confirm(PROPERTY, job.id, body(OTHER_OBLIGATION))).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    await expect(service.confirm(PROPERTY, job.id, body(PAYMENT))).rejects.toBeInstanceOf(NotFoundException);
+    expect(
+      suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
+    ).toBe(true);
+  });
+
+  it('rejects document_meta retargets in the same property and hides foreign documents', async () => {
+    const service = serviceWith({ lookup: lookup([DOCUMENT, DOCUMENT_2]) });
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    const title = suggestions.find((row) => row.targetEntityType === 'document_meta');
+    expect(title).toBeDefined();
+    const body = (targetEntityId: string) =>
+      suggestions.map((row) =>
+        row.id === title?.id
+          ? { suggestionId: row.id, action: 'accept' as const, targetEntityId }
+          : { suggestionId: row.id, action: 'reject' as const },
+      );
+
+    await expect(service.confirm(PROPERTY, job.id, body(DOCUMENT_2))).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(service.confirm(PROPERTY, job.id, body(FORGED))).rejects.toBeInstanceOf(NotFoundException);
+    expect(
+      suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
+    ).toBe(true);
+  });
+
+  it('rejects edited values that do not match the field', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    const cases: Array<{ fieldPath: string; editedValue: unknown }> = [
+      { fieldPath: 'expectedAmount', editedValue: -1 },
+      { fieldPath: 'expectedAmount', editedValue: '0.00' },
+      { fieldPath: 'expectedAmount', editedValue: '-1.00' },
+      { fieldPath: 'expectedAmount', editedValue: '21474836.48' },
+      { fieldPath: 'expectedAmount', editedValue: '1.234' },
+      { fieldPath: 'expectedAmount', editedValue: 'NaN' },
+      { fieldPath: 'expectedAmount', editedValue: 'Infinity' },
+      { fieldPath: 'expectedAmount', editedValue: { amount: '10.00', currency: 'MXN' } },
+      { fieldPath: 'nextDueDate', editedValue: '2026-02-30' },
+      { fieldPath: 'nextDueDate', editedValue: '1989-12-31' },
+      { fieldPath: 'nextDueDate', editedValue: '2101-01-01' },
+      { fieldPath: 'nextDueDate', editedValue: '05/10/2026' },
+      { fieldPath: 'providerName', editedValue: '' },
+      { fieldPath: 'providerName', editedValue: '   ' },
+      { fieldPath: 'providerName', editedValue: 'bad\u0000name' },
+      { fieldPath: 'providerName', editedValue: 'line\nbreak' },
+      { fieldPath: 'providerName', editedValue: 'x'.repeat(201) },
+    ];
+
+    for (const testCase of cases) {
+      const payload = suggestions.map((row) => {
+        if (row.fieldPath !== testCase.fieldPath) {
+          return { suggestionId: row.id, action: 'reject' as const };
+        }
+        return {
+          suggestionId: row.id,
+          action: 'edit' as const,
+          editedValue: testCase.editedValue,
+          targetEntityId: row.targetEntityType === 'document_meta' ? undefined : OBLIGATION,
+        };
+      });
+      await expect(service.confirm(PROPERTY, job.id, payload)).rejects.toBeInstanceOf(BadRequestException);
+    }
+    expect(
+      suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
+    ).toBe(true);
+  });
+
+  it('stores Spanish text as inert NFC and treats NFD as the same string', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    const nfd = 'Servicio de Agua Potable – Muñoz'.normalize('NFD');
+    const result = await service.confirm(
+      PROPERTY,
+      job.id,
+      suggestions.map((row) => {
+        if (row.fieldPath === 'providerName') {
+          return {
+            suggestionId: row.id,
+            action: 'edit' as const,
+            editedValue: nfd,
+            targetEntityId: OBLIGATION,
+          };
+        }
+        if (row.fieldPath === 'title') {
+          return {
+            suggestionId: row.id,
+            action: 'edit' as const,
+            editedValue: '<script>alert(1)</script>',
+          };
+        }
+        return { suggestionId: row.id, action: 'reject' as const };
+      }),
+    );
+    const provider = result.suggestions.find((row) => row.fieldPath === 'providerName');
+    const title = result.suggestions.find((row) => row.fieldPath === 'title');
+    expect(provider?.userEditedValue).toBe(canonicalizeMxText(nfd));
+    expect(provider?.userEditedValue).toBe('Servicio de Agua Potable – Muñoz');
+    expect(String(provider?.userEditedValue)).toContain('ñ');
+    expect(title?.userEditedValue).toBe('<script>alert(1)</script>');
+    expect(result.persisted).toBe(false);
+  });
+
+  it('rejects an unknown fieldPath and prototype paths', async () => {
+    const extractor: OcrExtractor = {
+      extract: () => ({
+        outcome: 'suggested',
+        suggestions: [
+          {
+            targetEntityType: 'obligation',
+            fieldPath: 'notAField',
+            suggestedValue: 'x',
+            confidence: 0.9,
+          },
+          {
+            targetEntityType: 'obligation',
+            fieldPath: '__proto__',
+            suggestedValue: 'x',
+            confidence: 0.9,
+          },
+        ],
+      }),
+    };
+    const service = serviceWith({ extractor });
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    await expect(
+      service.confirm(
+        PROPERTY,
+        job.id,
+        suggestions.map((row) => ({
+          suggestionId: row.id,
+          action: 'edit' as const,
+          editedValue: 'ok',
+          targetEntityId: OBLIGATION,
+        })),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(suggestions.every((row) => row.applyStatus === 'pending')).toBe(true);
+  });
+
+  it('keeps an empty extraction suggested and does not auto-apply', () => {
+    const service = serviceWith({
+      extractor: { extract: () => ({ outcome: 'suggested', suggestions: [] }) },
+    });
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    expect(job.status).toBe('suggested');
+    expect(suggestionMap(service, PROPERTY, job.id)).toEqual([]);
+    expect(job.status).not.toBe('confirmed');
+  });
+
+  it('flags a low-confidence field and leaves it pending', () => {
+    const service = serviceWith({
+      extractor: {
+        extract: () => ({
+          outcome: 'suggested',
+          suggestions: [
+            {
+              targetEntityType: 'obligation',
+              fieldPath: 'providerName',
+              suggestedValue: 'Predial Coyoacán',
+              confidence: 0.2,
+            },
+            {
+              targetEntityType: 'obligation',
+              fieldPath: 'expectedAmount',
+              suggestedValue: '1.234',
+              confidence: 0.95,
+            },
+          ],
+        }),
+      },
+    });
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    expect(job.status).toBe('suggested');
+    expect(suggestions.every((row) => row.applyStatus === 'pending')).toBe(true);
+    expect(suggestions.every((row) => row.lowConfidence)).toBe(true);
+  });
+
+  it('confirming a failed or not-yet-suggested job returns 409 and keeps no partial suggestions', async () => {
+    const failed = serviceWith({
+      extractor: {
+        extract: () => ({
+          outcome: 'failed',
+          error: 'corrupt',
+          suggestions: [
+            {
+              targetEntityType: 'obligation',
+              fieldPath: 'providerName',
+              suggestedValue: 'partial',
+            },
+          ],
+        }),
+      },
+    });
+    const failedJob = failed.enqueue(PROPERTY, DOCUMENT).job;
+    expect(failedJob.status).toBe('failed');
+    expect(failed.getJob(PROPERTY, failedJob.id).suggestions).toEqual([]);
+    await expect(failed.confirm(PROPERTY, failedJob.id, [])).rejects.toBeInstanceOf(ConflictException);
+
+    const pending = serviceWith({
+      extractor: { extract: () => ({ outcome: 'pending' }) },
+    });
+    const pendingJob = pending.enqueue(PROPERTY, DOCUMENT_2).job;
+    expect(pendingJob.status).toBe('pending');
+    await expect(pending.confirm(PROPERTY, pendingJob.id, { decisions: [] })).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+  });
+
+  it('lets exactly one of two concurrent confirms win', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    const payload = suggestions.map((row) => ({ suggestionId: row.id, action: 'reject' as const }));
+    const [first, second] = await Promise.allSettled([
+      service.confirm(PROPERTY, job.id, payload),
+      service.confirm(PROPERTY, job.id, payload),
+    ]);
+    const fulfilled = [first, second].filter((result) => result.status === 'fulfilled');
+    const rejected = [first, second].filter((result) => result.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
+    expect(suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'rejected')).toBe(
+      true,
+    );
+  });
+
+  it('does not evict a suggested job when the map is full', () => {
+    const service = serviceWith({ jobsMax: 2 });
+    const first = service.enqueue(PROPERTY, DOCUMENT).job;
+    const second = service.enqueue(PROPERTY, DOCUMENT_2).job;
+    expect(() =>
+      service.enqueue(PROPERTY, '33333333-3333-4333-8333-555555555555'),
+    ).toThrow(HttpException);
+    try {
+      service.enqueue(PROPERTY, '33333333-3333-4333-8333-555555555555');
+    } catch (error) {
+      expect(error).toBeInstanceOf(HttpException);
+      expect((error as HttpException).getStatus()).toBe(429);
+    }
+    expect(service.getJob(PROPERTY, first.id).job.status).toBe('suggested');
+    expect(service.getJob(PROPERTY, second.id).job.status).toBe('suggested');
+  });
+
+  it('expires a job for confirm with 410 and drops it only to make room', async () => {
+    const clock = new ManualClock(1_000);
+    const service = serviceWith({ clock, jobTtlMs: 500, jobsMax: 1 });
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const payload = suggestionMap(service, PROPERTY, job.id).map((row) => ({
+      suggestionId: row.id,
+      action: 'reject' as const,
+    }));
+    clock.nowMs = 1_500;
+    await expect(service.confirm(PROPERTY, job.id, payload)).rejects.toBeInstanceOf(GoneException);
+    expect(() => service.getJob(PROPERTY, job.id)).toThrow(GoneException);
+
+    clock.nowMs = 1_600;
+    const created = service.enqueue(PROPERTY, DOCUMENT_2);
+    expect(created.created).toBe(true);
+    expect(() => service.getJob(PROPERTY, job.id)).toThrow(NotFoundException);
+  });
+
+  it('rejects prototype keys on a confirm payload', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const payload = JSON.parse(
+      '{"__proto__":{"admin":true},"decisions":[{"suggestionId":"11111111-1111-4111-8111-111111111111","action":"reject","constructor":{"x":1}}]}',
+    ) as unknown;
+    await expect(service.confirm(PROPERTY, job.id, payload)).rejects.toBeInstanceOf(BadRequestException);
+    expect(Object.prototype).not.toHaveProperty('admin');
+    expect(
+      suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
+    ).toBe(true);
   });
 
   it('exposes no obligation or payment writer on the service', () => {

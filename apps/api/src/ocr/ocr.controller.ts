@@ -1,17 +1,11 @@
-import {
-  Body,
-  Controller,
-  Get,
-  HttpCode,
-  Inject,
-  Param,
-  Post,
-  Res,
-} from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Inject, Param, Post, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
+import { AccessTokenGuard } from '../auth/access-token.guard.js';
+import { PropertyMembershipGuard } from '../auth/property-membership.guard.js';
+import { OcrEnabledGuard } from './ocr-enabled.guard.js';
 import { OcrService } from './ocr.service.js';
-import type { OcrDecision } from './ocr.types.js';
 
+@UseGuards(OcrEnabledGuard, AccessTokenGuard, PropertyMembershipGuard)
 @Controller('properties/:propertyId')
 export class OcrController {
   constructor(@Inject(OcrService) private readonly ocr: OcrService) {}
@@ -28,18 +22,12 @@ export class OcrController {
   }
 
   @Get('documents/:documentId/ocr-jobs')
-  list(
-    @Param('propertyId') propertyId: string,
-    @Param('documentId') documentId: string,
-  ) {
+  list(@Param('propertyId') propertyId: string, @Param('documentId') documentId: string) {
     return { items: this.ocr.listForDocument(propertyId, documentId) };
   }
 
   @Get('ocr-jobs/:ocrJobId')
-  getOne(
-    @Param('propertyId') propertyId: string,
-    @Param('ocrJobId') ocrJobId: string,
-  ) {
+  getOne(@Param('propertyId') propertyId: string, @Param('ocrJobId') ocrJobId: string) {
     return this.ocr.getJob(propertyId, ocrJobId);
   }
 
@@ -48,8 +36,8 @@ export class OcrController {
   confirm(
     @Param('propertyId') propertyId: string,
     @Param('ocrJobId') ocrJobId: string,
-    @Body() body: { decisions?: OcrDecision[] },
+    @Body() body: unknown,
   ) {
-    return this.ocr.confirm(propertyId, ocrJobId, body?.decisions ?? []);
+    return this.ocr.confirm(propertyId, ocrJobId, body);
   }
 }

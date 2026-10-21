@@ -50,7 +50,7 @@ One Nest module per entity group, matching the module table in the formal v0 doc
 
 - Collection reads return `{ items: [], stub: true, module }`.
 - Mutations and single-resource reads return **501** with the module name.
-- The OCR routes work end to end against an in-memory store.
+- OCR routes are in memory and stay **501** unless `OCR_STUB_ENABLED` is set. When it is on, they require an access token and a property membership.
 - `GET /health` is outside the `/v1` prefix and returns `{ status: "ok", service: "property-control-api" }`.
 
 The modules present: `health`, `auth`, `users`, `home`, `properties`, `memberships`, `invites`, `obligations`, `payments`, `evidence`, `maintenance`, `documents`, `reminders`, `audit`, `ocr`. The stub maps **57** routes.

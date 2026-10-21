@@ -9,6 +9,11 @@ import { AppModule } from '../src/app.module.js';
 import { configureApp } from '../src/configure-app.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+const PROPERTY_ID = '11111111-1111-4111-8111-111111111111';
+const PAYMENT_ID = '44444444-4444-4444-8444-444444444444';
+const OBLIGATION_ID = '33333333-3333-4333-8333-333333333333';
+const DOCUMENT_ID = '22222222-2222-4222-8222-222222222222';
+const INVITE_ID = '66666666-6666-4666-8666-666666666666';
 
 function listRoutes(app: INestApplication): string[] {
   const server = app.getHttpAdapter().getInstance() as {
@@ -61,7 +66,7 @@ describe('API scaffold', () => {
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
-    app = moduleRef.createNestApplication();
+    app = moduleRef.createNestApplication({ bodyParser: false });
     configureApp(app);
     await app.init();
   });
@@ -88,25 +93,39 @@ describe('API scaffold', () => {
   });
 
   it('POST /v1/properties/:id/payments is not implemented', async () => {
-    await request(app.getHttpServer())
-      .post('/v1/properties/property-1/payments')
+    const server = app.getHttpServer();
+    await request(server).post('/v1/properties/property-1/payments').send({ amount: '100.00' }).expect(400);
+    await request(server)
+      .post(`/v1/properties/${PROPERTY_ID}/payments`)
       .send({ amount: '100.00' })
       .expect(501);
   });
 
   it('has no payment DELETE route and exposes void, resume, and invites as 501', async () => {
     const server = app.getHttpServer();
-    await request(server).delete('/v1/properties/property-1/payments/payment-1').expect(404);
-    await request(server).post('/v1/properties/property-1/payments/payment-1/void').expect(501);
-    await request(server).post('/v1/properties/property-1/obligations/obligation-1/resume').expect(501);
+    await request(server).delete('/v1/properties/property-1/payments/payment-1').expect(400);
+    await request(server).post('/v1/properties/property-1/payments/payment-1/void').expect(400);
+    await request(server).post('/v1/properties/property-1/obligations/obligation-1/resume').expect(400);
+    await request(server).post('/v1/properties/property-1/obligations/obligation-1/unarchive').expect(400);
+    await request(server).post('/v1/properties/property-1/memberships').expect(400);
+    await request(server).get('/v1/properties/property-1/invites').expect(400);
+    await request(server).post('/v1/properties/property-1/invites').expect(400);
+    await request(server).post('/v1/properties/property-1/invites/invite-1/resend').expect(400);
+    await request(server).delete('/v1/properties/property-1/invites/invite-1').expect(400);
+
+    await request(server).delete(`/v1/properties/${PROPERTY_ID}/payments/${PAYMENT_ID}`).expect(404);
+    await request(server).post(`/v1/properties/${PROPERTY_ID}/payments/${PAYMENT_ID}/void`).expect(501);
     await request(server)
-      .post('/v1/properties/property-1/obligations/obligation-1/unarchive')
+      .post(`/v1/properties/${PROPERTY_ID}/obligations/${OBLIGATION_ID}/resume`)
       .expect(501);
-    await request(server).post('/v1/properties/property-1/memberships').expect(404);
-    await request(server).get('/v1/properties/property-1/invites').expect(200);
-    await request(server).post('/v1/properties/property-1/invites').expect(501);
-    await request(server).post('/v1/properties/property-1/invites/invite-1/resend').expect(501);
-    await request(server).delete('/v1/properties/property-1/invites/invite-1').expect(501);
+    await request(server)
+      .post(`/v1/properties/${PROPERTY_ID}/obligations/${OBLIGATION_ID}/unarchive`)
+      .expect(501);
+    await request(server).post(`/v1/properties/${PROPERTY_ID}/memberships`).expect(404);
+    await request(server).get(`/v1/properties/${PROPERTY_ID}/invites`).expect(200);
+    await request(server).post(`/v1/properties/${PROPERTY_ID}/invites`).expect(501);
+    await request(server).post(`/v1/properties/${PROPERTY_ID}/invites/${INVITE_ID}/resend`).expect(501);
+    await request(server).delete(`/v1/properties/${PROPERTY_ID}/invites/${INVITE_ID}`).expect(501);
     await request(server).post('/v1/invites/accept').expect(501);
   });
 
@@ -122,51 +141,29 @@ describe('API scaffold', () => {
   });
 
   it('GET content-url does not return an object URL', async () => {
-    const response = await request(app.getHttpServer())
-      .get('/v1/properties/property-1/documents/document-1/content-url')
+    const server = app.getHttpServer();
+    await request(server).get('/v1/properties/property-1/documents/document-1/content-url').expect(400);
+    const response = await request(server)
+      .get(`/v1/properties/${PROPERTY_ID}/documents/${DOCUMENT_ID}/content-url`)
       .expect(501);
     expect(JSON.stringify(response.body)).not.toMatch(/https?:\/\//);
+    expect(response.body).not.toHaveProperty('storageKey');
+    expect(JSON.stringify(response.body)).not.toMatch(/storageKey|storage_key/i);
   });
 
-  it('OCR confirm is the only path that accepts suggestions', async () => {
+  it('OCR routes return 501 when the flag is off, including a non-UUID id, and hide storageKey', async () => {
     const server = app.getHttpServer();
     const created = await request(server)
       .post('/v1/properties/property-1/documents/document-1/ocr-jobs')
-      .expect(201);
+      .send({ storageKey: 'properties/secret/documents/deed', admin: true })
+      .expect(501);
+    expect(created.body.module).toBe('ocr');
+    expect(created.body).not.toHaveProperty('storageKey');
+    expect(JSON.stringify(created.body)).not.toMatch(/storageKey|storage_key|properties\//i);
 
-    expect(created.body.status).toBe('suggested');
-    expect(created.body.storageKey).not.toMatch(/https?:\/\//);
-
-    const replay = await request(server)
-      .post('/v1/properties/property-1/documents/document-1/ocr-jobs')
-      .expect(200);
-    expect(replay.body.id).toBe(created.body.id);
-
-    const fetched = await request(server)
-      .get(`/v1/properties/property-1/ocr-jobs/${created.body.id}`)
-      .expect(200);
-    expect(fetched.body.suggestions.every((row: { applyStatus: string }) => row.applyStatus === 'pending')).toBe(
-      true,
-    );
-
-    const confirmed = await request(server)
-      .post(`/v1/properties/property-1/ocr-jobs/${created.body.id}/confirm`)
-      .send({
-        decisions: fetched.body.suggestions.map(
-          (row: { id: string; targetEntityType: string }) =>
-            row.targetEntityType === 'document_meta'
-              ? { suggestionId: row.id, action: 'accept' }
-              : {
-                  suggestionId: row.id,
-                  action: 'accept',
-                  targetEntityId: '00000000-0000-4000-8000-000000000001',
-                },
-        ),
-      })
-      .expect(200);
-
-    expect(confirmed.body.persisted).toBe(false);
-    expect(confirmed.body.job.status).toBe('confirmed');
-    expect(confirmed.body.applied.length).toBe(fetched.body.suggestions.length);
+    const encoded = await request(server)
+      .post('/v1/properties/%2e%2e%2f/documents/%252e%252e%252f/ocr-jobs')
+      .expect(501);
+    expect(JSON.stringify(encoded.body)).not.toMatch(/storageKey|storage_key/i);
   });
 });

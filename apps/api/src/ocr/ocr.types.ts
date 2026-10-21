@@ -22,13 +22,16 @@ export const OCR_TARGET_ENTITY_TYPES = [
 
 export type OcrTargetEntityType = (typeof OCR_TARGET_ENTITY_TYPES)[number];
 
+/**
+ * Public job shape. storageKey is intentionally absent: a private key may be
+ * built server-side, and it is never copied onto a response.
+ */
 export interface OcrJob {
   id: string;
   propertyId: string;
   documentId: string;
   evidenceId?: string;
   status: OcrJobStatus;
-  storageKey: string;
   vendor?: string;
   error?: string;
   createdAt: string;
@@ -43,6 +46,7 @@ export interface OcrSuggestion {
   fieldPath: string;
   suggestedValue: unknown;
   confidence?: number | null;
+  lowConfidence: boolean;
   userEditedValue?: unknown | null;
   applyStatus: OcrApplyStatus;
 }

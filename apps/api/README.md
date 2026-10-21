@@ -32,9 +32,9 @@ curl -s http://localhost:3000/health
 
 | Behavior | Routes |
 | :---- | :---- |
-| Real | `GET /health`, and every OCR route against an in-memory store |
+| Real | `GET /health`. OCR routes, only when `OCR_STUB_ENABLED` is `1`, `true`, `yes`, or `on` |
 | `{ items: [], stub: true, module }` | Collection reads |
-| **501** | Creates, updates, voids, deletes of other resources, single-resource reads, and both `content-url` routes |
+| **501** | Creates, updates, voids, deletes of other resources, single-resource reads, both `content-url` routes, and every OCR route while the flag is off |
 
 The stub maps **57** routes. There is no payment DELETE. `POST .../payments/:paymentId/void` is one of the 501s. Email invites live under `/v1/properties/:propertyId/invites` and `POST /v1/invites/accept`.
 
@@ -45,11 +45,11 @@ The stub maps **57** routes. There is no payment DELETE. `POST .../payments/:pay
 ```text
 src/
 ├── main.ts                 bootstrap
-├── configure-app.ts        /v1 prefix, health excluded, CORS, shutdown hooks
+├── configure-app.ts        /v1 prefix, health excluded, CORS allow-list, shutdown hooks
 ├── app.module.ts           module wiring
 ├── common/
 │   └── scaffold.response.ts  the empty-list and 501 helpers
-├── auth/                   placeholder guard, fails closed, not attached
+├── auth/                   access-token and membership guards, attached to OCR, fail closed
 ├── users/ home/ properties/ memberships/
 ├── obligations/ payments/ evidence/ maintenance/
 ├── documents/ reminders/ audit/
@@ -68,15 +68,21 @@ Vitest transforms TypeScript with oxc, which supports Nest's legacy decorators b
 The one rule: a job reaching `suggested` writes nothing. `POST .../ocr-jobs/:id/confirm` is the only path that accepts or rejects a suggestion.
 
 ```bash
-JOB=$(curl -s -X POST http://localhost:3000/v1/properties/demo/documents/deed/ocr-jobs)
-echo "$JOB"      # status "suggested", vendor "stub", private storageKey
+# OCR_STUB_ENABLED=true
+JOB=$(curl -s -X POST http://localhost:3000/v1/properties/$PROPERTY_ID/documents/$DOCUMENT_ID/ocr-jobs \
+  -H "Authorization: Bearer $ACCESS_TOKEN")
+echo "$JOB"      # status "suggested", vendor "stub", no storageKey
 ```
 
-The stub finishes the extract synchronously with four fixed suggestions, all `applyStatus: "pending"`. There is no model call. `confirm` requires a decision for every suggestion, needs a `targetEntityId` before accepting an unbound field, and returns `persisted: false` because nothing is written anywhere. Full behavior: [docs/OCR.md](../../docs/OCR.md).
+The stub finishes the extract synchronously with four fixed suggestions, all `applyStatus: "pending"`. There is no model call. `confirm` requires a decision for every suggestion, needs a UUID `targetEntityId` before accepting an unbound field, and returns `persisted: false` because nothing is written anywhere. The in-memory map is capped and jobs expire. Full behavior: [docs/OCR.md](../../docs/OCR.md).
+
+Set `OCR_STUB_ENABLED` to `1`, `true`, `yes`, or `on` or every OCR route stays **501**. `CORS_ORIGINS` is the browser allow-list; leave it empty to refuse cross-origin access. Do not set it to `*`.
 
 ## Auth
 
-`src/auth/access-token.guard.ts` throws on every request and is **not** attached to any route, which is why the stub routes are reachable. Trust mints access and refresh tokens; this API only validates them and enforces `PropertyMembership`. It never mints a token. See [docs/TRUST.md](../../docs/TRUST.md).
+`src/auth/access-token.guard.ts` is attached to the OCR routes. A missing, invalid, or expired token is **401**. The default verifier rejects every token, so the routes fail closed until a verifier is supplied. The membership guard then returns **404** (never 403) when the property, the document, or the membership is unknown. Trust mints access and refresh tokens; this API only validates them and enforces `PropertyMembership`. It never mints a token. See [docs/TRUST.md](../../docs/TRUST.md).
+
+Non-OCR routes are still open stubs. A path id that is not a UUID is **400** on those routes; a UUID still reaches the **501** placeholder. There is no payment `DELETE`.
 
 ## Prisma
 

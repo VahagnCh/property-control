@@ -135,7 +135,7 @@ Users do not get a hard-delete control in the MVP. The retention job is the only
 ## OCR privacy
 
 - The raw file and any OCR artifact stay in private storage. Access needs a valid JWT and an active membership, same as any other file.
-- The job stores the private `storage_key`, never a URL. The in-memory stub builds a key like `properties/{propertyId}/documents/{documentId}/ocr-stub` and the tests assert it is not a URL.
+- The job may build a private `storage_key` from validated UUIDs, never a URL. That key is not returned on any OCR response, including errors. Tests walk those bodies for `storageKey`, `storage_key`, and a raw bucket path.
 - The vendor identifier is opaque. The vendor never writes an obligation or a payment row; it returns suggestions and the API persists them as suggestions.
 - Extracted values live in `ocr_suggestions.suggested_value`. Until someone confirms, they are proposals attached to the job, not fields on a property's records.
 - Retention for OCR artifacts follows the policy above.

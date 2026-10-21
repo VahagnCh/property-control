@@ -15,9 +15,9 @@ The Nest stub maps **57** routes, counting each method and path Nest registers, 
 
 | Behavior | Routes |
 | :---- | :---- |
-| Real response | `GET /health`, and every OCR route (in memory, per process) |
+| Real response | `GET /health`. OCR routes answer in memory only when `OCR_STUB_ENABLED` is `1`, `true`, `yes`, or `on` |
 | `{ items: [], stub: true, module }` | Collection reads: properties, memberships, obligations, period outcomes, payments, evidence, maintenance tasks, documents, reminders, audit events, home action items |
-| **501** with the module name | Every create, update, delete, single-resource read, and both `content-url` routes |
+| **501** with the module name | Every create, update, delete, single-resource read, both `content-url` routes, and every OCR route while the flag is off |
 
 `501` is deliberate. A route that cannot enforce a membership check should not pretend to succeed. The two `content-url` routes stay unimplemented so this scaffold cannot hand out an object URL.
 
@@ -210,6 +210,15 @@ A successful document upload may enqueue an OCR job, mortgages and deeds first.
 
 ## OCR
 
+OCR is off unless `OCR_STUB_ENABLED` is exactly `1`, `true`, `yes`, or `on` (any case, surrounding space ignored). A missing, empty, or any other value is off, in every environment. While it is off, every OCR route returns **501** before path or body parsing.
+
+When the flag is on, the gates run in this order:
+
+1. A missing, invalid, or expired access token is **401**. The default verifier rejects every token. This API never mints one.
+2. An unknown property, an unknown document, a missing membership, or another account is **404**, never 403. A viewer may read a job and receives **404** on enqueue and confirm.
+3. Path ids that are not UUIDs, and traversal in the path, are **400**. `targetEntityId` must be a UUID for the suggestion's entity type in the same property, or the response is **404**. `document_meta` cannot be retargeted off the job's own document.
+4. `editedValue` is checked against `fieldPath`. Amounts are canonical peso strings (`19000.00` or `1234`), dates are ISO `YYYY-MM-DD`, and text is NFC. A type mismatch, an unknown `fieldPath`, or a prototype key is **400**.
+
 ```text
 POST /v1/properties/:propertyId/documents/:documentId/ocr-jobs
        → 201 OcrJob          // 200 with the existing job if one is still open
@@ -224,27 +233,38 @@ POST /v1/properties/:propertyId/ocr-jobs/:ocrJobId/confirm
                                                   entityId, fieldPath }> }
 ```
 
+Path ids are UUIDs. A non-UUID id on any matched route is **400**. The in-memory map has a cap (`OCR_JOBS_MAX`, default 50) and a TTL (`OCR_JOB_TTL_MS`, default 15 minutes). Expired jobs can be dropped. An unexpired suggested job is never evicted; a full map returns **429**. Confirming an expired job returns **410**. Confirming a job that is not `suggested`, including a second confirm, returns **409**.
+
 Job statuses: `pending` → `processing` → `suggested` → `confirmed` | `rejected` | `failed`.
 Suggestion apply statuses: `pending` → `accepted` | `rejected`.
 
 **Confirm is the only route that applies a suggestion.** A job reaching `suggested` writes nothing to an obligation, a payment, a property, or a document. If every decision is a reject, the job ends `rejected` and no entity field changes. Accepted and edited values are written together; a partial failure returns 409 or 422 rather than applying some of them.
 
+Responses never include `storageKey`, `storage_key`, or a raw bucket path. The stub may build a private key from the validated UUIDs and then leave it off the payload.
+
 What the stub does differently: it finishes the extract synchronously with four fixed suggestions and `vendor: "stub"`, keeps everything in memory, requires a decision for every suggestion, and returns `persisted: false`. There is no model call. Details in [OCR.md](OCR.md).
+
+CORS is an allow-list from `CORS_ORIGINS` (comma-separated origins). The default is no cross-origin access. `*` is ignored and is never reflected.
 
 ### Example
 
 ```bash
+# OCR_STUB_ENABLED=true and a Bearer token are required. Ids are UUIDs.
 # Create a job. Returns 201 the first time, 200 while that job is still open.
-curl -s -X POST http://localhost:3000/v1/properties/demo/documents/deed/ocr-jobs
+curl -s -X POST http://localhost:3000/v1/properties/$PROPERTY_ID/documents/$DOCUMENT_ID/ocr-jobs \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
 
-# Read the job and its pending suggestions.
-curl -s http://localhost:3000/v1/properties/demo/ocr-jobs/$JOB_ID
+# Read the job and its pending suggestions. The body has no storageKey.
+curl -s http://localhost:3000/v1/properties/$PROPERTY_ID/ocr-jobs/$JOB_ID \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
 
 # Accept one field, edit another, reject the rest.
-curl -s -X POST http://localhost:3000/v1/properties/demo/ocr-jobs/$JOB_ID/confirm \
+# Amounts are canonical peso strings. Dates are ISO dates.
+curl -s -X POST http://localhost:3000/v1/properties/$PROPERTY_ID/ocr-jobs/$JOB_ID/confirm \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"decisions":[
-        {"suggestionId":"'$S1'","action":"edit","editedValue":{"amount":"19000.00","currency":"MXN"},"targetEntityId":"'$OBLIGATION_ID'"},
+        {"suggestionId":"'$S1'","action":"edit","editedValue":"19000.00","targetEntityId":"'$OBLIGATION_ID'"},
         {"suggestionId":"'$S2'","action":"accept","targetEntityId":"'$OBLIGATION_ID'"},
         {"suggestionId":"'$S3'","action":"reject"},
         {"suggestionId":"'$S4'","action":"reject"}
@@ -273,7 +293,12 @@ Reminder channels: `email`, `push`, `in_app`. The unique key is (parent, `schedu
 | Condition | Status |
 | :---- | :---- |
 | Missing, invalid, or expired JWT | 401 |
+| Non-UUID path id, path traversal, unknown `fieldPath`, or an `editedValue` that does not match its field | 400 |
 | Valid JWT, no active membership for `:propertyId`, or the property is unknown or soft-deleted | 404 |
+| OCR enqueue or confirm by a viewer, or an OCR target that is not in the property | 404, never 403 |
+| OCR job past its TTL | 410 |
+| OCR job map is full of unexpired jobs | 429 |
+| OCR flag off, or any other scaffold placeholder | 501 |
 | Active membership, role too low | 403 |
 | Soft-deleted child resource under a property the caller belongs to | 404 |
 | Missing `Idempotency-Key` on a payment create, a payment void, or an evidence create | 400 |
@@ -282,7 +307,6 @@ Reminder channels: `email`, `push`, `in_app`. The unique key is (parent, `schedu
 | Void of an already-voided payment, N/A conflict, archive read-only, or invite of an active member | 409 |
 | Expired, revoked, or used invite token | 410 |
 | Amount, currency, `paidAt`, `dueDay`, or `voidReason` rejected | 422 |
-| Scaffold placeholder | 501 |
 
 ## Idempotency
 
@@ -298,7 +322,7 @@ Required on `POST .../payments`, `POST .../payments/:paymentId/void`, `POST .../
 | Pause, resume, archive, unarchive, or mark N/A | yes | yes | no |
 | Invite, resend, or revoke an invite | yes | no | no |
 | Upload evidence | yes | yes | no |
-| Trigger OCR, confirm suggestions | yes | yes | no |
+| Trigger OCR, confirm suggestions | yes | yes | 404, never 403 |
 | Read OCR jobs and suggestions | yes | yes | yes |
 | Manage memberships | yes | no | no |
 | Soft-delete the property | yes | no | no |
