@@ -24,19 +24,19 @@ Or from this directory with `pnpm start:dev`, `pnpm test`, and so on. `pnpm star
 Listens on port 3000 unless `PORT` is set. No database is needed to boot.
 
 ```bash
-curl -s http://localhost:3000/health
-# {"status":"ok","service":"property-control-api"}
+curl -s http://localhost:3000/v1/health
+# {"status":"unavailable"} without a database, {"status":"ok"} when SELECT 1 succeeds
 ```
 
 ## What works
 
 | Behavior | Routes |
 | :---- | :---- |
-| Real | `GET /health`. OCR routes, only when `OCR_STUB_ENABLED` is `1`, `true`, `yes`, or `on` |
+| Real | `GET /v1/health` (database). OCR routes, only when `OCR_STUB_ENABLED` is `1`, `true`, `yes`, or `on` |
 | `{ items: [], stub: true, module }` | Collection reads |
 | **501** | Creates, updates, voids, deletes of other resources, single-resource reads, both `content-url` routes, and every OCR route while the flag is off |
 
-The stub maps **57** routes. There is no payment DELETE. `POST .../payments/:paymentId/void` is one of the 501s. A viewer write, such as void, is 403 once the route is live. A non-member and an unknown resource are 404. Email invites live under `/v1/properties/:propertyId/invites` and `POST /v1/invites/accept`. Accept checks an unknown token or the wrong account as 404 before revealing token state. Money on the wire is a decimal string such as `"1234.50"` plus `MXN`, stored as integer centavos. Every Property response includes `timezone`, default `America/Mexico_City`. The one-year `paidAt` back-date limit uses that timezone, not UTC.
+The stub maps **57** routes. There is no payment DELETE. `POST .../payments/:paymentId/void` is one of the 501s. A viewer write, such as void, is 403 once the route is live. A non-member and an unknown resource are 404. Email invites live under `/v1/properties/:propertyId/invites` and `POST /v1/invites/accept`. Accept checks an unknown token or the wrong account as 404 before revealing token state. Money on the wire is a decimal string such as `"1234.50"` plus `MXN`. The database stores `amount` and `expected_amount` as BIGINT centavos. Every Property response includes `timezone`, default `America/Mexico_City`. The one-year `paidAt` back-date limit uses that timezone, not UTC.
 
 `501` is on purpose: a route that cannot yet enforce a membership check should not look like it succeeded. The `content-url` routes stay unimplemented so this scaffold cannot hand out an object URL.
 
@@ -45,7 +45,7 @@ The stub maps **57** routes. There is no payment DELETE. `POST .../payments/:pay
 ```text
 src/
 ├── main.ts                 bootstrap
-├── configure-app.ts        /v1 prefix, health excluded, CORS allow-list, shutdown hooks
+├── configure-app.ts        /v1 prefix, v1/health not doubled, trust proxy 1, CORS allow-list, shutdown hooks
 ├── app.module.ts           module wiring
 ├── common/
 │   └── scaffold.response.ts  the empty-list and 501 helpers
@@ -54,7 +54,7 @@ src/
 ├── obligations/ payments/ evidence/ maintenance/
 ├── documents/ reminders/ audit/
 └── ocr/                    in-memory job and suggestion lifecycle + tests
-prisma/schema.prisma        PostgreSQL schema, not migrated
+prisma/schema.prisma        PostgreSQL schema and init migration
 test/app.e2e.spec.ts        HTTP tests over the whole app
 vitest.config.ts            node environment, src and test specs
 ```
@@ -86,22 +86,19 @@ Non-OCR routes are still open stubs. A path id that is not a UUID is **400** on 
 
 ## Prisma
 
-`prisma/schema.prisma` covers the locked entities. It is not migrated and no route reads it.
+`prisma/schema.prisma` covers the locked entities. The init migration includes [`prisma/sql/checks.sql`](prisma/sql/checks.sql): the reminder partial unique indexes, the money and date checks, `gen_random_uuid()` defaults, and append-only triggers. A later migration stores money as BIGINT, scopes idempotency keys by method and route, and rejects `UPDATE`, `DELETE`, and `TRUNCATE` on `consents`, `audit_events`, and `aviso_versions`. No extension is created. Nest HTTP uses Prisma for `GET /v1/health` (`SELECT 1`, 2 second timeout) and not for the other routes. Those stay in memory or **501**.
+
+`DATABASE_URL` is the pooled connection. Tests and the API use the non-owner role `property_control_app`. `DIRECT_URL` is the owner connection used for migrations and for test cleanup of append-only tables and payments. The role is created by [`prisma/bootstrap-app-role.sh`](prisma/bootstrap-app-role.sh) before `prisma migrate deploy`, because `CREATE ROLE` cannot run inside the migration transaction. The script requires `APP_ROLE_PASSWORD` and has no default. Production sets that password outside this repository. Point both URLs at Postgres 15 or newer. Unit tests pass with neither variable set. The integration file runs when both are set. `SERVER_SECRET` must be base64 that decodes to at least 32 bytes. Boot refuses to listen without it, and without a published row for `AVISO_VERSION`. The secret is never logged.
 
 ```bash
 cp .env.example .env
-pnpm --filter @property-control/api prisma:validate
-pnpm --filter @property-control/api prisma:generate   # needs network on first run
-```
-
-`prisma migrate dev` needs a reachable `DATABASE_URL`:
-
-```bash
 docker run --rm -d --name pc-db -p 5432:5432 \
-  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=property_control postgres:16
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=property_control postgres:15
+pnpm --filter @property-control/api exec prisma migrate deploy
+pnpm --filter @property-control/api exec prisma db seed
 ```
 
-Before the first migration, run [`prisma/sql/checks.sql`](prisma/sql/checks.sql). Prisma cannot express those checks, including the two partial unique indexes on reminders. They are also listed at the end of [docs/DATA-MODEL.md](../../docs/DATA-MODEL.md). Edge-case behavior is [docs/EDGE_CASES.md](../../docs/EDGE_CASES.md).
+The seed upserts fixed demo ids: user `demo`, property Casa in `America/Mexico_City`, an owner membership, the CFE obligation, and the current aviso version. It does not insert a consent row. `AVISO_VERSION` and `AVISO_URL` are required for the seed and for `main.ts`. Edge-case behavior is [docs/EDGE_CASES.md](../../docs/EDGE_CASES.md).
 
 ## Tests
 

@@ -45,12 +45,12 @@ export class PropertyMembershipGuard implements CanActivate {
 
     const membership = this.access.resolve({ userId, propertyId });
     if (!membership || membership.userId !== userId || !isRole(membership.role)) {
-      throw ocrNotFound();
+throw ocrNotFound();
     }
 
     const documentId = params.documentId;
     if (typeof documentId === 'string' && !this.access.documentBelongsToProperty(propertyId, documentId)) {
-      throw ocrNotFound();
+throw ocrNotFound();
     }
 
     const method = request.method ?? 'GET';

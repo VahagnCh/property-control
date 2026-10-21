@@ -41,7 +41,8 @@ export const OCR_ERROR = {
   targetStatusUnknown: 'target_status_unknown',
   fieldAlreadySet: 'field_already_set',
   fieldPathUnknown: 'field_path_unknown',
-  invalidStorageKey: 'invalid_storage_key',
+  invalidSourceKey: 'invalid_source_key',
+  savedValueConflict: 'saved_value_conflict',
 } as const;
 
 export interface OcrErrorBody {

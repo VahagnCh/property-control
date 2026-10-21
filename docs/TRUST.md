@@ -26,15 +26,22 @@ interface GuardInputs {
 }
 ```
 
+`decideAccess` in `apps/api/src/auth/access-order.ts` is the order below. It is not attached to controllers. Live OCR still checks the token, then the path and body, then membership, and a viewer write there still says `Insufficient role.`
+
 Resolution order:
 
-1. Verify the access JWT against Trust's JWKS. Failure is **401**.
-2. Resolve the local `User` by `trust_sub = jwt.sub`. Upsert on first sight is fine.
-3. If the route is not property-scoped (`GET /v1/me`, `POST /v1/properties`, `POST /v1/invites/accept`), stop here. Accept then checks the token in the order in [EDGE_CASES.md](EDGE_CASES.md) section 8. An unknown token, or acceptance from the wrong account, is 404 and runs before any used, revoked, superseded, or expired state is revealed.
-4. Otherwise load the membership where `property_id = :propertyId AND user_id = :userId AND status = 'active' AND deleted_at IS NULL`, and the property is not soft-deleted.
-5. No membership, or a missing or soft-deleted property, is **404** — not 403. The API does not reveal which properties exist.
-6. A membership whose role is not in `requiredRoles` is **403**. A viewer who voids a payment receives **403**. A caller with no membership receives **404**, including when the payment id is unknown.
-7. Attach `{ user, membership, propertyId }` to the request for the handler.
+1. A stubbed route is **501** before the token is read. A missing token on a stub is still 501.
+2. Verify the access JWT against Trust's JWKS. A missing, invalid, or expired token is **401**.
+3. A bad request is **400**. A payload over the limit is **413**. Those beat membership and consent.
+4. Resolve the local `User` by `trust_sub = jwt.sub`. Upsert on first sight is fine. Load the membership where `property_id = :propertyId AND user_id = :userId AND status = 'active' AND deleted_at IS NULL`, and the property is not soft-deleted. No membership, or a missing or soft-deleted property, is **404** `not_found`, even when that caller also lacks consent. The API does not reveal which properties exist.
+5. A viewer write is **403** `viewer`. A viewer without consent who writes is `viewer`, not `consent_required`.
+6. A write without the current consent is **403** `consent_required`. Reads skip steps 5 and 6. A non-member read is still 404.
+
+`POST /v1/properties` has no membership check. While it is stubbed the response is 501. When it is live the order is 401, then 400 or 413, then 403 `consent_required`. `POST /v1/invites/accept` stays on the invite checks in [EDGE_CASES.md](EDGE_CASES.md) section 8 after the token: an unknown token, or acceptance from the wrong account, is 404 before any used, revoked, superseded, or expired state is revealed.
+
+TODO: Retirar consentimiento leads into account deletion before public launch. Withdrawal is not implemented.
+
+Refresh rows, user-scoped idempotency keys, and auth-code rate limits are stored in Postgres and have no HTTP routes yet. Refresh reuse is one transaction (`UPDATE ... WHERE used_at IS NULL RETURNING` plus the successor insert). A second use within 30 seconds returns the same rotated pair, unless that successor has already been used. The column stores AES-256-GCM ciphertext of the successor, never the raw token, and the ciphertext is cleared when the window ends. Later reuse revokes the family. An expired or revoked token does not. The sliding lifetime is 30 days and the absolute cap is 90 days, copied and never extended. There is no Redis. Auth-code subjects are a keyed HMAC, never the plain email. The membership role stays `member`.
 
 ## 403 against 404
 
@@ -55,7 +62,7 @@ Roles are `owner`, `member`, and `viewer`; the matrix is in [API.md](API.md#role
 
 ## Private object storage
 
-No public ACL, no permanent public URL, no CDN-public bucket. The database stores a `storage_key` and metadata, never bytes.
+No public ACL, no permanent public URL, no CDN-public bucket. The database stores a private `source_key` and metadata, never bytes. The column is never named `storage_key` and is never returned.
 
 Key conventions:
 
@@ -64,12 +71,12 @@ properties/{propertyId}/evidence/{evidenceId}/{uuid}
 properties/{propertyId}/documents/{documentId}/{uuid}
 ```
 
-Content-type allowlist: `image/jpeg`, `image/png`, `application/pdf`. Maximum size about 15 MB (15,728,640 bytes).
+Content-type allowlist: `image/jpeg`, `image/png`, `application/pdf`. Maximum size is 10 MiB, exactly 10,485,760 bytes (`MAX_EVIDENCE_BYTES`). The same cap applies to documents.
 
 Upload, in either of two accepted shapes:
 
 - **Proxied multipart.** The client posts the file to the API, which validates the JWT, the membership, the write role, the content type, and the size, then streams the object to the private bucket, inserts the row, and appends an audit event.
-- **Pre-signed PUT.** The client asks for an upload URL. The API runs the same checks, builds the `storage_key`, gets a short-lived PUT URL, and returns the upload-url shape below. The client PUTs the bytes and then calls the complete route, where the API verifies the object and marks it ready. This is the only upload-url request and response shape. Document uploads in this version are proxied multipart, not a second shape.
+- **Pre-signed PUT.** The client asks for an upload URL. The API runs the same checks, builds the private source key, gets a short-lived PUT URL, and returns the upload-url shape below. The signed PUT headers include `Cache-Control: no-store`. That signing lands with the evidence upload route; this version does not sign it yet. The client PUTs the bytes and then calls the complete route, where the API verifies the object and marks it ready. This is the only upload-url request and response shape. Document uploads in this version are proxied multipart, not a second shape.
 
 ```json
 {
@@ -127,7 +134,7 @@ The audit trail matters more than usual here because some actions have no undo. 
 | :---- | :---- |
 | Soft delete | `deleted_at = now()`, excluded from default queries, treated as absent by membership checks. Payments have no `deleted_at`. A void is not a soft delete and the retention job does not remove the payment or its evidence. |
 | Hard delete | A daily job removes rows whose `deleted_at` is older than 30 days |
-| Storage | A hard delete of evidence or a document deletes the object at `storage_key` |
+| Storage | A hard delete of evidence or a document deletes the object at `source_key` |
 | Audit | Both deletes append an audit event |
 
 Users do not get a hard-delete control in the MVP. The retention job is the only path.
@@ -135,7 +142,7 @@ Users do not get a hard-delete control in the MVP. The retention job is the only
 ## OCR privacy
 
 - The raw file and any OCR artifact stay in private storage. Access needs a valid JWT and an active membership, same as any other file.
-- The job may build a private `storage_key` from validated UUIDs, never a URL. That key, and any object path, is not returned on any OCR or upload response, including errors. An opaque `fileId` from `crypto.randomUUID` is allowed. It is not derived from the storage key or the path. It resolves only through a property-scoped route behind the membership guard, and a foreign id is 404. Tests walk those bodies for `storageKey`, `storage_key`, and a raw bucket path, and they do not treat an id as a leak.
+- The job may build a private source key from validated UUIDs, never a URL. That key, and any object path, is not returned on any OCR or upload response, including errors. An opaque `fileId` from `crypto.randomUUID` is allowed. It is not derived from the source key or the path. It resolves only through a property-scoped route behind the membership guard, and a foreign id is 404. Tests walk those bodies for `storageKey`, `storage_key`, and a raw bucket path, and they do not treat an id as a leak.
 - The vendor identifier is opaque. The vendor never writes an obligation or a payment row; it returns suggestions and the API persists them as suggestions.
 - Extracted values live in `ocr_suggestions.suggested_value`. Until someone confirms, they are proposals attached to the job, not fields on a property's records.
 - Retention for OCR artifacts follows the policy above.
