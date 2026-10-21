@@ -250,11 +250,21 @@ export function replaceField<T extends Record<string, string>>(
   };
 }
 
+type PendingReplace = {
+  suggestionId: string;
+  field: string;
+  previousValue: string;
+};
+
+/** Undo text for a form this tap just wrote. A repeated tap on that form keeps the first capture. */
+const pendingReplaceUndo = new WeakMap<object, PendingReplace>();
+
 /**
  * The Reemplazar tap. This is the only path that sets action `replace`.
  * It writes the suggested value and returns the previous value for a local undo.
- * The wire does not include `editedValue` or the unsaved typed text.
- * A saved field can be replaced from this tap.
+ * A second tap, while the field already holds that suggestion, keeps the
+ * previousValue from before the first tap. The wire does not include
+ * `editedValue` or the unsaved typed text. A saved field can be replaced from this tap.
  */
 export function tapReemplazar<T extends Record<string, string>>(
   form: T,
@@ -262,7 +272,8 @@ export function tapReemplazar<T extends Record<string, string>>(
   field: string,
   options?: FieldOptions,
 ): ReplaceFieldResult<T> {
-  const previousValue = isApplyableField(form, field) ? (form[field] ?? '') : '';
+  const current = isApplyableField(form, field) ? (form[field] ?? '') : '';
+  const previousValue = previousValueForReplace(form, suggestion, field, current);
   const unchanged: ReplaceFieldResult<T> = { form, previousValue, decision: null, toast: null };
   if (!suggestion.confirmed || suggestion.field !== field || !isApplyableField(form, field) || isEmpty(suggestion.value)) {
     return unchanged;
@@ -271,12 +282,36 @@ export function tapReemplazar<T extends Record<string, string>>(
   if (!decision) {
     return unchanged;
   }
+  const nextForm = { ...form, [field]: suggestion.value };
+  pendingReplaceUndo.set(nextForm, {
+    suggestionId: decision.suggestionId,
+    field,
+    previousValue,
+  });
   return {
-    form: { ...form, [field]: suggestion.value },
+    form: nextForm,
     previousValue,
     decision,
     toast: OCR_REPLACE_TOAST,
   };
+}
+
+function previousValueForReplace(
+  form: object,
+  suggestion: OcrSuggestion,
+  field: string,
+  current: string,
+): string {
+  const pending = pendingReplaceUndo.get(form);
+  if (
+    pending &&
+    pending.suggestionId === suggestion.suggestionId &&
+    pending.field === field &&
+    current === suggestion.value
+  ) {
+    return pending.previousValue;
+  }
+  return current;
 }
 
 /**

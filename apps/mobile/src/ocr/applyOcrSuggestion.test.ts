@@ -553,6 +553,100 @@ describe('AC-OCR-11 replaceField', () => {
     expect(savedBody).not.toContain('clientPriorValue');
   });
 
+  it('keeps the first previous value across repeated Reemplazar taps', () => {
+    const target = '11111111-1111-4111-8111-111111111111';
+    const typed = { amount: '1.00', paidDate: '', note: '' };
+    const suggestion = confirmOcrSuggestion(
+      suggestOcrField('amount', '1250.00', 0.99, { suggestionId: 'sug-9', targetEntityId: target }),
+    );
+
+    const once = tapReemplazar(typed, suggestion, 'amount');
+    const twice = tapReemplazar(once.form, suggestion, 'amount');
+    expect(twice.form.amount).toBe('1250.00');
+    expect(twice.previousValue).toBe('1.00');
+    expect(typed.amount).toBe('1.00');
+
+    const kept = keepTypedField(twice.form, suggestion, 'amount', { previousValue: twice.previousValue });
+    expect(kept.form.amount).toBe('1.00');
+    expect(kept.form.paidDate).toBe('');
+    const keptRequest = confirmOnRegistrar(kept.form, [suggestion], [once.decision!, twice.decision!, kept.decision!]);
+    expect(keptRequest.form.amount).toBe('1.00');
+    expect(keptRequest.request?.decisions).toEqual([
+      { suggestionId: 'sug-9', action: 'reject', targetEntityId: target },
+    ]);
+    const keptBody = serializeConfirmPayload(keptRequest.request?.decisions ?? []);
+    expect(keptBody).not.toContain('1.00');
+    expect(keptBody).not.toContain('1250.00');
+    expect(keptBody).not.toContain('previousValue');
+    expect(keptBody).not.toContain('clientPriorValue');
+
+    const thrice = tapReemplazar(twice.form, suggestion, 'amount');
+    expect(thrice.previousValue).toBe('1.00');
+    expect(thrice.form.amount).toBe('1250.00');
+    const keptAfterThird = keepTypedField(thrice.form, suggestion, 'amount', {
+      previousValue: thrice.previousValue,
+    });
+    expect(keptAfterThird.form.amount).toBe('1.00');
+
+    const afterSecond = tapReemplazar(once.form, suggestion, 'amount');
+    const keptSecond = keepTypedField(afterSecond.form, suggestion, 'amount', {
+      previousValue: afterSecond.previousValue,
+    });
+    expect(keptSecond.form.amount).toBe('1.00');
+    const replacedAfterKeep = tapReemplazar(keptSecond.form, suggestion, 'amount');
+    expect(replacedAfterKeep.form.amount).toBe('1250.00');
+    expect(replacedAfterKeep.previousValue).toBe('1.00');
+    const latest = confirmOnRegistrar(replacedAfterKeep.form, [suggestion], [
+      once.decision!,
+      afterSecond.decision!,
+      keptSecond.decision!,
+      replacedAfterKeep.decision!,
+    ]);
+    expect(latest.form.amount).toBe('1250.00');
+    expect(latest.request?.decisions).toEqual([
+      { suggestionId: 'sug-9', action: 'replace', targetEntityId: target },
+    ]);
+    const replaceBody = serializeConfirmPayload(latest.request?.decisions ?? []);
+    expect(replaceBody).not.toContain('1.00');
+    expect(replaceBody).not.toContain('1250.00');
+    expect(replaceBody).not.toContain('previousValue');
+    expect(replaceBody).not.toContain('clientPriorValue');
+
+    const savedForm = { amount: '9.00', paidDate: '', note: '' };
+    const savedSuggestion = confirmOcrSuggestion(
+      suggestOcrField('amount', '1250.00', 0.99, {
+        suggestionId: 'sug-saved',
+        targetEntityId: target,
+        savedValue: '9.00',
+      }),
+    );
+    const savedOnce = tapReemplazar(savedForm, savedSuggestion, 'amount');
+    const savedTwice = tapReemplazar(savedOnce.form, savedSuggestion, 'amount');
+    const savedThrice = tapReemplazar(savedTwice.form, savedSuggestion, 'amount');
+    expect(savedTwice.previousValue).toBe('9.00');
+    expect(savedThrice.previousValue).toBe('9.00');
+    expect(savedThrice.form.amount).toBe('1250.00');
+    const savedKept = keepTypedField(savedThrice.form, savedSuggestion, 'amount', {
+      previousValue: savedThrice.previousValue,
+    });
+    expect(savedKept.form.amount).toBe('9.00');
+    const savedRequest = confirmOnRegistrar(savedKept.form, [savedSuggestion], [
+      savedOnce.decision!,
+      savedTwice.decision!,
+      savedThrice.decision!,
+      savedKept.decision!,
+    ]);
+    expect(savedRequest.form.amount).toBe('9.00');
+    expect(savedRequest.request?.decisions).toEqual([
+      { suggestionId: 'sug-saved', action: 'reject', targetEntityId: target },
+    ]);
+    const savedBody = serializeConfirmPayload(savedRequest.request?.decisions ?? []);
+    expect(savedBody).not.toContain('9.00');
+    expect(savedBody).not.toContain('1250.00');
+    expect(savedBody).not.toContain('previousValue');
+    expect(savedBody).not.toContain('clientPriorValue');
+  });
+
   it('names the suggestion row that blocks confirm when the target is missing', () => {
     const form = { amount: '' };
     const suggestion = confirmOcrSuggestion(suggestOcrField('amount', '10.00', 0.9, { suggestionId: 'sug-open' }));
