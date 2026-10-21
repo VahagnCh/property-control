@@ -19,8 +19,10 @@ export function ocrReplaceUndoKey(suggestionId: string, field: string): string {
 /**
  * AC-OCR-12. A suggestion row whose field already has a value offers only
  * "Mantener lo que escribí" (default, highlighted) and "Reemplazar".
- * The first Reemplazar undo lives in this row's state, keyed by suggestion id
- * and field path, and is passed into `tapReemplazar`. This does not call the API.
+ * The Reemplazar undo lives in this row's state, keyed by suggestion id and
+ * field path, and is passed into `tapReemplazar`. Mantener clears that key.
+ * A tap recaptures the field when it is not the suggestion, and keeps the
+ * stored undo when the field already shows the suggestion. This does not call the API.
  */
 export function OcrReplaceRow({
   actual,
@@ -66,6 +68,16 @@ export function OcrReplaceRow({
             if (action.decision === 'kept') {
               if (form && suggestion && field) {
                 onKeep?.(keepTypedField(form, suggestion, field, undoOptions));
+                if (suggestionId !== '') {
+                  setUndo((current) => {
+                    if (!Object.prototype.hasOwnProperty.call(current, undoKey)) {
+                      return current;
+                    }
+                    const next = { ...current };
+                    delete next[undoKey];
+                    return next;
+                  });
+                }
                 return;
               }
               onKeep?.();
@@ -73,10 +85,10 @@ export function OcrReplaceRow({
             }
             if (form && suggestion && field) {
               const result = tapReemplazar(form, suggestion, field, undoOptions);
-              if (result.decision && storedUndo === undefined && suggestionId !== '') {
+              if (result.decision && suggestionId !== '') {
                 const captured = result.previousValue;
                 setUndo((current) => {
-                  if (Object.prototype.hasOwnProperty.call(current, undoKey)) {
+                  if (current[undoKey] === captured) {
                     return current;
                   }
                   return { ...current, [undoKey]: captured };

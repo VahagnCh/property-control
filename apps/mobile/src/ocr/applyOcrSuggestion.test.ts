@@ -707,6 +707,48 @@ describe('AC-OCR-11 replaceField', () => {
     expectKept(keptEdit.form, [once.decision!, keptEdit.decision!]);
   });
 
+  it('recaptures previousValue when the field no longer shows the suggestion', () => {
+    const target = '11111111-1111-4111-8111-111111111111';
+    const typed = { amount: '5.00', paidDate: '', note: '' };
+    const suggestion = confirmOcrSuggestion(
+      suggestOcrField('amount', '1250.00', 0.99, { suggestionId: 'sug-9', targetEntityId: target }),
+    );
+
+    const once = tapReemplazar(typed, suggestion, 'amount');
+    expect(once.previousValue).toBe('5.00');
+    expect(once.form.amount).toBe('1250.00');
+
+    const doubleTap = tapReemplazar(once.form, suggestion, 'amount', { previousValue: once.previousValue });
+    expect(doubleTap.previousValue).toBe('5.00');
+    expect(doubleTap.form.amount).toBe('1250.00');
+
+    const edited = { ...once.form, amount: '6.00' };
+    const recaptured = tapReemplazar(edited, suggestion, 'amount', { previousValue: once.previousValue });
+    expect(recaptured.previousValue).toBe('6.00');
+    expect(recaptured.form.amount).toBe('1250.00');
+    expect(edited.amount).toBe('6.00');
+
+    const kept = keepTypedField(recaptured.form, suggestion, 'amount', {
+      previousValue: recaptured.previousValue,
+    });
+    expect(kept.form).toEqual({ amount: '6.00', paidDate: '', note: '' });
+    const request = confirmOnRegistrar(kept.form, [suggestion], [
+      once.decision!,
+      recaptured.decision!,
+      kept.decision!,
+    ]);
+    expect(request.form.amount).toBe('6.00');
+    expect(request.request?.decisions).toEqual([
+      { suggestionId: 'sug-9', action: 'reject', targetEntityId: target },
+    ]);
+    const body = serializeConfirmPayload(request.request?.decisions ?? []);
+    expect(body).not.toContain('5.00');
+    expect(body).not.toContain('6.00');
+    expect(body).not.toContain('1250.00');
+    expect(body).not.toContain('previousValue');
+    expect(body).not.toContain('clientPriorValue');
+  });
+
   it('names the suggestion row that blocks confirm when the target is missing', () => {
     const form = { amount: '' };
     const suggestion = confirmOcrSuggestion(suggestOcrField('amount', '10.00', 0.9, { suggestionId: 'sug-open' }));

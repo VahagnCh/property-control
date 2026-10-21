@@ -254,8 +254,9 @@ export function replaceField<T extends Record<string, string>>(
 /**
  * The Reemplazar tap. This is the only path that sets action `replace`.
  * It writes the suggested value and returns the previous value for a local undo.
- * Pure: a repeated tap keeps the first undo only when the caller passes that
- * `previousValue` and the field already shows this suggestion. No module state.
+ * Pure: when the field already shows this suggestion, a repeated tap keeps the
+ * `previousValue` the caller passes. When the field shows something else, the
+ * tap recaptures that current text. No module state.
  * The wire does not include `editedValue` or the unsaved typed text.
  * A saved field can be replaced from this tap.
  */

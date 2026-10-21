@@ -139,4 +139,87 @@ describe('OcrSuggestionReview', () => {
     expect(body).not.toContain('previousValue');
     expect(body).not.toContain('clientPriorValue');
   });
+
+  it('restores the value typed after Mantener, not the earlier undo', () => {
+    const onFormChange = jest.fn();
+    const onConfirm = jest.fn();
+    const view = render(reviewTree({ amount: '', note: '' }, onFormChange, onConfirm));
+
+    fireEvent.changeText(screen.getByLabelText('Monto'), '5.00');
+    view.rerender(reviewTree({ amount: '5.00', note: '' }, onFormChange, onConfirm));
+    fireEvent.press(screen.getByRole('button', { name: 'Reemplazar' }));
+    view.rerender(reviewTree(onFormChange.mock.calls.at(-1)?.[0] as OcrReviewForm, onFormChange, onConfirm));
+
+    fireEvent.press(screen.getByRole('button', { name: 'Mantener lo que escribí' }));
+    const keptFirst = onFormChange.mock.calls.at(-1)?.[0] as OcrReviewForm;
+    expect(keptFirst.amount).toBe('5.00');
+    view.rerender(reviewTree(keptFirst, onFormChange, onConfirm));
+
+    fireEvent.changeText(screen.getByLabelText('Monto'), '6.00');
+    const typedAgain = onFormChange.mock.calls.at(-1)?.[0] as OcrReviewForm;
+    expect(typedAgain.amount).toBe('6.00');
+    view.rerender(reviewTree({ ...typedAgain }, onFormChange, onConfirm));
+
+    fireEvent.press(screen.getByRole('button', { name: 'Reemplazar' }));
+    view.rerender(reviewTree({ ...(onFormChange.mock.calls.at(-1)?.[0] as OcrReviewForm) }, onFormChange, onConfirm));
+    fireEvent.press(screen.getByRole('button', { name: 'Mantener lo que escribí' }));
+    const keptSecond = onFormChange.mock.calls.at(-1)?.[0] as OcrReviewForm;
+    expect(keptSecond.amount).toBe('6.00');
+    view.rerender(reviewTree(keptSecond, onFormChange, onConfirm));
+
+    expect(shownAmount()).toBe('6.00');
+    expect(onConfirm).toHaveBeenCalledTimes(2);
+    for (const call of onConfirm.mock.calls) {
+      const body = call[0] as string;
+      expect(JSON.parse(body)).toEqual({
+        decisions: [{ suggestionId: 'sug-9', action: 'reject', targetEntityId: target }],
+      });
+      expect(body).not.toContain('5.00');
+      expect(body).not.toContain('6.00');
+      expect(body).not.toContain('1250.00');
+      expect(body).not.toContain('previousValue');
+      expect(body).not.toContain('clientPriorValue');
+    }
+  });
+
+  it('restores the value typed between two Reemplazar taps', () => {
+    const onFormChange = jest.fn();
+    const onConfirm = jest.fn();
+    const view = render(reviewTree({ amount: '', note: '' }, onFormChange, onConfirm));
+
+    fireEvent.changeText(screen.getByLabelText('Monto'), '5.00');
+    view.rerender(reviewTree({ amount: '5.00', note: '' }, onFormChange, onConfirm));
+    fireEvent.press(screen.getByRole('button', { name: 'Reemplazar' }));
+    const replaced = onFormChange.mock.calls.at(-1)?.[0] as OcrReviewForm;
+    expect(replaced.amount).toBe('1250.00');
+    view.rerender(reviewTree({ ...replaced }, onFormChange, onConfirm));
+
+    fireEvent.changeText(screen.getByLabelText('Monto'), '6.00');
+    const typed = onFormChange.mock.calls.at(-1)?.[0] as OcrReviewForm;
+    expect(typed).toEqual({ amount: '6.00', note: '' });
+    view.rerender(reviewTree({ ...typed }, onFormChange, onConfirm));
+
+    fireEvent.press(screen.getByRole('button', { name: 'Reemplazar' }));
+    const replacedAgain = onFormChange.mock.calls.at(-1)?.[0] as OcrReviewForm;
+    expect(replacedAgain.amount).toBe('1250.00');
+    view.rerender(reviewTree({ ...replacedAgain }, onFormChange, onConfirm));
+
+    fireEvent.press(screen.getByRole('button', { name: 'Mantener lo que escribí' }));
+    const kept = onFormChange.mock.calls.at(-1)?.[0] as OcrReviewForm;
+    expect(kept).toEqual({ amount: '6.00', note: '' });
+    view.rerender(reviewTree(kept, onFormChange, onConfirm));
+
+    expect(shownAmount()).toBe('6.00');
+    expect(screen.getByDisplayValue('6.00')).toBeTruthy();
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    const body = onConfirm.mock.calls[0]?.[0] as string;
+    expect(JSON.parse(body)).toEqual({
+      decisions: [{ suggestionId: 'sug-9', action: 'reject', targetEntityId: target }],
+    });
+    expect(body).not.toContain('5.00');
+    expect(body).not.toContain('6.00');
+    expect(body).not.toContain('1250.00');
+    expect(body).not.toContain('previousValue');
+    expect(body).not.toContain('clientPriorValue');
+  });
 });
