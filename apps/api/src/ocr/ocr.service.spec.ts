@@ -1474,6 +1474,112 @@ describe('OcrService', () => {
     ).toBe('BBVA');
   });
 
+  it('rejects C1, bidi, and zero-width notes, a lone CR, title newlines, and notes past 2000 after normalization', async () => {
+    const extractor: OcrExtractor = {
+      extract: () => ({
+        outcome: 'suggested',
+        suggestions: [
+          {
+            targetEntityType: 'obligation',
+            fieldPath: 'notes',
+            suggestedValue: 'nota',
+            confidence: 0.95,
+          },
+          {
+            targetEntityType: 'document_meta',
+            fieldPath: 'title',
+            suggestedValue: 'Titulo',
+            confidence: 0.95,
+          },
+        ],
+      }),
+    };
+    const open = () => {
+      const service = serviceWith({ extractor });
+      const { job } = service.enqueue(PROPERTY, DOCUMENT);
+      const suggestions = suggestionMap(service, PROPERTY, job.id);
+      const notes = suggestions.find((row) => row.fieldPath === 'notes');
+      const title = suggestions.find((row) => row.fieldPath === 'title');
+      expect(notes).toBeDefined();
+      expect(title).toBeDefined();
+      return { service, job, notes, title };
+    };
+    const edit = (
+      session: ReturnType<typeof open>,
+      notesValue: string,
+      titleValue: string,
+    ) =>
+      session.service.confirm(
+        PROPERTY,
+        session.job.id,
+        [
+          {
+            suggestionId: session.notes?.id ?? '',
+            action: 'edit' as const,
+            editedValue: notesValue,
+            targetEntityId: OBLIGATION,
+          },
+          {
+            suggestionId: session.title?.id ?? '',
+            action: 'edit' as const,
+            editedValue: titleValue,
+          },
+        ],
+      );
+
+    const rejected = open();
+    const notesSamples = [
+      'c1\u0085',
+      'c1\u009F',
+      'bidi\u202E',
+      'bidi\u2066',
+      'zw\u200B',
+      'zw\uFEFF',
+      'zw\u2060',
+      '\r',
+      'a'.repeat(2001),
+      `${'a\r\n'.repeat(1000)}b`,
+    ];
+    for (const sample of notesSamples) {
+      await expect(edit(rejected, sample, 'Titulo')).rejects.toMatchObject({
+        response: {
+          error: 'edited_value_invalid',
+          field: 'notes',
+          suggestionId: rejected.notes?.id,
+          statusCode: 422,
+        },
+      });
+      await expect(edit(rejected, sample, 'Titulo')).rejects.toBeInstanceOf(UnprocessableEntityException);
+    }
+    for (const sample of ['a\nb', 'a\rb']) {
+      await expect(edit(rejected, 'nota', sample)).rejects.toMatchObject({
+        response: {
+          error: 'edited_value_invalid',
+          field: 'title',
+          suggestionId: rejected.title?.id,
+          statusCode: 422,
+        },
+      });
+    }
+    expect(
+      suggestionMap(rejected.service, PROPERTY, rejected.job.id).every((row) => row.applyStatus === 'pending'),
+    ).toBe(true);
+
+    const exact = open();
+    const exactResult = await edit(exact, 'a'.repeat(2000), 'Titulo');
+    expect(exactResult.suggestions.find((row) => row.fieldPath === 'notes')?.userEditedValue).toBe('a'.repeat(2000));
+
+    const normalized = open();
+    const normalizedResult = await edit(normalized, 'a\r\n'.repeat(1000), 'Titulo');
+    const stored = normalizedResult.suggestions.find((row) => row.fieldPath === 'notes')?.userEditedValue;
+    expect(stored).toBe('a\n'.repeat(1000));
+    expect(stored).toHaveLength(2000);
+
+    const loneCr = open();
+    const loneCrResult = await edit(loneCr, 'a\rb', 'Titulo');
+    expect(loneCrResult.suggestions.find((row) => row.fieldPath === 'notes')?.userEditedValue).toBe('a\nb');
+  });
+
   it('records only the suggestion when replace happens before the record is saved', async () => {
     const service = serviceWith();
     const { job } = service.enqueue(PROPERTY, DOCUMENT);

@@ -287,7 +287,7 @@ Every OCR 4xx body includes a stable `error` string next to `message`. Clients m
 | `target_status_unknown` | 422 | Payment target has no status check, or a status other than `recorded` or `voided` | |
 | `field_already_set` | 409 | Accept or edit of a saved non-null value | `suggestionId`, `field` |
 
-Single-line text rejects every C0 character, including tab, CR, and LF. The `notes` field is the multi-line exception: it allows LF, and CR or CRLF is stored as LF. A tab in notes is still rejected. An invalid property `timezone` is **422** on write. A stored invalid timezone falls back to `America/Mexico_City` and does not raise 500.
+Single-line text rejects every C0 character, including tab, CR, and LF. A title that contains LF or CR is 422. The `notes` field is the multi-line exception: it allows LF, and CR or CRLF is stored as LF before the 2000-character limit is applied. A notes value that is only CR becomes a line feed and is 422 because it is whitespace. C1, bidi overrides, zero-width characters, and a tab in notes are still rejected. An invalid property `timezone` is **422** on write. A stored invalid timezone falls back to `America/Mexico_City` and does not raise 500.
 
 When the field is already saved, the replace audit is `{ suggestionId, field, action: "replace", actorUserId, previousValue, newValue }`. `previousValue` is the persisted server value. Before the record is saved, the audit is `{ suggestionId, field, decision: "replaced", suggestedValue }` and has no previous value. On payment create, that field's audit source is `ocr_replace` with the `suggestionId`.
 
