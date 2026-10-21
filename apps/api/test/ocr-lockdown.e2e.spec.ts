@@ -1,12 +1,14 @@
 import http from 'node:http';
-import type { INestApplication } from '@nestjs/common';
+import { NotFoundException, type INestApplication } from '@nestjs/common';
 import { Test, type TestingModuleBuilder } from '@nestjs/testing';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ACCESS_TOKEN_VERIFIER, type AccessTokenVerifier } from '../src/auth/access-token.verifier.js';
 import { PROPERTY_ACCESS, type PropertyAccess } from '../src/auth/property-access.js';
 import { AppModule } from '../src/app.module.js';
+import { notFoundBody } from '../src/common/not-found.js';
 import { configureApp } from '../src/configure-app.js';
+import { PropertyFileIds } from '../src/evidence/file-ids.js';
 import { CLOCK, ManualClock } from '../src/ocr/clock.js';
 import { OCR_EXTRACTOR, type OcrExtractor } from '../src/ocr/ocr-extractor.js';
 import { OCR_RUNTIME } from '../src/ocr/ocr-runtime.js';
@@ -269,6 +271,33 @@ describe('OCR lockdown HTTP', () => {
       expect(oversized.status).toBe(413);
       expect(oversized.body.error).toBe('payload_too_large');
       expectNoLeak(oversized.body);
+    });
+
+    it('uses one not_found body for every 404 source', async () => {
+      const server = app.getHttpServer();
+      const unknownProperty = '88888888-8888-4888-8888-888888888888';
+      const shared = notFoundBody();
+      const responses = await Promise.all([
+        request(server).get('/v1/invites/accept'),
+        request(server).post(`/v1/properties/${unknownProperty}/documents/${DOCUMENT_A}/ocr-jobs`).set(authA),
+        request(server).post(`/v1/properties/${PROPERTY_A}/documents/${FORGED}/ocr-jobs`).set(authA),
+        request(server).post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A}/ocr-jobs`).set(authB),
+        request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${FORGED}`).set(authA),
+      ]);
+      for (const response of responses) {
+        expect(response.status).toBe(404);
+        expect(response.body).toEqual(shared);
+        expect(JSON.stringify(response.body)).not.toMatch(/Cannot|invites/);
+      }
+      const files = new PropertyFileIds();
+      const issued = files.issue(PROPERTY_A);
+      try {
+        files.resolve(PROPERTY_B, issued.fileId);
+        throw new Error('expected a fileId 404');
+      } catch (error) {
+        expect(error).toBeInstanceOf(NotFoundException);
+        expect((error as NotFoundException).getResponse()).toEqual(shared);
+      }
     });
 
     it('returns 404 for an unknown property, document, or other account, and never 403', async () => {

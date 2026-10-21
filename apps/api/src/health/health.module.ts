@@ -1,4 +1,11 @@
 import { Controller, Get, Module } from '@nestjs/common';
+import {
+  HEALTH_LIMITER,
+  HEALTH_PROBE,
+  LiveHealthController,
+  PrismaHealthProbe,
+} from './live-health.controller.js';
+import { HealthRateLimiter } from './live-health.js';
 
 @Controller('health')
 export class HealthController {
@@ -9,6 +16,10 @@ export class HealthController {
 }
 
 @Module({
-  controllers: [HealthController],
+  controllers: [HealthController, LiveHealthController],
+  providers: [
+    { provide: HEALTH_PROBE, useClass: PrismaHealthProbe },
+    { provide: HEALTH_LIMITER, useClass: HealthRateLimiter },
+  ],
 })
 export class HealthModule {}

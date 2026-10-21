@@ -1,4 +1,4 @@
-import { UnprocessableEntityException } from '@nestjs/common';
+import { InternalServerErrorException, UnprocessableEntityException } from '@nestjs/common';
 import { isIanaTimeZone } from '../common/property-calendar.js';
 
 /** IANA name used when a client omits timezone. Never a fixed offset. */
@@ -76,12 +76,28 @@ export function toPropertyResponse(record: PropertyRecord): PropertyResponse {
   };
 }
 
-export function propertyTimezone(timezone: string | null | undefined): string {
+/**
+ * Blank stays the default. A stored non-IANA name is a 500. It does not
+ * fall back to America/Mexico_City.
+ */
+export function readStoredTimezone(timezone: string | null | undefined): string {
   const trimmed = timezone?.trim() ?? '';
-  if (trimmed.length === 0 || !isIanaTimeZone(trimmed)) {
+  if (trimmed.length === 0) {
     return DEFAULT_PROPERTY_TIMEZONE;
   }
+  if (!isIanaTimeZone(trimmed)) {
+    console.error('Stored property timezone is not an IANA name.');
+    throw new InternalServerErrorException({
+      statusCode: 500,
+      error: 'invalid_stored_timezone',
+      message: 'Stored property timezone is not an IANA name.',
+    });
+  }
   return trimmed;
+}
+
+export function propertyTimezone(timezone: string | null | undefined): string {
+  return readStoredTimezone(timezone);
 }
 
 /** Property create and patch. An invalid IANA name is 422. Omitted is allowed. */

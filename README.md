@@ -100,8 +100,8 @@ pnpm workspaces. Node 20.19 or newer (22 is what `.nvmrc` pins).
 
 | Path | What it is today |
 | :---- | :---- |
-| `apps/api` | Boots without a database. `GET /health` is live. Collection reads return an empty stub list. Mutations return **501**. OCR is in memory and also returns **501** unless `OCR_STUB_ENABLED` is set. The stub maps **57** routes. |
-| `apps/api/prisma/schema.prisma` | PostgreSQL schema for the locked entities. Not migrated and not used by the Nest process yet. |
+| `apps/api` | Boots without a database. `GET /health` is a process check. `GET /v1/health` checks the database. Collection reads return an empty stub list. Mutations return **501**. OCR is in memory and also returns **501** unless `OCR_STUB_ENABLED` is set. The stub maps **58** routes. |
+| `apps/api/prisma/schema.prisma` | PostgreSQL schema and the init migration. Nest reads it for `GET /v1/health` only. |
 | `apps/mobile` | Bottom tabs and placeholder copy. No data fetching. |
 | `docs/` | The written contract for this repo, summarized from the Drive sources. |
 
@@ -153,21 +153,22 @@ pnpm api:dev
 
 Nest 12 ships as ESM, so `apps/api` is a native ES module: `"type": "module"`, `nodenext` resolution, and `.js` extensions on relative imports. `tsc` builds it and `tsx` runs it in watch mode.
 
-The process listens on port **3000** unless `PORT` is set. Copy `apps/api/.env.example` to `apps/api/.env` when you need `PORT` or `DATABASE_URL`. The server starts if that file is missing.
+The process listens on port **3000** unless `PORT` is set. Copy `apps/api/.env.example` to `apps/api/.env` when you need `PORT`, `DATABASE_URL`, or `DIRECT_URL`. `main.ts` also requires `AVISO_VERSION` and an http(s) `AVISO_URL` before it listens. The test app does not load that check.
 
 ```bash
 curl -s http://localhost:3000/health
 curl -s -X POST http://localhost:3000/v1/properties/demo/documents/deed/ocr-jobs
 ```
 
-Postgres is optional until a route reads Prisma. To check the schema:
+`DATABASE_URL` is the pooled connection the API and `GET /v1/health` use. `DIRECT_URL` is the direct connection Prisma uses for migrations. On one local Postgres they are the same URL. Unit tests do not need a database. `pnpm api:test` runs the Postgres integration file only when both variables are set. Apply the migration first:
 
 ```bash
 cp apps/api/.env.example apps/api/.env
-pnpm api:prisma:validate
+pnpm --filter @property-control/api exec prisma migrate deploy
+pnpm --filter @property-control/api exec prisma db seed
 ```
 
-`prisma migrate dev` needs a reachable `DATABASE_URL`. Do not point it at a shared database until the migration includes the SQL checks described in [docs/DATA-MODEL.md](docs/DATA-MODEL.md). More API notes: [apps/api/README.md](apps/api/README.md) and [docs/API.md](docs/API.md).
+The seed upserts the demo user, Casa, the CFE obligation, and the current aviso version. It does not insert a consent row. More API notes: [apps/api/README.md](apps/api/README.md) and [docs/API.md](docs/API.md).
 
 ## Run the mobile shell
 

@@ -39,7 +39,7 @@ The API test suite covers health, the 501 payment placeholder, and the OCR rule 
 ## Review expectations
 
 - Property-scoped behavior must assume a `PropertyMembership` check, even while the guard is still unwired. The placeholder guard fails closed on purpose.
-- File routes return a private `storageKey`, never a permanent public URL.
+- File routes return an opaque `fileId`, never a private source key and never a permanent public URL.
 - `Idempotency-Key` will be required on payment and evidence creates. Do not drop it when those routes become real.
 - Default reminder offsets stay `[7, 1]` when the client omits them.
 - `not_applicable`, pause (`isActive = false` plus a pause interval), and archive (`deletedAt`, which also pauses) stay three different operations.

@@ -1,6 +1,6 @@
 # Data model
 
-Entities and key fields, from [Backend formal v0](https://docs.google.com/document/d/1iekHZp5lOq4qTzLhglFproL2JSeI7Uw1q4I817d40dE/edit) and [EDGE_CASES.md](EDGE_CASES.md). The public product name in that spec is DueRecord. The Prisma version is [`apps/api/prisma/schema.prisma`](../apps/api/prisma/schema.prisma). It is not migrated and no route reads it yet. Where this page and the edge-case spec disagree, the spec wins.
+Entities and key fields, from [Backend formal v0](https://docs.google.com/document/d/1iekHZp5lOq4qTzLhglFproL2JSeI7Uw1q4I817d40dE/edit) and [EDGE_CASES.md](EDGE_CASES.md). The public product name in that spec is DueRecord. The Prisma version is [`apps/api/prisma/schema.prisma`](../apps/api/prisma/schema.prisma), migrated by [`apps/api/prisma/migrations`](../apps/api/prisma/migrations). Nest HTTP still uses Prisma only for `GET /v1/health` (`SELECT 1`). Seed and the Postgres integration tests use the same schema. Where this page and the edge-case spec disagree, the spec wins.
 
 PostgreSQL. UUID primary keys, `timestamptz` timestamps, `snake_case` table and column names, soft delete through `deleted_at` where the table has it.
 
@@ -145,10 +145,10 @@ An optional private file supporting a payment or a maintenance task.
 
 | Field | Notes |
 | :---- | :---- |
-| `storage_key` | Unique. Private object key on the row. The client receives a `fileId` only and never this key. |
+| `source_key` | Unique. Private object key on the row. The client receives a `fileId` only and never this key. |
 | `type` | `photo` · `screenshot` · `pdf` |
 | `content_type` | Allowlist: `image/jpeg`, `image/png`, `application/pdf` |
-| `byte_size` | Greater than zero, at most 15,728,640 (15 MiB) |
+| `size_bytes` | Greater than zero, at most 10,485,760 (10 MiB, `MAX_EVIDENCE_BYTES`) |
 | `payment_id`, `maintenance_task_id` | Exactly one is set |
 | `idempotency_key` | Unique with `property_id` |
 
@@ -167,7 +167,7 @@ A private file on a property: a deed, a mortgage, a policy, a receipt.
 | Field | Notes |
 | :---- | :---- |
 | `title` | Required |
-| `storage_key` | Unique and private |
+| `source_key` | Unique and private |
 | `content_type`, `byte_size` | Same allowlist and cap as evidence |
 
 Key convention: `properties/{propertyId}/documents/{documentId}/{uuid}`.
@@ -220,7 +220,7 @@ One extract run for a document.
 | `document_id` | Required |
 | `evidence_id` | Nullable, reserved for evidence OCR later |
 | `status` | `pending` · `processing` · `suggested` · `confirmed` · `rejected` · `failed` |
-| `storage_key` | The private object the extract read |
+| `source_key` | The private object the extract read. It is not returned on the job. |
 | `vendor` | Opaque pipeline identifier |
 | `error` | Set with status `failed` |
 
@@ -251,7 +251,7 @@ A generic store for mutating POSTs that do not have their own unique key. Paymen
 | :---- | :---- |
 | Soft delete | Set `deleted_at`, exclude from default queries. A membership check treats a soft-deleted property or membership as absent, so the caller sees 404. Payments are voided instead, and a void does not set a delete timestamp. |
 | Retention | A daily job hard-deletes rows with `deleted_at` older than 30 days. |
-| Storage | A hard delete of evidence or a document removes the object at `storage_key`. |
+| Storage | A hard delete of evidence or a document removes the object at `source_key`. |
 | Audit | Both deletes append an audit event. Audit rows are never deleted. |
 
 ## Constraints the migration must add
@@ -265,7 +265,8 @@ The statements are in [`apps/api/prisma/sql/checks.sql`](../apps/api/prisma/sql/
 - `obligations.due_day` is null or 1–31, and it is paired with `schedule_anchor`
 - `overpaid_amount >= 0`
 - `not_applicable` implies `payment_id` is null
-- Evidence and reminder parent XOR, content-type allowlist, and the 15 MiB cap
+- Evidence and reminder parent XOR, content-type allowlist, and the 10 MiB cap (`MAX_EVIDENCE_BYTES`, 10,485,760 bytes)
 - The two reminder partial unique indexes named above
 - Invite `role` is `member` or `viewer`
-- `CREATE EXTENSION IF NOT EXISTS "pgcrypto"`
+- UUID primary keys default to `gen_random_uuid()`, which is core Postgres 13+. No extension is created.
+- `consents` rejects `UPDATE` and `DELETE` with `consents are append-only`

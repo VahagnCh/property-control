@@ -1,4 +1,4 @@
-import { UnprocessableEntityException } from '@nestjs/common';
+import { InternalServerErrorException, UnprocessableEntityException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PROPERTY_TIMEZONE,
@@ -50,9 +50,17 @@ describe('PropertyResponse timezone', () => {
     expect(propertyTimezone(body.timezone)).toBe('America/Mexico_City');
   });
 
-  it('falls back on a stored invalid timezone and rejects it on write', () => {
-    expect(propertyTimezone('Not/AZone')).toBe(DEFAULT_PROPERTY_TIMEZONE);
-    expect(propertyTimezone('Mars/Phobos')).toBe('America/Mexico_City');
+  it('fails a stored invalid timezone and rejects it on write', () => {
+    expect(() => propertyTimezone('Not/AZone')).toThrow(InternalServerErrorException);
+    expect(() => propertyTimezone('Mars/Phobos')).toThrow(InternalServerErrorException);
+    try {
+      propertyTimezone('Not/AZone');
+    } catch (error) {
+      expect((error as InternalServerErrorException).getResponse()).toMatchObject({
+        statusCode: 500,
+        error: 'invalid_stored_timezone',
+      });
+    }
     expect(() => assertWritablePropertyTimezone('Not/AZone')).toThrow(UnprocessableEntityException);
     try {
       assertWritablePropertyTimezone(' ');

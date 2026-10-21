@@ -33,7 +33,7 @@ flowchart TB
   modules -.-> db
   modules -.-> objects
   ocr -.-> db
-  ocr -.->|"private storage_key"| worker
+  ocr -.->|"private source key"| worker
   worker -.->|"suggested fields only"| ocr
 
   classDef unbuilt stroke-dasharray: 4 3
@@ -53,7 +53,7 @@ One Nest module per entity group, matching the module table in the formal v0 doc
 - OCR routes are in memory and stay **501** unless `OCR_STUB_ENABLED` is set. When it is on, they require an access token and a property membership.
 - `GET /health` is outside the `/v1` prefix and returns `{ status: "ok", service: "property-control-api" }`.
 
-The modules present: `health`, `auth`, `users`, `home`, `properties`, `memberships`, `invites`, `obligations`, `payments`, `evidence`, `maintenance`, `documents`, `reminders`, `audit`, `ocr`. The stub maps **57** routes.
+The modules present: `health`, `auth`, `users`, `home`, `properties`, `memberships`, `invites`, `obligations`, `payments`, `evidence`, `maintenance`, `documents`, `reminders`, `audit`, `ocr`. The stub maps **58** routes.
 
 Not present yet, and named in formal v0: `StorageModule` (signed PUT and GET, delete on hard delete) and `RetentionModule` (the 30-day soft-to-hard delete job).
 
@@ -110,9 +110,9 @@ sequenceDiagram
 
   U->>M: Upload a mortgage PDF
   M->>A: POST /v1/properties/:id/documents
-  A->>S: Store bytes under a private storage_key
+  A->>S: Store bytes under a private source key
   A->>A: Persist the document row
-  A->>W: Create OcrJob (pending → processing), pass the storage_key
+  A->>W: Create OcrJob (pending → processing), pass the source key
   W-->>A: Suggested fields
   A->>A: Insert suggestions (applyStatus pending), job → suggested
   A-->>M: Job + suggestions

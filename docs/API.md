@@ -2,11 +2,22 @@
 
 The v0 HTTP contract, and what the scaffold in `apps/api` actually does today. Source: [Backend formal v0](https://docs.google.com/document/d/1iekHZp5lOq4qTzLhglFproL2JSeI7Uw1q4I817d40dE/edit). Payment, period, reminder, timezone, and invite behavior for the public product, [DueRecord](EDGE_CASES.md), overrides this contract where they disagree.
 
-The Nest stub maps **57** routes, counting each method and path Nest registers, including `GET /health`.
+The Nest stub maps **58** routes, counting each method and path Nest registers, including `GET /health` and `GET /v1/health`.
 
 ## Base
 
-- Routes are under `/v1`. `GET /health` is the one route outside the prefix.
+- Routes are under `/v1`. `GET /health` is the one route outside the prefix. `GET /v1/health` is inside it.
+
+```text
+GET    /health
+GET    /v1/health
+```
+
+`GET /health` is a process check. It does not touch the database and returns `{ status: "ok", service: "property-control-api" }`.
+
+`GET /v1/health` is unauthenticated. It runs `SELECT 1` through Prisma with a 2 second timeout, which is enough to wake a paused database. **200** is exactly `{ "status": "ok" }`. **503** is exactly `{ "status": "unavailable" }` when the query fails or times out. Neither body includes a version, environment, commit, uptime, or database detail. Every response sends `Cache-Control: no-store`. The route is limited to 30 requests per minute per client IP by an in-process token bucket. That bucket is not shared across instances and is not used for any other route. The 31st request in the window is **429** with a `Retry-After` header. The app trusts one proxy hop so the client IP is the one in front of the platform proxy.
+
+## What the stub does
 - Property-scoped routes will require `Authorization: Bearer <access_jwt>`. Trust mints that token; this API only validates it.
 - JSON in, JSON out. Money amounts (`amount`, `expectedAmount`, `overpaidAmount`) are decimal strings such as `"1234.50"` plus a currency code. They are never JSON numbers and never floats. The database stores the same amounts as integer centavos. `"18450.00"` with currency `MXN` is stored as `1845000` centavos.
 - Currency is `MXN` only. Any other currency returns 422.
@@ -15,7 +26,7 @@ The Nest stub maps **57** routes, counting each method and path Nest registers, 
 
 | Behavior | Routes |
 | :---- | :---- |
-| Real response | `GET /health`. OCR routes answer in memory only when `OCR_STUB_ENABLED` is `1`, `true`, `yes`, or `on` |
+| Real response | `GET /health`. `GET /v1/health` runs `SELECT 1`. OCR routes answer in memory only when `OCR_STUB_ENABLED` is `1`, `true`, `yes`, or `on` |
 | `{ items: [], stub: true, module }` | Collection reads: properties, memberships, invites, obligations, period outcomes, payments, evidence, maintenance tasks, documents, reminders, audit events, home action items |
 | **501** with the module name | Every create, update, delete, single-resource read, both `content-url` routes, and every OCR route while the flag is off |
 
@@ -155,7 +166,7 @@ GET    /v1/properties/:propertyId/evidence/:evidenceId/content-url
 DELETE /v1/properties/:propertyId/evidence/:evidenceId            → 204
 ```
 
-Evidence is optional on a payment. Content types allowed: `image/jpeg`, `image/png`, `application/pdf`. Maximum size about 15 MB (15,728,640 bytes). Exactly one parent: a payment or a maintenance task.
+Evidence is optional on a payment. Content types allowed: `image/jpeg`, `image/png`, `application/pdf`. Maximum size is 10 MiB, exactly 10,485,760 bytes (`MAX_EVIDENCE_BYTES`). A larger upload is **413** `evidence.too_large`. Exactly one parent: a payment or a maintenance task. The evidence upload route is still **501**. When it is signed, the PUT response includes `Cache-Control: no-store` among the signed headers. That signing is not implemented yet.
 
 This is the only upload-url request and response shape. `docs/TRUST.md` uses this same JSON.
 
@@ -275,7 +286,8 @@ Every OCR 4xx body includes a stable `error` string next to `message`. Clients m
 | `edited_value_required` | 400 | `edit` without `editedValue` | |
 | `target_invalid` | 400 | `targetEntityId` is not a UUID | |
 | `field_path_unknown` | 400 | Suggestion `fieldPath` is not a known field | |
-| `invalid_storage_key` | 400 | Storage key inputs are not UUIDs. Not returned on a normal confirm | |
+| `invalid_source_key` | 400 | Source key inputs are not UUIDs. The code does not contain `storage_key`. Not returned on a normal confirm | |
+| `saved_value_conflict` | 409 | The saved field changed between planning a confirm and writing it. The transaction rolls back | |
 | `missing_decision` | 422 | A suggestion has no decision | `suggestionId` |
 | `client_prior_value_rejected` | 422 | `clientPriorValue` on the body or on a decision | |
 | `bulk_accept_rejected` | 422 | `acceptAll`, `accept_all`, or action `accept-all` / `accept_all` | |
@@ -287,7 +299,7 @@ Every OCR 4xx body includes a stable `error` string next to `message`. Clients m
 | `target_status_unknown` | 422 | Payment target has no status check, or a status other than `recorded` or `voided` | |
 | `field_already_set` | 409 | Accept or edit of a saved non-null value | `suggestionId`, `field` |
 
-Single-line text rejects every C0 character, including tab, CR, and LF. The `notes` field is the multi-line exception: it allows LF, and CR or CRLF is stored as LF. A tab in notes is still rejected. An invalid property `timezone` is **422** on write. A stored invalid timezone falls back to `America/Mexico_City` and does not raise 500.
+Single-line text rejects every C0 character, including tab, CR, and LF. The `notes` field is the multi-line exception: it allows LF, and CR or CRLF is stored as LF. A tab in notes is still rejected. An invalid property `timezone` is **422** on write. A stored invalid timezone is **500** `invalid_stored_timezone` and does not fall back to `America/Mexico_City`. A blank timezone still defaults to `America/Mexico_City`.
 
 When the field is already saved, the replace audit is `{ suggestionId, field, action: "replace", actorUserId, previousValue, newValue }`. `previousValue` is the persisted server value. Before the record is saved, the audit is `{ suggestionId, field, decision: "replaced", suggestedValue }` and has no previous value. On payment create, that field's audit source is `ocr_replace` with the `suggestionId`.
 
@@ -344,6 +356,49 @@ GET    /v1/properties/:propertyId/audit-events?entityType=&entityId=&from=&to=&c
 
 Reminder channels: `email`, `push`, `in_app`. The unique key is (parent, `scheduledFor`, `channel`), implemented as two partial unique indexes: `(obligation_id, scheduled_for, channel) WHERE obligation_id IS NOT NULL` and `(maintenance_task_id, scheduled_for, channel) WHERE maintenance_task_id IS NOT NULL`. Delivery idempotency is `(reminder_id, scheduled_for, user_id, channel)` on `notification_deliveries`. Default offsets are `[7, 1]`, plus an in-app-only offset 0 ("Vence hoy") with no push. Generation is an upsert. The fire time is 09:00 in the property timezone, stored as a UTC instant. See [EDGE_CASES.md](EDGE_CASES.md) sections 4 and 5. Audit events are append-only and owner-readable; clients never post them.
 
+## Access order
+
+`decideAccess` in `apps/api/src/auth/access-order.ts` is the gate for a later auth-guard pull request. Controllers do not call it yet. Live OCR still uses the order in the OCR section above, and a viewer write there still says `Insufficient role.`
+
+For a normal route the order is:
+
+1. **501** when the route is still a stub, before the token is read. A stubbed route with a missing token is still 501.
+2. **401** for a missing, invalid, or expired token.
+3. **400** for a bad request, or **413** when the payload is too large.
+4. **404** `not_found` for a non-member or an unknown resource, including when that caller also lacks consent.
+5. **403** `viewer` for a viewer write. A viewer without consent who writes is `viewer`, not `consent_required`.
+6. **403** `consent_required` on writes only, after the checks above.
+
+Reads skip steps 5 and 6. A non-member read is still 404.
+
+`POST /v1/properties` has no membership check. While it is stubbed the response is 501. When it is live the order is 401, then 400 or 413, then 403 `consent_required`. An oversized body with a valid token is 413. A valid body with consent is allowed.
+
+## Consent
+
+No consent route is registered. `GET /v1/me` stays **501**. The contract, for the auth-guard pull request, is:
+
+`GET /v1/me` includes `consent: { required, avisoVersion, avisoUrl }`. `required` is true when the caller has no row for the configured `AVISO_VERSION`.
+
+`POST /v1/me/consent` takes `{ avisoVersion }`. `appVersion` comes from the client header or body. The first accept is **201** and stores `acceptedAt` on the server. A repeat of the same version is **200** and returns the existing row. It does not change `acceptedAt` or `appVersion`. Any other version, including an older published one, is **422** `aviso_version_mismatch`. Publishing a new aviso version makes `required` true again. The old row stays. Reads do not require consent. A write before the current consent is **403** `consent_required`, and only after 501, 401, 400, 413, 404, and the viewer check.
+
+`AVISO_VERSION` must be a non-empty string and `AVISO_URL` must be an http(s) URL. `main.ts` checks both before it listens. The test app does not.
+
+TODO: Retirar consentimiento leads into account deletion before public launch. Withdrawal is not implemented.
+
+## Sessions, idempotency keys, and auth-code limits
+
+These tables have repositories and no HTTP routes.
+
+A refresh token slides for 30 days and carries an absolute cap of 90 days, copied on rotation and never extended. Reuse detection is one Postgres transaction: `UPDATE ... WHERE used_at IS NULL RETURNING`, then insert the successor. A second refresh within 10 seconds receives that same rotated pair. The raw successor is stored on the consumed row so another instance can return it. That is the only reason the raw token is kept, and only for the grace window. After 10 seconds, reuse revokes the whole family. An expired or already revoked token does not revoke the family.
+
+`idempotency_keys` is separate from the property-scoped `idempotency_records` described below. The same user and key with a different request hash is **422** `idempotency_key_mismatch`. The same hash with a stored response is a replay. The same hash without a response is in progress. An expired row may be replaced.
+
+Auth-code attempts and rate-limit buckets are rows in Postgres. There is no Redis. A limited call will answer **429** with `Retry-After`. Nothing calls that repository from a route yet.
+
+The membership role stays `member`. It is not renamed to `editor`, because the invite check and [EDGE_CASES.md](EDGE_CASES.md) EC-8.3 lock `member`.
+
+Test hosting is Render, Neon, Cloudflare R2, and Resend. The code stays provider-neutral: `DATABASE_URL` is the pooled connection, `DIRECT_URL` is the direct connection used by migrations, and object storage is an S3-compatible endpoint, region, bucket, and key pair. No provider SDK is imported. Upload signing is not implemented. When it is, the signed PUT headers include `Cache-Control: no-store`.
+
 ## Status codes
 
 | Condition | Status |
@@ -362,7 +417,8 @@ Reminder channels: `email`, `push`, `in_app`. The unique key is (parent, `schedu
 | Active membership, role too low | 403 |
 | Soft-deleted child resource under a property the caller belongs to | 404 |
 | Missing `Idempotency-Key` on a payment create, a payment void, or an evidence create | 400 |
-| Same idempotency key, different body | 409 |
+| Same idempotency key, different body on a payment or evidence route | 409 |
+| Same user-scoped idempotency key, different request hash | 422 `idempotency_key_mismatch` |
 | Replay with the same key and body | 200 |
 | Void of an already-voided payment, N/A conflict, archive read-only, or invite of an active member | 409 |
 | Used, revoked, superseded-by-resend, or expired invite token | 410 |

@@ -23,7 +23,7 @@ export class PrivateObjectStorage implements ObjectStorage {
       isTraversal(propertyId) ||
       isTraversal(documentId)
     ) {
-      throw ocrBadRequest(OCR_ERROR.invalidStorageKey, 'Invalid storage key input.');
+throw ocrBadRequest(OCR_ERROR.invalidSourceKey, 'Invalid source key input.');
     }
     const key = `properties/${propertyId}/documents/${documentId}/ocr-stub`;
     this.calls.push(key);

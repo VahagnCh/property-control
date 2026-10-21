@@ -35,6 +35,11 @@ export function calendarDateInTimeZone(instant: Date, timeZone: string): string 
   return formatIsoDate(parts.year, parts.month, parts.day);
 }
 
+/** True once the property-local calendar date is after `dueIso`. The due date itself is not overdue. */
+export function isPastDueDate(dueIso: string, now: Date, timeZone: string): boolean {
+  return calendarDateInTimeZone(now, timeZone) > dueIso;
+}
+
 export function formatIsoDate(year: number, month: number, day: number): string {
   const y = String(year).padStart(4, '0');
   const m = String(month).padStart(2, '0');

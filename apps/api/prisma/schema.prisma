@@ -23,8 +23,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum MembershipRole {
@@ -113,6 +114,13 @@ enum EvidenceType {
   @@map("evidence_type")
 }
 
+enum EvidenceStatus {
+  pending
+  attached
+
+  @@map("evidence_status")
+}
+
 enum MaintenanceStatus {
   open
   in_progress
@@ -185,6 +193,9 @@ model User {
   idempotencyRecords     IdempotencyRecord[]
   sentInvites            MembershipInvite[]       @relation("InviteSentBy")
   notificationDeliveries NotificationDelivery[]
+  consents               Consent[]
+  refreshTokens          RefreshToken[]
+  idempotencyKeys        IdempotencyKey[]
 
   @@map("users")
 }
@@ -371,13 +382,15 @@ model Evidence {
   propertyId         String       @map("property_id") @db.Uuid
   paymentId          String?      @map("payment_id") @db.Uuid
   maintenanceTaskId  String?      @map("maintenance_task_id") @db.Uuid
-  uploadedByUserId   String       @map("uploaded_by_user_id") @db.Uuid
-  storageKey         String       @unique @map("storage_key")
+  uploadedByUserId   String         @map("uploaded_by_user_id") @db.Uuid
+  /// Private object key. Never named storage_key and never returned to a client.
+  sourceKey          String         @unique @map("source_key")
+  status             EvidenceStatus @default(pending)
   type               EvidenceType
-  uploadedAt         DateTime     @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  uploadedAt         DateTime       @default(now()) @map("uploaded_at") @db.Timestamptz(6)
   notes              String?
-  contentType        String       @map("content_type")
-  byteSize           BigInt       @map("byte_size")
+  contentType        String         @map("content_type")
+  sizeBytes          BigInt         @map("size_bytes")
   originalFilename   String?      @map("original_filename")
   idempotencyKey     String       @map("idempotency_key")
   deletedAt          DateTime?    @map("deleted_at") @db.Timestamptz(6)
@@ -421,7 +434,8 @@ model Document {
   propertyId       String    @map("property_id") @db.Uuid
   uploadedByUserId String    @map("uploaded_by_user_id") @db.Uuid
   title            String
-  storageKey       String    @unique @map("storage_key")
+  /// Private object key. Never named storage_key and never returned to a client.
+  sourceKey        String    @unique @map("source_key")
   contentType      String    @map("content_type")
   byteSize         BigInt    @map("byte_size")
   originalFilename String?   @map("original_filename")
@@ -535,7 +549,8 @@ model OcrJob {
   documentId String       @map("document_id") @db.Uuid
   evidenceId String?      @map("evidence_id") @db.Uuid
   status     OcrJobStatus @default(pending)
-  storageKey String       @map("storage_key")
+  /// Private object key. Never named storage_key and never returned on a job.
+  sourceKey  String       @map("source_key")
   vendor     String?
   error      String?
   createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -587,4 +602,108 @@ model IdempotencyRecord {
 
   @@unique([propertyId, routeKey, idempotencyKey])
   @@map("idempotency_records")
+}
+
+/// One published aviso de privacidad. A new version is a new row.
+/// `textSha256` is the hex SHA-256 of the exact text the person accepted.
+model AvisoVersion {
+  version     String   @id
+  url         String
+  textSha256  String   @map("text_sha256")
+  publishedAt DateTime @default(now()) @map("published_at") @db.Timestamptz(6)
+
+  consents Consent[]
+
+  @@map("aviso_versions")
+}
+
+/// Append-only. The app has no update or delete path. Triggers reject both.
+/// `acceptedAt` is the server clock at first insert and is never rewritten.
+model Consent {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  avisoVersion String   @map("aviso_version")
+  acceptedAt   DateTime @map("accepted_at") @db.Timestamptz(6)
+  appVersion   String?  @map("app_version")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user  User         @relation(fields: [userId], references: [id])
+  aviso AvisoVersion @relation(fields: [avisoVersion], references: [version])
+
+  @@unique([userId, avisoVersion])
+  @@index([userId])
+  @@map("consents")
+}
+
+/// One row per issued refresh token. A family starts at login and is copied
+/// onto every rotation. `absoluteExpiresAt` is the 90-day cap and is never
+/// extended. Reuse is an `UPDATE ... WHERE used_at IS NULL RETURNING` inside
+/// one transaction, so two instances cannot both rotate the same token.
+/// `graceRefreshToken` is the successor raw token, kept only so the duplicate
+/// request can return that same pair within 10 seconds.
+model RefreshToken {
+  id                String    @id @default(uuid()) @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  familyId          String    @map("family_id") @db.Uuid
+  tokenHash         String    @unique @map("token_hash")
+  issuedAt          DateTime  @map("issued_at") @db.Timestamptz(6)
+  expiresAt         DateTime  @map("expires_at") @db.Timestamptz(6)
+  absoluteExpiresAt DateTime  @map("absolute_expires_at") @db.Timestamptz(6)
+  usedAt            DateTime? @map("used_at") @db.Timestamptz(6)
+  revokedAt         DateTime? @map("revoked_at") @db.Timestamptz(6)
+  replacedById      String?   @unique @map("replaced_by_id") @db.Uuid
+  graceRefreshToken String?   @map("grace_refresh_token")
+
+  user       User          @relation(fields: [userId], references: [id])
+  replacedBy RefreshToken? @relation("RefreshRotation", fields: [replacedById], references: [id])
+  replaces   RefreshToken? @relation("RefreshRotation")
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+/// User-scoped idempotency for multi-instance writes. Distinct from
+/// `idempotency_records`, which stays property-scoped. The same key with a
+/// different request hash is 422. Expired rows may be replaced.
+model IdempotencyKey {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  key            String
+  route          String
+  requestHash    String   @map("request_hash")
+  responseStatus Int?     @map("response_status")
+  responseBody   Json?    @map("response_body")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt      DateTime @map("expires_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, key])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}
+
+/// One row per auth-code submission. The 429 decision lives on `rate_limits`.
+model AuthCodeAttempt {
+  id          String   @id @default(uuid()) @db.Uuid
+  subject     String
+  purpose     String
+  success     Boolean  @default(false)
+  attemptedAt DateTime @default(now()) @map("attempted_at") @db.Timestamptz(6)
+
+  @@index([subject, purpose, attemptedAt])
+  @@map("auth_code_attempts")
+}
+
+/// Postgres counter for 429 Retry-After. There is no Redis.
+model RateLimit {
+  id              String    @id @default(uuid()) @db.Uuid
+  bucketKey       String    @unique @map("bucket_key")
+  windowStartedAt DateTime  @map("window_started_at") @db.Timestamptz(6)
+  attemptCount    Int       @default(0) @map("attempt_count")
+  blockedUntil    DateTime? @map("blocked_until") @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("rate_limits")
 }
