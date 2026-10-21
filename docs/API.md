@@ -287,7 +287,8 @@ Every OCR 4xx body includes a stable `error` string next to `message`. Clients m
 | `saved_value_conflict` | 409 | The saved field changed between planning a confirm and writing it. The transaction rolls back | |
 | `missing_decision` | 422 | A suggestion has no decision | `suggestionId` |
 | `client_prior_value_rejected` | 422 | `clientPriorValue` on the body or on a decision | |
-| `bulk_accept_rejected` | 422 | `acceptAll`, `accept_all`, or action `accept-all` / `accept_all` | |
+| `bulk_accept_rejected` | 422 | `acceptAll`, `accept_all`, `replaceAll`, `replace_all`, or action `accept-all` / `accept_all` / `replace-all` / `replace_all` | |
+| `target_not_writable` | 422 | Payment field or property title. Those writes do not exist yet | `suggestionId`, `field` |
 | `edited_value_invalid` | 422 | `editedValue` or an accepted suggestion does not match `fieldPath` | `suggestionId`, `field` |
 | `next_due_date_out_of_range` | 422 | `nextDueDate` is outside the property-timezone window or the 1990–2100 bound | `suggestionId`, `field` |
 | `bound_target_immutable` | 422 | Same-property retarget of an already-bound suggestion | |

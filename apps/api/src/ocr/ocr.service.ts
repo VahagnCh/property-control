@@ -328,23 +328,28 @@ throw ocrNotFound();
           field: suggestion.fieldPath,
         });
       }
+      if (!persistableTarget(suggestion.targetEntityType)) {
+        throw ocrUnprocessable(
+          OCR_ERROR.targetNotWritable,
+          'This confirm target cannot be saved yet.',
+          { suggestionId: suggestion.id, field: suggestion.fieldPath },
+        );
+      }
       if (decision.action === 'replace') {
-        const audit: OcrReplaceAudit = saved.present
-          ? {
-              suggestionId: suggestion.id,
-              field: suggestion.fieldPath,
-              action: 'replace',
-              actorUserId,
-              previousValue: saved.value,
-              newValue: value,
-            }
-          : {
-              suggestionId: suggestion.id,
-              field: suggestion.fieldPath,
-              decision: 'replaced',
-              suggestedValue: value,
-            };
-        steps.push({ suggestion, decision, entityId, value, write: saved.present, audit, saved });
+        // EC-9.2: only saved state is audited. An unsaved Reemplazar writes no row.
+        if (!saved.present) {
+          steps.push({ suggestion, decision, entityId, value, write: false, saved });
+          continue;
+        }
+        const audit: OcrReplaceAudit = {
+          suggestionId: suggestion.id,
+          field: suggestion.fieldPath,
+          action: 'replace',
+          actorUserId,
+          previousValue: saved.value,
+          newValue: value,
+        };
+        steps.push({ suggestion, decision, entityId, value, write: true, audit, saved });
         continue;
       }
       const appliedAudit: OcrAppliedFieldAudit = {
@@ -642,6 +647,11 @@ function sameSaved(left: SavedSnapshot, right: SavedSnapshot): boolean {
     return JSON.stringify(left.value) === JSON.stringify(right.value);
   }
   return false;
+}
+
+/** Obligation fields and a document title can be saved. Payment fields and a property title cannot, yet. */
+function persistableTarget(entityType: OcrSuggestion['targetEntityType']): boolean {
+  return entityType === 'obligation' || entityType === 'document_meta';
 }
 
 function confirmAuditAction(audit: OcrConfirmAudit): string {
