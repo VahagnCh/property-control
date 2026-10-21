@@ -17,6 +17,8 @@ import {
 import { FailClosedOcrTargetLookup, OCR_TARGET_LOOKUP, type OcrTargetLookup } from './ocr-target-lookup.js';
 import type {
   OcrAppliedField,
+  OcrAppliedFieldAudit,
+  OcrConfirmAudit,
   OcrConfirmResult,
   OcrDecision,
   OcrJob,
@@ -156,7 +158,7 @@ export class OcrService {
     const persisted = this.commitWrites(record, plan);
 
     const applied: OcrAppliedField[] = [];
-    const audits: OcrReplaceAudit[] = [];
+    const audits: OcrConfirmAudit[] = [];
     for (const step of plan) {
       if (step.decision.action === 'reject' || !step.entityId) {
         step.suggestion.applyStatus = 'rejected';
@@ -265,7 +267,7 @@ export class OcrService {
     value?: unknown;
     kept?: boolean;
     write?: boolean;
-    audit?: OcrReplaceAudit;
+    audit?: OcrConfirmAudit;
   }> {
     const known = new Map(record.suggestions.map((suggestion) => [suggestion.id, suggestion]));
     const seen = new Set<string>();
@@ -295,7 +297,7 @@ export class OcrService {
       value?: unknown;
       kept?: boolean;
       write?: boolean;
-      audit?: OcrReplaceAudit;
+      audit?: OcrConfirmAudit;
     }> = [];
     const context = {
       now: new Date(this.clock.now()),
@@ -342,7 +344,18 @@ export class OcrService {
         steps.push({ suggestion, decision, entityId, value, write: saved.present, audit });
         continue;
       }
-      steps.push({ suggestion, decision, entityId, value, write: true });
+      const appliedAudit: OcrAppliedFieldAudit = {
+        source: 'ocr',
+        ocrJobId: suggestion.ocrJobId,
+        suggestionId: suggestion.id,
+        field: suggestion.fieldPath,
+        actorUserId,
+        confidence: suggestion.confidence ?? null,
+        edited: decision.action === 'edit',
+        previousValue: null,
+        newValue: value,
+      };
+      steps.push({ suggestion, decision, entityId, value, write: true, audit: appliedAudit });
     }
     return steps;
   }

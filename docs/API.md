@@ -291,6 +291,8 @@ Single-line text rejects every C0 character, including tab, CR, and LF. The `not
 
 When the field is already saved, the replace audit is `{ suggestionId, field, action: "replace", actorUserId, previousValue, newValue }`. `previousValue` is the persisted server value. Before the record is saved, the audit is `{ suggestionId, field, decision: "replaced", suggestedValue }` and has no previous value. On payment create, that field's audit source is `ocr_replace` with the `suggestionId`.
 
+A successful accept or edit writes one applied-field audit, `{ source: "ocr", ocrJobId, suggestionId, field, actorUserId, confidence, edited, previousValue, newValue }`. `edited` is false for accept and true for edit. `previousValue` is null, because a saved non-null field cannot be accepted or edited. `newValue` is the value written. Reject writes no applied-field audit. The audit stores neither raw document text nor `clientPriorValue`. Accept or edit of a saved value stays **409** and writes no audit.
+
 Job statuses: `pending` → `processing` → `suggested` → `confirmed` | `rejected` | `failed`.
 Suggestion apply statuses: `pending` → `accepted` | `rejected`.
 
