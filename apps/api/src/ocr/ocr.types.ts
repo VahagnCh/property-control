@@ -33,6 +33,8 @@ export interface OcrJob {
   evidenceId?: string;
   status: OcrJobStatus;
   vendor?: string;
+  /** Configured cutoffs. Defaults are alta 0.90 and media 0.80. */
+  confidenceBands: { alta: number; media: number };
   /** Stable extract failure code. Raw extractor text is never copied here. */
   errorCode?: string;
   createdAt: string;
@@ -47,6 +49,8 @@ export interface OcrSuggestion {
   fieldPath: string;
   suggestedValue: unknown;
   confidence?: number | null;
+  /** alta ≥ 0.90, media ≥ 0.80, revisa below 0.80 or missing. */
+  band: 'alta' | 'media' | 'revisa';
   lowConfidence: boolean;
   userEditedValue?: unknown | null;
   applyStatus: OcrApplyStatus;
@@ -54,7 +58,7 @@ export interface OcrSuggestion {
 
 export interface OcrDecision {
   suggestionId: string;
-  action: 'accept' | 'reject' | 'edit';
+  action: 'accept' | 'reject' | 'edit' | 'replace';
   editedValue?: unknown;
   targetEntityId?: string;
 }
@@ -66,13 +70,51 @@ export interface OcrAppliedField {
   fieldPath: string;
 }
 
+/** Saved field. The previous value is the persisted server value. */
+export interface SavedReplaceAudit {
+  suggestionId: string;
+  field: string;
+  action: 'replace';
+  actorUserId: string | null;
+  previousValue: unknown;
+  newValue: unknown;
+}
+
+/**
+ * Nothing is saved yet. No client-typed prior value is stored.
+ * decision is 'replaced'. suggestedValue is the validated suggestion.
+ */
+export interface UnsavedReplaceAudit {
+  suggestionId: string;
+  field: string;
+  decision: 'replaced';
+  suggestedValue: unknown;
+}
+
+export type OcrReplaceAudit = SavedReplaceAudit | UnsavedReplaceAudit;
+
+/** Shape the payment create audit uses when the field came from replace. */
+export interface OcrReplaceCreateAudit {
+  source: 'ocr_replace';
+  suggestionId: string;
+  field: string;
+}
+
+export function paymentCreateAuditFromReplace(audit: {
+  suggestionId: string;
+  field: string;
+}): OcrReplaceCreateAudit {
+  return { source: 'ocr_replace', suggestionId: audit.suggestionId, field: audit.field };
+}
+
 export interface OcrConfirmResult {
   job: OcrJob;
   suggestions: OcrSuggestion[];
   applied: OcrAppliedField[];
+  audits: OcrReplaceAudit[];
   /**
-   * Scaffold marker. confirm() records the decision in memory and does not
-   * write Obligation, Payment, Property, or Document rows.
+   * True only when this confirm committed every saveValue write.
+   * False when nothing was written to a saved field.
    */
-  persisted: false;
+  persisted: boolean;
 }

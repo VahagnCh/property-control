@@ -47,7 +47,7 @@ Accepted costs:
 
 ## Enforcement
 
-The in-memory stub in `apps/api/src/ocr/ocr.service.ts` finishes the extract and stops at `suggested` with every suggestion `pending`. `confirm` is the only method that changes `applyStatus`, and the stub returns `persisted: false` because it writes nothing at all.
+The in-memory stub in `apps/api/src/ocr/ocr.service.ts` finishes the extract and stops at `suggested` with every suggestion `pending`. `confirm` is the only method that changes `applyStatus`. `persisted` is true only when that confirm's saves commit, and false when it writes nothing.
 
 `apps/api/src/ocr/ocr.service.spec.ts` asserts that a finished job leaves every suggestion pending, that rejecting everything applies nothing, that accepting without a target fails rather than guessing, and that the service exposes no obligation or payment writer. Breaking this rule should break a test.
 

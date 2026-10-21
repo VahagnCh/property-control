@@ -4,7 +4,7 @@ export interface ExtractedField {
   targetEntityType: OcrTargetEntityType;
   fieldPath: string;
   suggestedValue: unknown;
-  confidence?: number | null;
+  confidence?: unknown;
   targetEntityId?: string;
 }
 
@@ -20,6 +20,11 @@ export interface OcrExtractor {
 
 export const OCR_EXTRACTOR = Symbol('OCR_EXTRACTOR');
 
+function daysFromNow(days: number): string {
+  const date = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  return date.toISOString().slice(0, 10);
+}
+
 export class StubOcrExtractor implements OcrExtractor {
   extract(input: { propertyId: string; documentId: string }): OcrExtractResult {
     return {
@@ -34,7 +39,7 @@ export class StubOcrExtractor implements OcrExtractor {
         {
           targetEntityType: 'obligation',
           fieldPath: 'nextDueDate',
-          suggestedValue: '2026-11-15',
+          suggestedValue: daysFromNow(30),
           confidence: 0.74,
         },
         {

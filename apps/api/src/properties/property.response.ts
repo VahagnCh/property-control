@@ -1,3 +1,6 @@
+import { UnprocessableEntityException } from '@nestjs/common';
+import { isIanaTimeZone } from '../common/property-calendar.js';
+
 /** IANA name used when a client omits timezone. Never a fixed offset. */
 export const DEFAULT_PROPERTY_TIMEZONE = 'America/Mexico_City';
 
@@ -75,7 +78,25 @@ export function toPropertyResponse(record: PropertyRecord): PropertyResponse {
 
 export function propertyTimezone(timezone: string | null | undefined): string {
   const trimmed = timezone?.trim() ?? '';
-  return trimmed.length > 0 ? trimmed : DEFAULT_PROPERTY_TIMEZONE;
+  if (trimmed.length === 0 || !isIanaTimeZone(trimmed)) {
+    return DEFAULT_PROPERTY_TIMEZONE;
+  }
+  return trimmed;
+}
+
+/** Property create and patch. An invalid IANA name is 422. Omitted is allowed. */
+export function assertWritablePropertyTimezone(timezone: string | null | undefined): void {
+  if (timezone === undefined || timezone === null) {
+    return;
+  }
+  const trimmed = timezone.trim();
+  if (trimmed.length === 0 || !isIanaTimeZone(trimmed)) {
+    throw new UnprocessableEntityException({
+      statusCode: 422,
+      message: 'timezone must be an IANA name.',
+      error: 'invalid_timezone',
+    });
+  }
 }
 
 function toIso(value: Date | string): string {

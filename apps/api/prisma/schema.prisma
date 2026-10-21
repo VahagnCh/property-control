@@ -255,6 +255,8 @@ model Obligation {
   dueDay           Int?                @map("due_day")
   /// Year-month of period index 0. The stored day is the clamped due date.
   scheduleAnchor   DateTime?           @map("schedule_anchor") @db.Date
+  /// API input: today −1y through today +5y in the property timezone.
+  /// Database CHECK obligations_next_due_date_sanity: 1990-01-01 through 2100-12-31.
   nextDueDate      DateTime?           @map("next_due_date") @db.Date
   /// Integer centavos in the database. Null means a variable amount with no
   /// expected total. The API wire value is a decimal string such as "1234.50"
