@@ -45,3 +45,27 @@ export function errorAccessibilityLabel(context: string): string {
 export function retryAccessibilityLabel(context: string): string {
   return `${SCREEN_STATE_COPY.retry} ${context}`;
 }
+
+export const COPY = {
+  'ocr.edit.invalid': 'Este valor no es válido. Revisa el formato e inténtalo de nuevo.',
+  'form.text.invalidChars': 'Este texto tiene caracteres no permitidos. Bórralos e inténtalo de nuevo.',
+  'form.title.tooLong': 'El título admite hasta 300 caracteres.',
+  'form.body.tooLong': 'El texto admite hasta 32 KB.',
+  'obligation.nextDueDate.invalid':
+    'La próxima fecha no es válida. Revisa el valor e inténtalo de nuevo.',
+} as const;
+
+export type CopyKey = keyof typeof COPY;
+
+export function copyText(key: CopyKey): string {
+  return COPY[key];
+}
+
+export const OCR_REPLACE_KEEP_LABEL = 'Mantener lo que escribí';
+export const OCR_REPLACE_BUTTON_LABEL = 'Reemplazar';
+export const OCR_REPLACE_TOAST = 'Valor reemplazado. Puedes editarlo antes de registrar.';
+
+/** Shown when the field already has a typed value. Placeholders are the current and suggested text. */
+export function ocrReplacePrompt(actual: string, suggested: string): string {
+  return `Reemplazar «${actual}» por «${suggested}»`;
+}

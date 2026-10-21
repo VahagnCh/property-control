@@ -1,6 +1,14 @@
 import fs from 'fs';
 import path from 'path';
-import { TAB_BODIES, TAB_LABELS } from './userFacing';
+import {
+  COPY,
+  OCR_REPLACE_BUTTON_LABEL,
+  OCR_REPLACE_KEEP_LABEL,
+  OCR_REPLACE_TOAST,
+  TAB_BODIES,
+  TAB_LABELS,
+  ocrReplacePrompt,
+} from './userFacing';
 
 const FORBIDDEN: Array<{ label: string; pattern: RegExp }> = [
   { label: 'pagar ahora', pattern: /pagar\s+ahora/i },
@@ -106,6 +114,24 @@ describe('copy lint', () => {
     expect(strings.join('\n').toLowerCase()).toContain('comprobante es opcional');
     expect(strings).not.toContain('Aceptar todas');
     expect(strings).not.toContain('Aceptar todo');
+
+    const requiredCopy = [
+      COPY['ocr.edit.invalid'],
+      COPY['form.text.invalidChars'],
+      COPY['form.title.tooLong'],
+      COPY['form.body.tooLong'],
+      COPY['obligation.nextDueDate.invalid'],
+      OCR_REPLACE_KEEP_LABEL,
+      OCR_REPLACE_BUTTON_LABEL,
+      OCR_REPLACE_TOAST,
+      ocrReplacePrompt('1,200.00', '1,250.00'),
+    ];
+    for (const value of requiredCopy) {
+      expect(hits(value)).toEqual([]);
+    }
+    expect(strings).toEqual(expect.arrayContaining(requiredCopy.slice(0, -1)));
+    expect(strings.some((value) => value.includes('Reemplazar «') && value.includes('» por «'))).toBe(true);
+    expect(ocrReplacePrompt('1,200.00', '1,250.00')).toBe('Reemplazar «1,200.00» por «1,250.00»');
 
     const raw = files.map((file) => fs.readFileSync(file, 'utf8')).join('\n');
     expect(raw).not.toMatch(/Property Control/);

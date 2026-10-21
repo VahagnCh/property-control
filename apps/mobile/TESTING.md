@@ -4,7 +4,9 @@ Status is **covered now** only when a Jest test asserts the behavior. **Pending 
 
 Payments stay void-only. There is no payment DELETE route and no `deletedAt` on a payment. Do not add either.
 
-The device under test is UTC. Due labels and paid-date limits take the property IANA time zone (`Property.timezone`, default `America/Mexico_City`) and do not read the device zone.
+The device under test is UTC. Due labels, paid-date limits, and the nextDueDate input window take the property IANA time zone (`Property.timezone`, default `America/Mexico_City`) and do not read the device zone.
+
+TS-D7 is not a mobile row. This client does not claim it.
 
 ## Shell and task-3 cases
 
@@ -29,10 +31,15 @@ The device under test is UTC. Due labels and paid-date limits take the property 
 
 | Case | Status | Test |
 | :---- | :---- | :---- |
-| OCR `applyOcrSuggestion` fills only an existing empty field, never adds a field, never overwrites a user value, and writes only after confirm. High confidence does not skip confirm. `acceptAll: true` writes nothing | Covered now | `src/ocr/applyOcrSuggestion.test.ts` |
-| Confidence word from the job’s bands. Null is Revisa. Does not write the field | Covered now | `src/ocr/confidenceBand.test.ts` |
+| OCR `applyOcrSuggestion` fills only an existing empty field, never adds a field, never overwrites a user value, and writes only after confirm. High confidence does not skip confirm. `acceptAll: true` writes nothing. AC-OCR-11 overwrite is `replaceField` only, one field at a time | Covered now | `src/ocr/applyOcrSuggestion.test.ts` |
+| AC-OCR-11 Reemplazar. A confirmed per-field replace may overwrite a typed value and returns `previousValue` for a local undo. The before-Registrar decision is `{ suggestionId, field, decision: 'replaced' \| 'kept' \| 'rejected', suggestedValue }` and never includes the unsaved typed value. The audit covers saved state only: for a record that is already saved, the server logs the persisted previous value itself, so the client sends nothing extra. No API call yet (B17). Row copy is `Reemplazar «{actual}» por «{sugerido}»`, with “Mantener lo que escribí” default and highlighted, and toast “Valor reemplazado. Puedes editarlo antes de registrar.” Rechazar and doing nothing keep the typed value. Empty fields still fill only after confirm. No bulk replace | Covered now | `src/ocr/applyOcrSuggestion.test.ts`, `src/ocr/OcrReplaceRow.test.tsx` |
+| Confidence word prefers the server `band` (`alta` / `media` / `revisa`). If the band is missing, the score fallback is Revisa below 0.80 or when there is no score; 0.80–0.90 is Media and at or above 0.90 is Alta. Does not write the field | Covered now | `src/ocr/confidenceBand.test.ts` |
+| 422 on an OCR edit (bad `editedValue` or retarget) uses `ocr.edit.invalid`: “Este valor no es válido. Revisa el formato e inténtalo de nuevo.” | Covered now | `src/ocr/ocrEditError.test.ts` |
+| Text input rejects, and does not strip, C1 controls (U+0080–U+009F), C0 controls other than tab/LF/CR, bidi overrides (U+202A–U+202E, U+2066–U+2069), and zero-width characters (U+200B–U+200D, U+FEFF, U+2060). Key `form.text.invalidChars`. Accents, ñ, ¿, and ¡ pass. Title max 300 characters. Body max 32 KB | Covered now | `src/forms/textInput.test.ts` |
 | Comprobante optional: validation passes with evidence omitted, null, or blank. A missing comprobante is not an issue | Covered now | `src/payments/recordPayment.test.ts` |
-| Paid date in the property zone: back one calendar year (365 or 366 days, 29 Feb clamped), forward +1 day. today−365/366 accepted, the day before rejected, today+1 accepted, today+2 rejected. 23:59, 00:00, 00:01, UTC device, America/Tijuana and America/Cancun | Covered now | `src/payments/paidDate.test.ts` |
+| Paid date in the property zone (AC-DATE-01, EC-7.1): back one calendar year (365 or 366 days, 29 Feb clamped). Maximum is today. Today is accepted and today+1 is rejected. The server’s +1 day is clock-skew tolerance and the client never offers it. 23:59, 00:00, 00:01, UTC device, America/Tijuana and America/Cancun. Default zone America/Mexico_City | Covered now | `src/payments/paidDate.test.ts` |
+| nextDueDate client window (AC-OBL-01, AC-OBL-02): today−1y through today+5y in the property zone, including the exact edges, 29 Feb, midnight, a UTC device, and a non-default zone. The database bound 1990–2100 is not a client rule | Covered now | `src/dates/nextDueDate.test.ts` |
+| AC-OBL-03. A 422 on nextDueDate maps to the Spanish field error `obligation.nextDueDate.invalid`. Other statuses do not | Covered now | `src/dates/nextDueDate.test.ts` |
 | Wire money is `{ amount, currency: 'MXN' }`. Decimal string ↔ integer centavos, no JS floats. `0.00`, `1234.5` → `1234.50`, reject >2 decimals, negative, empty, and any currency other than `MXN`. Display `$1,234.50` is not the wire value | Covered now | `src/payments/money.test.ts` |
 | Viewer and non-member hide Anular. Viewer denial is 403 and the message is exactly “No tienes permiso para anular este pago”; the payment object is unchanged. Non-member denial is 404 with a different message, payment unchanged. Neither asks for a refresh | Covered now | `src/payments/voidPayment.test.tsx` |
 | Void is `POST /v1/properties/:propertyId/payments/:paymentId/void` with body `{ voidReason }` only (trimmed, 1–500). It is not a PATCH and the body has no `status` | Covered now | `src/payments/voidPayment.test.tsx` (`buildVoidPaymentRequest`) |
@@ -58,18 +65,18 @@ Owner is UX/Mobile on Tally’s matrix (40 UX acceptance checks plus TS-11.7 and
 | AC-PAY-21 | — | Covered now | UX spec v1.2 rev d, outside the original 42. `src/payments/voidPayment.test.tsx`: a 409 shows exactly “Este pago ya estaba anulado.”, returns `refresh: true`, and leaves the payment object unchanged. |
 | AC-EV-02 | P1 | Pending feature | When evidence upload lands, add `src/evidence/nudge.test.ts`: the first save without a file shows the nudge once; the second save in the same session does not; a new session shows it again. |
 | AC-EV-06 | P1 | Pending feature | When evidence upload lands, add `src/evidence/damagedFile.test.tsx`: a corrupt PDF and a 0-byte image show copy, offer another file or saving without a comprobante, and the payment still validates with no evidence id. |
-| AC-OCR-01 | P0 | Covered now | `src/ocr/applyOcrSuggestion.test.ts`: confidence 0.55 and 0.97 leave the existing amount in place until confirm. |
-| AC-OCR-03 | P0 | Covered now | Same file: a user-entered amount is kept when a confirmed suggestion names that field. |
+| AC-OCR-01 | P0 | Covered now | `src/ocr/applyOcrSuggestion.test.ts`: confidence 0.55 and 0.97 leave the existing amount in place until confirm. No silent prefill at any confidence. |
+| AC-OCR-03 | P0 | Covered now | Same file: `applyOcrSuggestion` keeps a user-entered amount when a confirmed suggestion names that field. Overwrite is only the explicit AC-OCR-11 `replaceField` path. |
 | AC-OCR-06 | P0 | Pending feature | When the OCR review sheet lands, add `src/ocr/reviewSheet.test.tsx`: a failed job shows “No pudimos leer el documento. Llena los datos a mano.”, fields stay editable, and save succeeds with the file kept. |
 | AC-OCR-07 | P2 | Pending feature | Same file, offline: attaching a document does not call the job route and shows offline copy. |
-| AC-OCR-09 | P0 | Pending feature | `applyOcrSuggestions(..., { acceptAll: true })` already writes nothing (`src/ocr/applyOcrSuggestion.test.ts`). When the review sheet lands, render it with every confidence ≥ 0.90 and assert there is no “Aceptar todas” control and no row is preselected. The shell lint already fails if that label appears in user-facing strings. |
-| AC-OCR-10 | P1 | Covered now | `src/ocr/confidenceBand.test.ts` with bands `{ alta: 0.85, media: 0.75 }`: 0.86 is Alta, null is Revisa. |
+| AC-OCR-09 | P0 | Pending feature | `applyOcrSuggestions(..., { acceptAll: true })` already writes nothing, and there is no bulk replace (`src/ocr/applyOcrSuggestion.test.ts`). When the review sheet lands, render it with every confidence ≥ 0.90 and assert there is no “Aceptar todas” control and no row is preselected. The shell lint already fails if that label appears in user-facing strings. |
+| AC-OCR-10 | P1 | Covered now | `src/ocr/confidenceBand.test.ts`: a server band wins over the score (`alta` at 0.10 is Alta, `revisa` at 1 is Revisa). A missing band with no score is Revisa. |
 | AC-OFF-01 | P0 | Pending feature | See “Offline save” above. |
 | AC-OFF-02 | P0 | Pending feature | See “Offline save” above (reload keeps the same key). |
 | AC-OFF-07 | P2 | Pending feature | When the outbox lands, add `src/outbox/partialEstimate.test.ts`: an offline partial shows a local estimate labeled as not yet synced, and the server body replaces that estimate. |
-| AC-DATE-01 | P0 | Covered now | `src/dates/dueLabel.test.ts`. Picker max/default must call `paidDateWindow` (`src/payments/paidDate.test.ts`) rather than the device date. |
+| AC-DATE-01 | P0 | Covered now | Picker max is today in the property zone (`paidDateWindow.max === today` in `src/payments/paidDate.test.ts`). Today is allowed and today+1 is rejected. The server’s +1 day is clock-skew tolerance only. Due labels stay in `src/dates/dueLabel.test.ts`. |
 | AC-DATE-03 | P2 | Pending feature | When Pay3 lands, add `src/payments/periodPrompt.test.tsx`: a paid date inside the open period does not ask which period; the helper already accepts that past date inside the one-year window. |
-| AC-DATE-06 | P0 gap | Covered now | `src/payments/paidDate.test.ts`: 20 Oct 2025 is in range on 20 Oct 2026, 19 Oct 2025 is `too_old`. The date picker disables days the helper rejects. |
+| AC-DATE-06 | P0 gap | Covered now | `src/payments/paidDate.test.ts`: 21 Oct 2025 is in range on 21 Oct 2026, 20 Oct 2025 is `too_old`. Today+1 is `too_future`. The date picker disables days the helper rejects. |
 | AC-DATE-05 | P2 | Pending feature | When Pay3 has the obligation start date, add to `paidDate.test.ts` a warning (not a block) when paidDate is before that start, and assert `validateRecordPayment` still returns ok. |
 | AC-CTX-01 | P1 | Pending feature | When Pay3 lands, add `src/payments/context.test.tsx`: three properties render a property selector first, then only active obligations. |
 | AC-CTX-02 | P1 | Pending feature | Same file: Pay3 opened from an obligation shows a fixed header and no selectors. |
@@ -81,13 +88,24 @@ Owner is UX/Mobile on Tally’s matrix (40 UX acceptance checks plus TS-11.7 and
 | AC-EMPTY-03 | P2 | Pending feature | When payment history is empty, add to `emptyList.test.tsx` the history copy and a prefilled “Registrar pago”. |
 | AC-EMPTY-04 | P2 | Pending feature | When the Sin comprobante filter is empty, add to that file: “Todos tus pagos tienen comprobante.” |
 | AC-PUSH-03 | P1 | Pending feature | When deep links and auth land, add `src/navigation/deepLink.test.tsx`: `duerecord://notificaciones/<nid>` with a session opens Pay3 prefilled; without a session it opens sign-in and then Pay3. The link carries no token. This is also TS-11.7. |
-| AC-SRC-02 | P1 | Covered now | `src/ocr/confidenceBand.test.ts`: bands 0.90 / 0.80 map 0.95, 0.85, 0.79, and null to Alta, Media, Revisa, Revisa. |
+| AC-SRC-02 | P1 | Covered now | `src/ocr/confidenceBand.test.ts` score fallback when `band` is missing: 0.95 Alta, 0.85 Media, 0.79 Revisa, null Revisa. A server band still wins. |
 | AC-SRC-03 | P1 | Pending feature | When the review sheet and crop URL land, add `src/ocr/snippet.test.ts`: under 30 days, a crop-url 404 shows the quoted snippet, otherwise “Pág. n”; at 30 days or more, only “Pág. n” and crop-url is not requested. |
 | AC-SRC-04 | P1 | Pending feature | Same file: the crop accessibility label reads the masked snippet or the value plus the page. |
 | AC-SRC-06 | P1 | Pending feature | When the page image lands, add `src/ocr/bbox.test.ts`: page 2 bbox `[0.10, 0.20, 0.30, 0.05]` on a 1000×1400 image requests `pages/2/image-url` and draws x=100, y=280, w=300, h=70. |
 | AC-SRC-07 | P2 | Pending feature | Same file: at 30 days or more, image-url 404 opens the original without a highlight. |
 | TS-11.7 | P0 | Pending feature | Same deep-link test as AC-PUSH-03. Assert the URL has no access token, refresh token, or OTP. |
-| TO-6.1-NOPREFILL | P0 | Covered now | `src/ocr/applyOcrSuggestion.test.ts`: no prefill at any confidence, no accept-all, nothing written before confirm. |
+| TO-6.1-NOPREFILL | P0 | Covered now | `src/ocr/applyOcrSuggestion.test.ts`: no prefill at any confidence, no accept-all, nothing written before confirm. Empty fields still fill only after confirm. |
+
+## Rows added 20 Oct (record-payment spec rev f)
+
+These are mobile rows beyond the original 42. TS-D7 is not one of them.
+
+| Id | Status | Test |
+| :---- | :---- | :---- |
+| AC-OCR-11 | Covered now | Per-field Reemplazar in `src/ocr/applyOcrSuggestion.test.ts` and `src/ocr/OcrReplaceRow.test.tsx`. Before Registrar the client decision is `{ suggestionId, field, decision: 'replaced' \| 'kept' \| 'rejected', suggestedValue }`. The audit covers saved state only. That payload never includes the unsaved typed value. `previousValue` is returned for a local undo and is not part of the decision. For a record that is already saved, the server logs the persisted previous value itself, so the client sends nothing extra. The confirm request is not built; it waits on B17. |
+| AC-OBL-01 | Covered now | `src/dates/nextDueDate.test.ts`: today−1y and today+5y are accepted in the property zone, and the days just outside are rejected. Default zone `America/Mexico_City`. |
+| AC-OBL-02 | Covered now | Same file: 29 Feb (including the clamp when the target year has no 29 Feb), midnight at 23:59, 00:00, and 00:01, a UTC device, and America/Tijuana. The client does not apply the 1990–2100 database bound. |
+| AC-OBL-03 | Covered now | Same file: a 422 maps to `obligation.nextDueDate.invalid`, “La próxima fecha no es válida. Revisa el valor e inténtalo de nuevo.” Other statuses do not. |
 
 ## Shared rows exercised by these helpers
 
@@ -97,5 +115,6 @@ These are not part of the 42. The mobile half is covered; the API half stays wit
 | :---- | :---- | :---- |
 | AC-GEN-02 | Covered now for hiding Anular and the 403 message. The POST 403 and the audit assertion wait on the API | `src/payments/voidPayment.test.tsx` |
 | AC-EV-01 | Covered now for “save without a comprobante is valid”. The 201 and the paywall assertion wait on the API | `src/payments/recordPayment.test.ts` |
-| AC-DATE-02, MC-08, PR-P3 | Covered now for the property-zone window, including +1 day and the one-year minimum. The HTTP 201/422 assertion waits on the API | `src/payments/paidDate.test.ts` |
-| PR-L6 | Covered now for the strings that exist in the shell | `src/copy/copyLint.test.ts` |
+| AC-DATE-02, MC-08, PR-P3 | Covered now for the property-zone window. The client maximum is today (AC-DATE-01, EC-7.1). The server’s +1 day is clock-skew tolerance and is not offered. The one-year minimum is covered. The HTTP 201/422 assertion waits on the API | `src/payments/paidDate.test.ts` |
+| EC-7.1 | Covered now on the client: the record-payment picker maximum is today in the property timezone, and today+1 is rejected. Server acceptance of `paidAt` up to +24 hours is clock-skew tolerance only. The 422 for a later instant waits on the API | `src/payments/paidDate.test.ts` |
+| PR-L6 | Covered now for the strings that exist in the shell, including the Reemplazar copy and the new field errors | `src/copy/copyLint.test.ts` |
