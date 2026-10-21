@@ -1,6 +1,7 @@
 import { Controller, Get, Inject, Req, Res } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import type { Request, Response } from 'express';
+import { logError } from '../common/log-redaction.js';
 import { HealthRateLimiter, pingDatabase, type HealthProbe } from './live-health.js';
 
 export const HEALTH_PROBE = Symbol('HEALTH_PROBE');
@@ -47,7 +48,7 @@ export class LiveHealthController {
       await this.probe.ping();
       res.status(200).json({ status: 'ok' });
     } catch {
-      console.error('Health check failed.');
+      logError('Health check failed.');
       res.status(503).json({ status: 'unavailable' });
     }
   }

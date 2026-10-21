@@ -1,4 +1,5 @@
 import { InternalServerErrorException, UnprocessableEntityException } from '@nestjs/common';
+import { logError } from '../common/log-redaction.js';
 import { isIanaTimeZone } from '../common/property-calendar.js';
 
 /** IANA name used when a client omits timezone. Never a fixed offset. */
@@ -86,7 +87,7 @@ export function readStoredTimezone(timezone: string | null | undefined): string 
     return DEFAULT_PROPERTY_TIMEZONE;
   }
   if (!isIanaTimeZone(trimmed)) {
-    console.error('Stored property timezone is not an IANA name.');
+    logError('Stored property timezone is not an IANA name.');
     throw new InternalServerErrorException({
       statusCode: 500,
       error: 'invalid_stored_timezone',

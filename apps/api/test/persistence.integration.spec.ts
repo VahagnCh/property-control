@@ -6,6 +6,7 @@ import { PrismaIdempotencyKeys } from '../src/auth/idempotency-keys.js';
 import { PrismaRateLimits, authSubjectHmac, bucketKey } from '../src/auth/rate-limit.js';
 import { PrismaRefreshTokens } from '../src/auth/prisma-refresh-tokens.js';
 import { hashToken } from '../src/auth/refresh-tokens.js';
+import { assertRuntimeRole, readRuntimeRole } from '../src/auth/runtime-role.js';
 import { TEST_SERVER_SECRET } from './test-server-secret.js';
 import { PrismaConsentRepository } from '../src/consent/prisma-consent.repository.js';
 import { ConsentService } from '../src/consent/consent.service.js';
@@ -815,6 +816,20 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
     } finally {
       await deleteFixture(prisma, fixture, version);
     }
+  });
+
+  it('boots only as the app role and refuses the owner connection', async () => {
+    const appRole = await readRuntimeRole(prisma);
+    expect(appRole.currentUser).toBe('property_control_app');
+    expect(appRole.superuser).toBe(false);
+    expect(appRole.databaseOwner).toBe(false);
+    expect(() => assertRuntimeRole(appRole)).not.toThrow();
+    const ownerRole = await readRuntimeRole(owner);
+    expect(ownerRole.currentUser).not.toBe('property_control_app');
+    expect(ownerRole.superuser || ownerRole.databaseOwner).toBe(true);
+    expect(() => assertRuntimeRole(ownerRole)).toThrow(
+      /property_control_app, not the database owner or a superuser/,
+    );
   });
 });
 

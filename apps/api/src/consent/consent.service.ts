@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
+import { logError } from '../common/log-redaction.js';
 import type { AvisoConfig } from './aviso-config.js';
 import {
   AvisoVersionMissingError,
@@ -81,7 +82,7 @@ export class ConsentService {
       return { outcome: 'created', consent: created };
     } catch (error) {
       if (error instanceof AvisoVersionMissingError) {
-        console.error('alert: aviso_unavailable');
+        logError('alert: aviso_unavailable');
         throw new ServiceUnavailableException({
           statusCode: 503,
           error: 'aviso_unavailable',
