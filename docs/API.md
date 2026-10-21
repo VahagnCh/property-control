@@ -287,7 +287,8 @@ Every OCR 4xx body includes a stable `error` string next to `message`. Clients m
 | `saved_value_conflict` | 409 | The saved field changed between planning a confirm and writing it. The transaction rolls back | |
 | `missing_decision` | 422 | A suggestion has no decision | `suggestionId` |
 | `client_prior_value_rejected` | 422 | `clientPriorValue` on the body or on a decision | |
-| `bulk_accept_rejected` | 422 | `acceptAll`, `accept_all`, or action `accept-all` / `accept_all` | |
+| `bulk_accept_rejected` | 422 | `acceptAll`, `accept_all`, `replaceAll`, `replace_all`, or action `accept-all` / `accept_all` / `replace-all` / `replace_all` | |
+| `target_not_writable` | 422 | Payment field or property title. Those writes do not exist yet | `suggestionId`, `field` |
 | `edited_value_invalid` | 422 | `editedValue` or an accepted suggestion does not match `fieldPath` | `suggestionId`, `field` |
 | `next_due_date_out_of_range` | 422 | `nextDueDate` is outside the property-timezone window or the 1990–2100 bound | `suggestionId`, `field` |
 | `bound_target_immutable` | 422 | Same-property retarget of an already-bound suggestion | |
@@ -299,6 +300,8 @@ Every OCR 4xx body includes a stable `error` string next to `message`. Clients m
 Single-line text rejects every C0 character, including tab, CR, and LF. The `notes` field is the multi-line exception: it allows LF, and CR or CRLF is stored as LF. A tab in notes is still rejected. An invalid property `timezone` is **422** on write. A stored invalid timezone is **500** `invalid_stored_timezone` and does not fall back to `America/Mexico_City`. A blank timezone still defaults to `America/Mexico_City`.
 
 When the field is already saved, the replace audit is `{ suggestionId, field, action: "replace", actorUserId, previousValue, newValue }`. `previousValue` is the persisted server value. Before the record is saved, the audit is `{ suggestionId, field, decision: "replaced", suggestedValue }` and has no previous value. On payment create, that field's audit source is `ocr_replace` with the `suggestionId`.
+
+A successful accept or edit writes one applied-field audit, `{ source: "ocr", ocrJobId, suggestionId, field, actorUserId, confidence, edited, previousValue, newValue }`. `edited` is false for accept and true for edit. `previousValue` is null, because a saved non-null field cannot be accepted or edited. `newValue` is the value written. Reject writes no applied-field audit. The audit stores neither raw document text nor `clientPriorValue`. Accept or edit of a saved value stays **409** and writes no audit.
 
 Job statuses: `pending` → `processing` → `suggested` → `confirmed` | `rejected` | `failed`.
 Suggestion apply statuses: `pending` → `accepted` | `rejected`.
