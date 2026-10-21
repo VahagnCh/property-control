@@ -23,8 +23,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum MembershipRole {
@@ -113,6 +114,13 @@ enum EvidenceType {
   @@map("evidence_type")
 }
 
+enum EvidenceStatus {
+  pending
+  attached
+
+  @@map("evidence_status")
+}
+
 enum MaintenanceStatus {
   open
   in_progress
@@ -185,6 +193,9 @@ model User {
   idempotencyRecords     IdempotencyRecord[]
   sentInvites            MembershipInvite[]       @relation("InviteSentBy")
   notificationDeliveries NotificationDelivery[]
+  consents               Consent[]
+  refreshTokens          RefreshToken[]
+  idempotencyKeys        IdempotencyKey[]
 
   @@map("users")
 }
@@ -258,10 +269,12 @@ model Obligation {
   /// API input: today −1y through today +5y in the property timezone.
   /// Database CHECK obligations_next_due_date_sanity: 1990-01-01 through 2100-12-31.
   nextDueDate      DateTime?           @map("next_due_date") @db.Date
-  /// Integer centavos in the database. Null means a variable amount with no
-  /// expected total. The API wire value is a decimal string such as "1234.50"
-  /// plus currency MXN, never a JSON float.
-  expectedAmount   Int?                @map("expected_amount")
+  /// Integer centavos stored as BIGINT. Null means a variable amount with no
+  /// expected total. CHECK allows null or a value greater than 0. The API wire
+  /// value stays a decimal peso string such as "1234.50" plus currency MXN.
+  /// Convert only at the repository boundary, never through a float, and never
+  /// send centavos or a JSON number on the wire.
+  expectedAmount   BigInt?             @map("expected_amount")
   currency         String              @default("MXN") @db.VarChar(3)
   reminderOffsets  Int[]               @default([7, 1]) @map("reminder_offsets")
   preferredMethod  String?             @map("preferred_method")
@@ -290,10 +303,11 @@ model Payment {
   obligationId     String        @map("obligation_id") @db.Uuid
   periodDueDate    DateTime      @map("period_due_date") @db.Date
   recordedByUserId String        @map("recorded_by_user_id") @db.Uuid
-  /// Integer centavos in the database. Must be greater than 0. MVP currency
-  /// is MXN only. The API wire value is a decimal string such as "1234.50"
-  /// plus that currency code, never a JSON float.
-  amount           Int
+  /// Integer centavos stored as BIGINT. Must be greater than 0. MVP currency
+  /// is MXN only. The API wire value stays a decimal peso string such as
+  /// "1234.50" plus that currency code. Convert only at the repository
+  /// boundary, never through a float, and never send centavos on the wire.
+  amount           BigInt
   currency         String        @default("MXN") @db.VarChar(3)
   /// The one-year back-date limit is checked in the property timezone, not UTC.
   paidAt           DateTime      @map("paid_at") @db.Timestamptz(6)
@@ -325,9 +339,10 @@ model Payment {
 /// not_applicable must not reference a Payment. Pause is Obligation.isActive
 /// plus ObligationPauseInterval. Archive is Obligation.deletedAt.
 /// Those three mechanisms stay separate. Archive also pauses.
-/// overpaidAmount is excess integer centavos on this period only. The API
-/// wire value is a decimal string such as "1234.50" plus currency MXN, never
-/// a JSON float. It is not a credit and it does not reduce the next period.
+/// overpaidAmount is excess integer centavos on this period only, stored as
+/// BIGINT. The API wire value is a decimal string such as "1234.50" plus
+/// currency MXN, never a JSON float. It is not a credit and it does not
+/// reduce the next period.
 model ObligationPeriodOutcome {
   id             String        @id @default(uuid()) @db.Uuid
   obligationId   String        @map("obligation_id") @db.Uuid
@@ -335,7 +350,7 @@ model ObligationPeriodOutcome {
   periodDueDate  DateTime      @map("period_due_date") @db.Date
   outcome        PeriodOutcome
   paymentId      String?       @map("payment_id") @db.Uuid
-  overpaidAmount Int           @default(0) @map("overpaid_amount")
+  overpaidAmount BigInt        @default(0) @map("overpaid_amount")
   createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
 
   obligation Obligation @relation(fields: [obligationId], references: [id])
@@ -371,13 +386,15 @@ model Evidence {
   propertyId         String       @map("property_id") @db.Uuid
   paymentId          String?      @map("payment_id") @db.Uuid
   maintenanceTaskId  String?      @map("maintenance_task_id") @db.Uuid
-  uploadedByUserId   String       @map("uploaded_by_user_id") @db.Uuid
-  storageKey         String       @unique @map("storage_key")
+  uploadedByUserId   String         @map("uploaded_by_user_id") @db.Uuid
+  /// Private object key. Never named storage_key and never returned to a client.
+  sourceKey          String         @unique @map("source_key")
+  status             EvidenceStatus @default(pending)
   type               EvidenceType
-  uploadedAt         DateTime     @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  uploadedAt         DateTime       @default(now()) @map("uploaded_at") @db.Timestamptz(6)
   notes              String?
-  contentType        String       @map("content_type")
-  byteSize           BigInt       @map("byte_size")
+  contentType        String         @map("content_type")
+  sizeBytes          BigInt         @map("size_bytes")
   originalFilename   String?      @map("original_filename")
   idempotencyKey     String       @map("idempotency_key")
   deletedAt          DateTime?    @map("deleted_at") @db.Timestamptz(6)
@@ -421,7 +438,8 @@ model Document {
   propertyId       String    @map("property_id") @db.Uuid
   uploadedByUserId String    @map("uploaded_by_user_id") @db.Uuid
   title            String
-  storageKey       String    @unique @map("storage_key")
+  /// Private object key. Never named storage_key and never returned to a client.
+  sourceKey        String    @unique @map("source_key")
   contentType      String    @map("content_type")
   byteSize         BigInt    @map("byte_size")
   originalFilename String?   @map("original_filename")
@@ -482,16 +500,17 @@ model NotificationDelivery {
 
 /// Email invite. Only an owner invites, by email, as member or viewer.
 /// The raw token is returned once. tokenHash is lowercase hex SHA-256.
-/// Tokens are single-use. expiresAt is sentAt plus 7 days. A resend
-/// restarts those 7 days. Accept checks, in order: an unknown token or
-/// the wrong account is 404 before any token state is revealed; a used,
-/// revoked, superseded, or expired token is 410; an invitee who is already
-/// a member is 409. A non-owner invite action is 403. Acceptance requires
-/// the invited email.
+/// The invited address is stored as emailHmac, never in plain text.
+/// Tokens are single-use. expiresAt is at most createdAt plus 7 days.
+/// A resend restarts those 7 days and sets supersededAt on the old row.
+/// Accept checks, in order: an unknown token or the wrong account is 404
+/// before any token state is revealed; a used, revoked, superseded, or
+/// expired token is 410; an invitee who is already a member is 409. A
+/// non-owner invite action is 403. Acceptance requires the invited email.
 model MembershipInvite {
   id              String         @id @default(uuid()) @db.Uuid
   propertyId      String         @map("property_id") @db.Uuid
-  email           String
+  emailHmac       String         @map("email_hmac")
   role            MembershipRole
   tokenHash       String         @unique @map("token_hash")
   invitedByUserId String         @map("invited_by_user_id") @db.Uuid
@@ -499,16 +518,18 @@ model MembershipInvite {
   expiresAt       DateTime       @map("expires_at") @db.Timestamptz(6)
   usedAt          DateTime?      @map("used_at") @db.Timestamptz(6)
   revokedAt       DateTime?      @map("revoked_at") @db.Timestamptz(6)
+  supersededAt    DateTime?      @map("superseded_at") @db.Timestamptz(6)
   createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
 
   property  Property @relation(fields: [propertyId], references: [id])
   invitedBy User     @relation("InviteSentBy", fields: [invitedByUserId], references: [id])
 
-  @@index([propertyId, email])
+  @@index([propertyId, emailHmac])
   @@map("membership_invites")
 }
 
-/// Append-only. No updatedAt and no deletedAt.
+/// Append-only. No updatedAt and no deletedAt. Triggers reject UPDATE,
+/// DELETE, and TRUNCATE, including for the table owner.
 model AuditEvent {
   id          String   @id @default(uuid()) @db.Uuid
   propertyId  String?  @map("property_id") @db.Uuid
@@ -535,7 +556,8 @@ model OcrJob {
   documentId String       @map("document_id") @db.Uuid
   evidenceId String?      @map("evidence_id") @db.Uuid
   status     OcrJobStatus @default(pending)
-  storageKey String       @map("storage_key")
+  /// Private object key. Never named storage_key and never returned on a job.
+  sourceKey  String       @map("source_key")
   vendor     String?
   error      String?
   createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -587,4 +609,121 @@ model IdempotencyRecord {
 
   @@unique([propertyId, routeKey, idempotencyKey])
   @@map("idempotency_records")
+}
+
+/// One published aviso de privacidad. Versions are insert-only.
+/// `text` is the exact text the person accepts. `textSha256` is its hex
+/// SHA-256. Re-seeding a version that already exists with different text,
+/// URL, or hash fails instead of upserting.
+model AvisoVersion {
+  version     String   @id
+  url         String
+  text        String
+  textSha256  String   @map("text_sha256")
+  publishedAt DateTime @default(now()) @map("published_at") @db.Timestamptz(6)
+
+  consents Consent[]
+
+  @@map("aviso_versions")
+}
+
+/// Append-only. The app has no update or delete path. Triggers reject UPDATE,
+/// DELETE, and TRUNCATE, and the app role has no grant for those. The same
+/// rule covers `audit_events` and `aviso_versions`.
+/// `acceptedAt` is the server clock at first insert and is never rewritten.
+model Consent {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  avisoVersion String   @map("aviso_version")
+  acceptedAt   DateTime @map("accepted_at") @db.Timestamptz(6)
+  appVersion   String?  @map("app_version")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user  User         @relation(fields: [userId], references: [id])
+  aviso AvisoVersion @relation(fields: [avisoVersion], references: [version])
+
+  @@unique([userId, avisoVersion])
+  @@index([userId])
+  @@map("consents")
+}
+
+/// One row per issued refresh token. A family starts at login and is copied
+/// onto every rotation. `absoluteExpiresAt` is the 90-day cap and is never
+/// extended. Reuse is an `UPDATE ... WHERE used_at IS NULL RETURNING` inside
+/// one transaction, so two instances cannot both rotate the same token.
+/// `graceRefreshToken` is the AES-256-GCM ciphertext of the successor token,
+/// kept only so the duplicate request can return that same pair within 30
+/// seconds. It is null once the window ends or the successor has been used.
+/// The raw token is never stored.
+model RefreshToken {
+  id                String    @id @default(uuid()) @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  familyId          String    @map("family_id") @db.Uuid
+  tokenHash         String    @unique @map("token_hash")
+  issuedAt          DateTime  @map("issued_at") @db.Timestamptz(6)
+  expiresAt         DateTime  @map("expires_at") @db.Timestamptz(6)
+  absoluteExpiresAt DateTime  @map("absolute_expires_at") @db.Timestamptz(6)
+  usedAt            DateTime? @map("used_at") @db.Timestamptz(6)
+  revokedAt         DateTime? @map("revoked_at") @db.Timestamptz(6)
+  replacedById      String?   @unique @map("replaced_by_id") @db.Uuid
+  graceRefreshToken String?   @map("grace_refresh_token")
+
+  user       User          @relation(fields: [userId], references: [id])
+  replacedBy RefreshToken? @relation("RefreshRotation", fields: [replacedById], references: [id])
+  replaces   RefreshToken? @relation("RefreshRotation")
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+/// Idempotency for multi-instance writes. Distinct from `idempotency_records`,
+/// which stays property-scoped. Scope is user or email HMAC, plus method and
+/// route, plus the key. The same key on another route is a new request. A
+/// different request hash on the same scope is 422. Expired rows may be replaced.
+/// `userId` is nullable. `emailHmac` is the keyed HMAC for a later auth-code
+/// route; the plain email is never stored. Exactly one of the two is set.
+/// The key is 8–128 characters of [A-Za-z0-9_-], so a UUID v4 is valid.
+model IdempotencyKey {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String?  @map("user_id") @db.Uuid
+  emailHmac      String?  @map("email_hmac")
+  key            String
+  method         String
+  route          String
+  requestHash    String   @map("request_hash")
+  responseStatus Int?     @map("response_status")
+  responseBody   Json?    @map("response_body")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt      DateTime @map("expires_at") @db.Timestamptz(6)
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}
+
+/// One row per auth-code submission. `subject` is a keyed HMAC, never the
+/// plain email. The 429 decision lives on `rate_limits`.
+model AuthCodeAttempt {
+  id          String   @id @default(uuid()) @db.Uuid
+  subject     String
+  purpose     String
+  success     Boolean  @default(false)
+  attemptedAt DateTime @default(now()) @map("attempted_at") @db.Timestamptz(6)
+
+  @@index([subject, purpose, attemptedAt])
+  @@map("auth_code_attempts")
+}
+
+/// Postgres counter for 429 Retry-After. There is no Redis.
+model RateLimit {
+  id              String    @id @default(uuid()) @db.Uuid
+  bucketKey       String    @unique @map("bucket_key")
+  windowStartedAt DateTime  @map("window_started_at") @db.Timestamptz(6)
+  attemptCount    Int       @default(0) @map("attempt_count")
+  blockedUntil    DateTime? @map("blocked_until") @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("rate_limits")
 }
