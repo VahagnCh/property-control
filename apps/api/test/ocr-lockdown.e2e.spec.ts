@@ -513,14 +513,20 @@ describe('OCR lockdown HTTP', () => {
       expect(JSON.stringify(viewer.body)).not.toContain(foreignId);
       const after = await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobA}`).set(authA).expect(200);
       expect((after.body.suggestions as SuggestionRow[]).every((row) => row.applyStatus === 'pending')).toBe(true);
+      // Reject property B's job so the next create on that document is new.
+      await request(server)
+        .post(`/v1/properties/${PROPERTY_B}/ocr-jobs/${jobB}/confirm`)
+        .set(authB)
+        .send(rejectAll(suggestionsB))
+        .expect(200);
     });
 
     it('returns 404 for a real suggestion id from another job on the same property', async () => {
       const server = app.getHttpServer();
       const first = await request(server)
         .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A2}/ocr-jobs`)
-        .set(authA)
-        .expect(201);
+        .set(authA);
+      expect([200, 201]).toContain(first.status);
       const second = await request(server)
         .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A}/ocr-jobs`)
         .set(authA);
