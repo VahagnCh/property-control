@@ -457,6 +457,150 @@ describe('OCR lockdown HTTP', () => {
       expectNoLeak(after.body);
     });
 
+    it('returns 404 for a real suggestion id from another property and leaks nothing', async () => {
+      const server = app.getHttpServer();
+      const createdA = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A}/ocr-jobs`)
+        .set(authA);
+      const createdB = await request(server)
+        .post(`/v1/properties/${PROPERTY_B}/documents/${DOCUMENT_B}/ocr-jobs`)
+        .set(authB);
+      expect([200, 201]).toContain(createdA.status);
+      expect([200, 201]).toContain(createdB.status);
+      const jobA = createdA.body.id as string;
+      const jobB = createdB.body.id as string;
+      const suggestionsA = (
+        await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobA}`).set(authA).expect(200)
+      ).body.suggestions as SuggestionRow[];
+      const suggestionsB = (
+        await request(server).get(`/v1/properties/${PROPERTY_B}/ocr-jobs/${jobB}`).set(authB).expect(200)
+      ).body.suggestions as SuggestionRow[];
+      const foreignId = suggestionsB[0]?.id ?? '';
+      expect(foreignId).not.toBe('');
+      const onlyForeign = { decisions: [{ suggestionId: foreignId, action: 'reject' }] };
+      const foreignAndMissing = {
+        decisions: [
+          ...suggestionsA.slice(1).map((row) => ({ suggestionId: row.id, action: 'reject' })),
+          { suggestionId: foreignId, action: 'reject' },
+        ],
+      };
+      for (const payload of [onlyForeign, foreignAndMissing]) {
+        const response = await request(server)
+          .post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobA}/confirm`)
+          .set(authA)
+          .send(payload);
+        expect(response.status).toBe(404);
+        expect(response.body).toEqual({ statusCode: 404, error: 'not_found', message: 'Not found.' });
+        expect(response.body.error).not.toBe('missing_decision');
+        const serialized = JSON.stringify(response.body);
+        expect(serialized).not.toContain(foreignId);
+        expect(serialized).not.toContain(PROPERTY_B);
+        for (const row of [...suggestionsA, ...suggestionsB]) {
+          expect(serialized).not.toContain(row.id);
+        }
+      }
+      const noToken = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobA}/confirm`)
+        .send(onlyForeign);
+      expect(noToken.status).toBe(401);
+      expect(JSON.stringify(noToken.body)).not.toContain(foreignId);
+      const viewer = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobA}/confirm`)
+        .set(authViewer)
+        .send(onlyForeign);
+      expect(viewer.status).toBe(403);
+      expect(viewer.body.error).toBe('forbidden');
+      expect(JSON.stringify(viewer.body)).not.toContain(foreignId);
+      const after = await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobA}`).set(authA).expect(200);
+      expect((after.body.suggestions as SuggestionRow[]).every((row) => row.applyStatus === 'pending')).toBe(true);
+    });
+
+    it('returns 404 for a real suggestion id from another job on the same property', async () => {
+      const server = app.getHttpServer();
+      const first = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A2}/ocr-jobs`)
+        .set(authA)
+        .expect(201);
+      const second = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A}/ocr-jobs`)
+        .set(authA);
+      expect([200, 201]).toContain(second.status);
+      const jobId = first.body.id as string;
+      const otherJobId = second.body.id as string;
+      expect(otherJobId).not.toBe(jobId);
+      const suggestions = (
+        await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}`).set(authA).expect(200)
+      ).body.suggestions as SuggestionRow[];
+      const other = (
+        await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${otherJobId}`).set(authA).expect(200)
+      ).body.suggestions as SuggestionRow[];
+      const otherId = other[0]?.id ?? '';
+      const response = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}/confirm`)
+        .set(authA)
+        .send({
+          decisions: [
+            ...suggestions.slice(1).map((row) => ({ suggestionId: row.id, action: 'reject' })),
+            { suggestionId: otherId, action: 'reject' },
+          ],
+        });
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({ statusCode: 404, error: 'not_found', message: 'Not found.' });
+      expect(response.body.error).not.toBe('missing_decision');
+      expect(response.body.error).not.toBe('forbidden');
+      const serialized = JSON.stringify(response.body);
+      expect(serialized).not.toContain(otherId);
+      for (const row of suggestions) {
+        expect(serialized).not.toContain(row.id);
+      }
+      const after = await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}`).set(authA).expect(200);
+      expect((after.body.suggestions as SuggestionRow[]).every((row) => row.applyStatus === 'pending')).toBe(true);
+    });
+
+    it('returns 400 suggestion_invalid for a malformed id before the 404 lookup', async () => {
+      const server = app.getHttpServer();
+      const created = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A2}/ocr-jobs`)
+        .set(authA);
+      expect([200, 201]).toContain(created.status);
+      const jobId = created.body.id as string;
+      const suggestions = (
+        await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}`).set(authA).expect(200)
+      ).body.suggestions as SuggestionRow[];
+      const malformed = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}/confirm`)
+        .set(authA)
+        .send({ decisions: [{ suggestionId: 'not-a-uuid', action: 'reject' }] });
+      expect(malformed.status).toBe(400);
+      expect(malformed.body.error).toBe('suggestion_invalid');
+      expect(JSON.stringify(malformed.body)).not.toContain('not-a-uuid');
+      const mixed = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}/confirm`)
+        .set(authA)
+        .send({
+          decisions: [
+            { suggestionId: 'not-a-uuid', action: 'reject' },
+            { suggestionId: FORGED, action: 'reject' },
+          ],
+        });
+      expect(mixed.status).toBe(400);
+      expect(mixed.body.error).toBe('suggestion_invalid');
+      expect(mixed.status).not.toBe(404);
+      expect(JSON.stringify(mixed.body)).not.toContain(FORGED);
+      expect(JSON.stringify(mixed.body)).not.toContain('not-a-uuid');
+      for (const row of suggestions) {
+        expect(JSON.stringify(mixed.body)).not.toContain(row.id);
+      }
+      const viewer = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}/confirm`)
+        .set(authViewer)
+        .send({ decisions: [{ suggestionId: 'not-a-uuid', action: 'reject' }] });
+      expect(viewer.status).toBe(403);
+      expect(viewer.body.error).toBe('forbidden');
+      const after = await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}`).set(authA).expect(200);
+      expect((after.body.suggestions as SuggestionRow[]).every((row) => row.applyStatus === 'pending')).toBe(true);
+    });
+
     it('rejects non-UUID ids, bad targets, retargets, and bad edited values', async () => {
       const server = app.getHttpServer();
       const badId = await request(server)
