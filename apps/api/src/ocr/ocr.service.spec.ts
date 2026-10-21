@@ -16,6 +16,7 @@ import { NEXT_DUE_DATE_ERROR } from '../obligations/next-due-date.js';
 import { loadOcrRuntime } from './ocr-runtime.js';
 import { OcrService } from './ocr.service.js';
 import { paymentCreateAuditFromReplace, type OcrDecision, type OcrSuggestion } from './ocr.types.js';
+import { DOCUMENT_SOURCE_KEY } from '../evidence/storage-key.js';
 import { PrivateObjectStorage } from './object-storage.js';
 
 const PROPERTY = '11111111-1111-4111-8111-111111111111';
@@ -93,7 +94,10 @@ describe('OcrService', () => {
     expect(job.vendor).toBe('stub');
     expect(job).not.toHaveProperty('storageKey');
     expect(JSON.stringify(job)).not.toMatch(/storageKey|storage_key|properties\//i);
-    expect(storage.calls).toEqual([`properties/${PROPERTY}/documents/${DOCUMENT}/ocr-stub`]);
+    expect(storage.calls).toHaveLength(1);
+    expect(storage.calls[0]).toMatch(DOCUMENT_SOURCE_KEY);
+    expect(storage.calls[0]).not.toContain(PROPERTY);
+    expect(storage.calls[0]).not.toContain(DOCUMENT);
 
     const suggestions = suggestionMap(service, PROPERTY, job.id);
     expect(suggestions.length).toBeGreaterThan(0);
@@ -120,17 +124,6 @@ describe('OcrService', () => {
         error: 'invalid_path',
         statusCode: 400,
       });
-    }
-    expect(() => storage.buildOcrSourceKey('property-1', DOCUMENT)).toThrow(BadRequestException);
-    try {
-      storage.buildOcrSourceKey('property-1', DOCUMENT);
-      expect.unreachable();
-    } catch (error) {
-      expect((error as BadRequestException).getResponse()).toMatchObject({
-        error: 'invalid_source_key',
-        message: 'Invalid source key input.',
-      });
-      expect(JSON.stringify((error as BadRequestException).getResponse())).not.toMatch(/storage[_-]?key/i);
     }
     expect(storage.calls).toEqual([]);
   });

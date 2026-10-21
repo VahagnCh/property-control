@@ -387,7 +387,7 @@ model Evidence {
   paymentId          String?      @map("payment_id") @db.Uuid
   maintenanceTaskId  String?      @map("maintenance_task_id") @db.Uuid
   uploadedByUserId   String         @map("uploaded_by_user_id") @db.Uuid
-  /// Private object key. Never named storage_key and never returned to a client.
+  /// `{env}/evidence/{uuid}`. Never named storage_key and never returned to a client.
   sourceKey          String         @unique @map("source_key")
   status             EvidenceStatus @default(pending)
   type               EvidenceType
@@ -438,7 +438,7 @@ model Document {
   propertyId       String    @map("property_id") @db.Uuid
   uploadedByUserId String    @map("uploaded_by_user_id") @db.Uuid
   title            String
-  /// Private object key. Never named storage_key and never returned to a client.
+  /// `{env}/documents/{uuid}`. Never named storage_key and never returned to a client.
   sourceKey        String    @unique @map("source_key")
   contentType      String    @map("content_type")
   byteSize         BigInt    @map("byte_size")
@@ -556,7 +556,7 @@ model OcrJob {
   documentId String       @map("document_id") @db.Uuid
   evidenceId String?      @map("evidence_id") @db.Uuid
   status     OcrJobStatus @default(pending)
-  /// Private object key. Never named storage_key and never returned on a job.
+  /// `{env}/documents/{uuid}`. Never named storage_key and never returned on a job.
   sourceKey  String       @map("source_key")
   vendor     String?
   error      String?
