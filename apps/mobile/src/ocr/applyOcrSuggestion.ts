@@ -23,6 +23,11 @@ export type OcrSuggestion = {
   targetEntityId?: string;
   /** True when the server already bound the row. The id is not sent. */
   bound?: boolean;
+  /**
+   * Persisted server value. Null and undefined mean the field is not saved.
+   * PR #3 readSaved treats only a non-null value as present.
+   */
+  savedValue?: string | null;
 };
 
 /**
@@ -39,7 +44,7 @@ export type OcrUiDecision = {
   ui: OcrUiChoice;
   /** Local only. The confirm request does not send this. */
   suggestedValue?: string;
-  /** Sent only when `ui` is `edited`. */
+  /** Sent for `edit`, and for `replace` when the person supplies a new value. */
   editedValue?: string;
   /** Sent only for an unbound row. */
   targetEntityId?: string;
@@ -51,8 +56,9 @@ export type OcrClientDecision = OcrUiDecision;
 /**
  * Confirm request item. Backend PR #3 is the source of truth.
  * `action` is accept, reject, edit, or replace. `decision`, `field`, and
- * `suggestedValue` are not sent. `editedValue` is sent only for edit.
- * `targetEntityId` is sent only for an unbound row. `clientPriorValue` is never sent.
+ * `suggestedValue` are not sent. `editedValue` is sent for edit, and for replace
+ * when the new value is not the stored suggestion. `targetEntityId` is sent for
+ * an unbound row and omitted when the row is bound. `clientPriorValue` is never sent.
  */
 export type OcrWireAction = 'accept' | 'reject' | 'edit' | 'replace';
 
@@ -73,6 +79,8 @@ export type ReplaceFieldResult<T extends Record<string, string>> = {
   previousValue: string;
   decision: OcrUiDecision | null;
   toast: string | null;
+  /** Set when the field is already saved and accept must not be sent. */
+  offerReplace?: OcrReplaceRowModel | null;
 };
 
 export type EditFieldResult<T extends Record<string, string>> = {
@@ -80,6 +88,8 @@ export type EditFieldResult<T extends Record<string, string>> = {
   previousValue: string;
   decision: OcrUiDecision | null;
   error: { key: CopyKey; message: string } | null;
+  /** Set when a saved field cannot take accept or edit. */
+  offerReplace?: OcrReplaceRowModel | null;
 };
 
 export type OcrReplaceAction = {
@@ -101,7 +111,13 @@ export function suggestOcrField(
   field: string,
   value: string,
   confidence?: number | null,
-  extras?: { suggestionId?: string; band?: string | null; targetEntityId?: string; bound?: boolean },
+  extras?: {
+    suggestionId?: string;
+    band?: string | null;
+    targetEntityId?: string;
+    bound?: boolean;
+    savedValue?: string | null;
+  },
 ): OcrSuggestion {
   return {
     suggestionId: extras?.suggestionId,
@@ -112,6 +128,7 @@ export function suggestOcrField(
     band: extras?.band,
     targetEntityId: extras?.targetEntityId,
     bound: extras?.bound,
+    savedValue: extras?.savedValue,
   };
 }
 
@@ -183,6 +200,12 @@ export function replaceField<T extends Record<string, string>>(
     return unchanged;
   }
   const ui: OcrUiChoice = isEmpty(previousValue) ? 'accepted' : 'replaced';
+  if (fieldIsSaved(suggestion) && ui === 'accepted') {
+    return {
+      ...unchanged,
+      offerReplace: replaceSuggestionRow(String(suggestion.savedValue), suggestion.value),
+    };
+  }
   const decision = clientDecision(suggestion, field, ui, options);
   if (!decision) {
     return unchanged;
@@ -223,6 +246,20 @@ export function editOcrField<T extends Record<string, string>>(
   const validated = validateTextInput(editedValue, textFieldFor(field));
   if (!validated.ok) {
     return unchanged({ key: validated.key, message: validated.message });
+  }
+  if (fieldIsSaved(suggestion)) {
+    const replaced = clientDecision(suggestion, field, 'replaced', options);
+    if (!replaced) {
+      return unchanged(null);
+    }
+    replaced.editedValue = validated.value;
+    return {
+      form: { ...form, [field]: validated.value },
+      previousValue,
+      decision: replaced,
+      error: null,
+      offerReplace: replaceSuggestionRow(String(suggestion.savedValue), validated.value),
+    };
   }
   const decision = clientDecision(suggestion, field, 'edited', options);
   if (!decision) {
@@ -316,7 +353,7 @@ export function ocrDecisionForServer(decision: OcrUiDecision): OcrWireDecision {
     suggestionId: decision.suggestionId,
     action,
   };
-  if (action === 'edit' && typeof decision.editedValue === 'string') {
+  if ((action === 'edit' || action === 'replace') && typeof decision.editedValue === 'string') {
     payload.editedValue = decision.editedValue;
   }
   if (decision.targetEntityId) {
@@ -351,7 +388,9 @@ export type DiscardUnreviewedResult<T extends Record<string, string>> = {
 
 export type ConfirmOnRegistrarResult<T extends Record<string, string>> = DiscardUnreviewedResult<T> & {
   payload: OcrWireDecision[];
-  request: OcrConfirmRequest;
+  /** Null when sending the body would be a 409 field_already_set or a 422 for a missing target. */
+  request: OcrConfirmRequest | null;
+  blockedSaved: OcrSuggestion[];
 };
 
 /**
@@ -373,6 +412,8 @@ export function confirmOnRegistrar<T extends Record<string, string>>(
   const seen = new Set<string>();
   const payload: OcrWireDecision[] = [];
   const discarded: OcrSuggestion[] = [];
+  const blockedSaved: OcrSuggestion[] = [];
+  let missingTarget = false;
   for (const suggestion of suggestions) {
     if (!suggestion.suggestionId || seen.has(suggestion.suggestionId)) {
       continue;
@@ -384,7 +425,19 @@ export function confirmOnRegistrar<T extends Record<string, string>>(
       payload.push(rejectWire(suggestion));
       continue;
     }
-    payload.push(wireForSuggestion(suggestion, ocrDecisionForServer(choice)));
+    const wire = wireForSuggestion(suggestion, ocrDecisionForServer(choice));
+    if (fieldIsSaved(suggestion) && (wire.action === 'accept' || wire.action === 'edit')) {
+      blockedSaved.push(suggestion);
+      continue;
+    }
+    if (wire.action !== 'reject' && !suggestion.bound && !wire.targetEntityId) {
+      missingTarget = true;
+    }
+    payload.push(wire);
+  }
+  const notice = discarded.length > 0 ? OCR_UNREVIEWED_DISCARD_COPY : null;
+  if (blockedSaved.length > 0 || missingTarget) {
+    return { form, discarded, payload: [], request: null, blockedSaved, notice };
   }
   const request = buildConfirmRequest(payload);
   return {
@@ -392,7 +445,8 @@ export function confirmOnRegistrar<T extends Record<string, string>>(
     discarded,
     payload: request.decisions,
     request,
-    notice: discarded.length > 0 ? OCR_UNREVIEWED_DISCARD_COPY : null,
+    blockedSaved,
+    notice,
   };
 }
 
@@ -417,7 +471,39 @@ export function serializeOcrDecision(decision: OcrUiDecision): string {
 }
 
 export function serializeConfirmPayload(payload: readonly OcrWireDecision[]): string {
-  return JSON.stringify(buildConfirmRequest(payload));
+  return JSON.stringify(stripClientPriorValue(buildConfirmRequest(payload)));
+}
+
+/** Drops `clientPriorValue` at every object level. Other keys are kept. */
+export function stripClientPriorValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => stripClientPriorValue(entry));
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'clientPriorValue') {
+      continue;
+    }
+    out[key] = stripClientPriorValue(entry);
+  }
+  return out;
+}
+
+/**
+ * PR #3 confirm response. `persisted` is true only when the save writes commit.
+ */
+export function readOcrConfirmResult(body: unknown): { persisted: boolean } | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return null;
+  }
+  const persisted = (body as { persisted?: unknown }).persisted;
+  if (typeof persisted !== 'boolean') {
+    return null;
+  }
+  return { persisted };
 }
 
 function rejectWire(suggestion: OcrSuggestion): OcrWireDecision {
@@ -444,7 +530,7 @@ function wireOnly(decision: OcrWireDecision): OcrWireDecision {
     suggestionId: decision.suggestionId,
     action: decision.action,
   };
-  if (decision.action === 'edit' && typeof decision.editedValue === 'string') {
+  if ((decision.action === 'edit' || decision.action === 'replace') && typeof decision.editedValue === 'string') {
     payload.editedValue = decision.editedValue;
   }
   if (typeof decision.targetEntityId === 'string' && decision.targetEntityId !== '') {
@@ -500,8 +586,18 @@ function clientDecision(
   return decision;
 }
 
+function fieldIsSaved(suggestion: OcrSuggestion): boolean {
+  return suggestion.savedValue !== undefined && suggestion.savedValue !== null;
+}
+
 function textFieldFor(field: string): TextField {
-  return field === 'note' || field === 'body' ? 'note' : 'title';
+  if (field === 'notes' || field === 'note') {
+    return 'notes';
+  }
+  if (field === 'body') {
+    return 'body';
+  }
+  return 'title';
 }
 
 function isApplyableField(form: Record<string, string>, field: string): boolean {

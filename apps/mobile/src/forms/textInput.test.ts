@@ -55,24 +55,28 @@ describe('text input', () => {
     }
   });
 
-  it('allows a newline only on a multi-line note, and still rejects tab and CR', () => {
+  it('stores CR and CRLF as LF on a note, and still rejects tab', () => {
     const note = `${ACCENTS}\nsegunda línea`;
     expect(validateTextInput(note, 'note')).toEqual({ ok: true, value: note });
+    expect(validateTextInput(note, 'notes')).toEqual({ ok: true, value: note });
     expect(validateTextInput(note, 'body')).toEqual({ ok: true, value: note });
-    expect(validateTextInput(`año\nfolio`, 'title').ok).toBe(false);
+    expect(validateTextInput('linea 1\r\nlinea 2', 'notes')).toEqual({
+      ok: true,
+      value: 'linea 1\nlinea 2',
+    });
+    expect(validateTextInput('linea 1\rlinea 2', 'note')).toEqual({
+      ok: true,
+      value: 'linea 1\nlinea 2',
+    });
+    expect(validateTextInput('año\nfolio', 'title').ok).toBe(false);
+    expect(validateTextInput('Cafe\r', 'title').ok).toBe(false);
 
-    for (const field of ['note', 'body'] as const) {
+    for (const field of ['note', 'notes', 'body'] as const) {
       expect(validateTextInput('año\tfólio', field)).toEqual({
         ok: false,
         key: 'form.text.invalidChars',
         message: INVALID,
       });
-      expect(validateTextInput('año\rfólio', field)).toEqual({
-        ok: false,
-        key: 'form.text.invalidChars',
-        message: INVALID,
-      });
-      expect(validateTextInput('año\r\nfólio', field).ok).toBe(false);
     }
   });
 

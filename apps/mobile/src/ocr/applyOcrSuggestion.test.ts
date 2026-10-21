@@ -214,7 +214,12 @@ describe('AC-OCR-11 replaceField', () => {
       editedValue: 'línea uno\nlínea dos',
     });
     expect(editOcrField(form, note, 'note', 'línea\tuno').decision).toBeNull();
-    expect(editOcrField(form, note, 'note', 'línea\runo').decision).toBeNull();
+    const carriageReturn = editOcrField(form, note, 'note', 'línea\runo');
+    expect(JSON.parse(serializeOcrDecision(carriageReturn.decision!))).toEqual({
+      suggestionId: 'sug-note',
+      action: 'edit',
+      editedValue: 'línea\nuno',
+    });
   });
 
   it('refuses a blank suggestion, a missing id, another field, and prototype keys', () => {
