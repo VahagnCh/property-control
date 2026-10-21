@@ -76,7 +76,8 @@ POST /v1/properties/:propertyId/ocr-jobs/:ocrJobId/confirm
 
 Rules:
 
-- **Accept** applies the suggested value. **Edit** applies `editedValue` and stores it in `user_edited_value`. **Reject** writes nothing and sets `apply_status = 'rejected'`.
+- **Accept** applies the suggested value only when the saved field is null. It does not overwrite a saved value. **Replace** overwrites a saved value and writes the replace audit. **Edit** applies `editedValue` when the saved field is null and stores it in `user_edited_value`. **Reject** writes nothing and sets `apply_status = 'rejected'`.
+- A bulk `acceptAll` shape, and `clientPriorValue`, return 422. Unsaved typed text is not stored.
 - A suggestion needs a `target_entity_id`, from the row or from the decision, before it can be accepted.
 - All-or-nothing for the accepted set. A partial failure returns 409 or 422 rather than applying some fields and silently dropping others.
 - Every decision rejected means the job ends `rejected`, no entity field changes, and the document stays stored.
@@ -94,11 +95,11 @@ The response contains the job, the updated suggestions, and `applied`, which lis
 | Flag | Off unless `OCR_STUB_ENABLED` is `1`, `true`, `yes`, or `on`. Off returns 501 before path or body parsing. |
 | Auth | Access token first (401), then property membership. Unknown property, document, or membership is 404. A viewer can read and cannot enqueue or confirm (403). |
 | Extract | `enqueue()` runs through `processing` synchronously and returns `suggested` with `vendor: "stub"` |
-| Suggestions | Four fixed rows: obligation `expectedAmount` (`"18450.00"`), `nextDueDate`, and `providerName`, plus document `title`. Only the document row is pre-bound, and only to the source document. A missing confidence, a confidence below 0.5, or an ambiguous es-MX amount sets `lowConfidence` and stays `pending`. A failed extract returns `errorCode: "extract_failed"` and not the extractor's text. |
+| Suggestions | Four fixed rows: obligation `expectedAmount` (`"18450.00"`), `nextDueDate`, and `providerName`, plus document `title`. Only the document row is pre-bound, and only to the source document. Each suggestion has `band`: `alta` at or above 0.90, `media` from 0.80 up to 0.90, `revisa` below 0.80 or when the score is missing. The job returns `confidenceBands` `{ alta: 0.9, media: 0.8 }`. `revisa`, or an ambiguous es-MX amount such as `1,234`, sets `lowConfidence` and stays `pending`. A failed extract returns `errorCode: "extract_failed"` and not the extractor's text. |
 | Reuse | Posting again for the same document while a job is open and unexpired returns 200 and the existing job instead of creating a second one |
-| Decisions | Whitelisted keys only. Every suggestion needs an explicit accept, reject, or edit. A missing one is 422. A duplicate is 400. An edit with no `editedValue` is 400. `targetEntityId` must be a UUID in the same property and of the suggestion's type, or the response is 404. |
-| `document_meta` | Applies only to the job's source document. Another document is 400 when it is in the property, and 404 when it is not. |
-| `editedValue` | Canonical for the field: a peso string with at most two decimals, an ISO date from 1990 through 2100, or NFC text. Unknown `fieldPath` and prototype keys are 400. |
+| Decisions | Whitelisted keys only. Every suggestion needs an explicit accept, replace, reject, or edit. A missing one is 422. A duplicate is 400. An edit with no `editedValue` is 400. `acceptAll` and `clientPriorValue` are 422. `targetEntityId` must be a UUID in the same property and of the suggestion's type, or the response is 404. |
+| `document_meta` | Applies only to the job's source document. Another document in the same property is 422. A foreign document is 404. |
+| `editedValue` | Canonical for the field: a peso string with at most two decimals, an ISO date inside the property-timezone window (today minus 1 year through today plus 5 years) and inside the 1990–2100 sanity bound, or NFC text of at most 300 characters for a title. C0, C1, bidi overrides, and zero-width characters are rejected, not stripped. A bad value is 422. Unknown `fieldPath` and prototype keys are 400. The JSON body limit is 32 KB. |
 | Accept with no target | 422, and every suggestion stays `pending` |
 | Confirm twice, or confirm when the job is not `suggested` | 409 |
 | Expired job | 410. It is not confirmed. |

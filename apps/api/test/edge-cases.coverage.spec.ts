@@ -52,6 +52,7 @@ describe('edge-case spec coverage', () => {
     expect(schema).toContain('model NotificationDelivery');
     expect(schema).toContain('model ObligationPauseInterval');
     expect(schema).toContain('@default("America/Mexico_City")');
+    expect(schema).toContain('obligations_next_due_date_sanity');
     expect(schema).toContain('notification_deliveries_idempotency_key');
 
     const sql = read('apps/api/prisma/sql/checks.sql');
@@ -59,6 +60,9 @@ describe('edge-case spec coverage', () => {
     expect(sql).toContain('WHERE obligation_id IS NOT NULL');
     expect(sql).toContain('reminders_maintenance_task_id_scheduled_for_channel_key');
     expect(sql).toContain('WHERE maintenance_task_id IS NOT NULL');
+    expect(sql).toContain('obligations_next_due_date_sanity');
+    expect(sql).toContain("DATE '1990-01-01'");
+    expect(sql).toContain("DATE '2100-12-31'");
 
     const payments = read('apps/api/src/payments/payments.module.ts');
     expect(payments).not.toContain('@Delete');
@@ -76,6 +80,7 @@ describe('edge-case spec coverage', () => {
     expect(blocks[0]).toBe(blocks[1]);
     for (const block of blocks) {
       expect(block).not.toMatch(/storageKey/);
+      expect(block).not.toMatch(/storage_key/);
       const parsed = JSON.parse(block ?? '{}') as {
         response?: { body?: { evidence?: Record<string, unknown>; uploadUrl?: unknown } };
       };

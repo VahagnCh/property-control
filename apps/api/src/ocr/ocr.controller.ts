@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Inject, Param, Post, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Inject, Param, Post, Req, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { AccessTokenGuard } from '../auth/access-token.guard.js';
 import { PropertyMembershipGuard } from '../auth/property-membership.guard.js';
@@ -37,7 +37,10 @@ export class OcrController {
     @Param('propertyId') propertyId: string,
     @Param('ocrJobId') ocrJobId: string,
     @Body() body: unknown,
+    @Req() request: { accessToken?: { sub: string } },
   ) {
-    return this.ocr.confirm(propertyId, ocrJobId, body);
+    return this.ocr.confirm(propertyId, ocrJobId, body, {
+      actorUserId: request.accessToken?.sub ?? null,
+    });
   }
 }

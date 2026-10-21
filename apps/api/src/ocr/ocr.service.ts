@@ -11,11 +11,17 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { DEFAULT_PROPERTY_TIMEZONE } from '../common/property-calendar.js';
 import { isTraversal, isUuid } from '../common/path-safety.js';
 import { CLOCK, SystemClock, type Clock } from './clock.js';
 import { parseDecisions } from './ocr-decisions.js';
 import { OCR_EXTRACTOR, StubOcrExtractor, type ExtractedField, type OcrExtractor } from './ocr-extractor.js';
-import { LOW_CONFIDENCE_THRESHOLD, canonicalizeFieldValue } from './ocr-fields.js';
+import {
+  CONFIDENCE_BANDS,
+  LOW_CONFIDENCE_THRESHOLD,
+  canonicalizeFieldValue,
+  confidenceBand,
+} from './ocr-fields.js';
 import { parseMxAmount, parseMxDate } from './ocr-locale.js';
 import { OCR_RUNTIME, loadOcrRuntime, type OcrRuntime } from './ocr-runtime.js';
 import { FailClosedOcrTargetLookup, OCR_TARGET_LOOKUP, type OcrTargetLookup } from './ocr-target-lookup.js';
@@ -24,6 +30,7 @@ import type {
   OcrConfirmResult,
   OcrDecision,
   OcrJob,
+  OcrReplaceAudit,
   OcrSuggestion,
 } from './ocr.types.js';
 import { OBJECT_STORAGE, PrivateObjectStorage, type ObjectStorage } from './object-storage.js';
@@ -94,6 +101,7 @@ export class OcrService {
         propertyId,
         documentId,
         status: 'pending',
+        confidenceBands: CONFIDENCE_BANDS,
         createdAt: now,
         updatedAt: now,
       },
@@ -125,13 +133,20 @@ export class OcrService {
       .map((record) => this.toPublicJob(record.job));
   }
 
-  confirm(propertyId: string, ocrJobId: string, input: unknown): Promise<OcrConfirmResult> {
+  confirm(
+    propertyId: string,
+    ocrJobId: string,
+    input: unknown,
+    options?: { actorUserId?: string | null },
+  ): Promise<OcrConfirmResult> {
     assertUuidPair(propertyId, ocrJobId);
     const existing = this.jobs.get(ocrJobId);
     if (!existing || existing.job.propertyId !== propertyId) {
       throw new NotFoundException('Not found.');
     }
-    return this.exclusive(ocrJobId, () => this.confirmExclusive(propertyId, ocrJobId, input));
+    return this.exclusive(ocrJobId, () =>
+      this.confirmExclusive(propertyId, ocrJobId, input, options?.actorUserId ?? null),
+    );
   }
 
   /** In-flight confirm chains. Tests assert this returns to 0 after the chain settles. */
@@ -139,40 +154,69 @@ export class OcrService {
     return this.tails.size;
   }
 
-  private confirmExclusive(propertyId: string, ocrJobId: string, input: unknown): OcrConfirmResult {
+  private confirmExclusive(
+    propertyId: string,
+    ocrJobId: string,
+    input: unknown,
+    actorUserId: string | null,
+  ): OcrConfirmResult {
     const record = this.requireFresh(propertyId, ocrJobId);
     if (record.job.status !== 'suggested') {
       throw new ConflictException('Only a job in status suggested can be confirmed.');
     }
     const decisions = parseDecisions(input);
-    const plan = this.plan(record, decisions);
+    const plan = this.plan(record, decisions, actorUserId);
 
     const applied: OcrAppliedField[] = [];
+    const audits: OcrReplaceAudit[] = [];
     for (const step of plan) {
       if (step.decision.action === 'reject' || !step.entityId) {
         step.suggestion.applyStatus = 'rejected';
         continue;
       }
+      if (step.kept) {
+        step.suggestion.applyStatus = 'accepted';
+        if (step.decision.action === 'edit' || step.decision.action === 'replace') {
+          step.suggestion.userEditedValue = step.value;
+        }
+        continue;
+      }
       step.suggestion.targetEntityId = step.entityId;
       step.suggestion.applyStatus = 'accepted';
-      if (step.decision.action === 'edit') {
+      if (step.decision.action === 'edit' || step.decision.action === 'replace') {
         step.suggestion.userEditedValue = step.value;
       }
-      applied.push({
-        suggestionId: step.suggestion.id,
-        entityType: step.suggestion.targetEntityType,
-        entityId: step.entityId,
-        fieldPath: step.suggestion.fieldPath,
-      });
+      if (step.audit) {
+        audits.push(step.audit);
+      }
+      if (step.write) {
+        this.lookup.saveValue?.(
+          {
+            propertyId: record.job.propertyId,
+            entityType: step.suggestion.targetEntityType,
+            entityId: step.entityId,
+            fieldPath: step.suggestion.fieldPath,
+          },
+          step.value,
+        );
+        applied.push({
+          suggestionId: step.suggestion.id,
+          entityType: step.suggestion.targetEntityType,
+          entityId: step.entityId,
+          fieldPath: step.suggestion.fieldPath,
+        });
+      }
     }
 
-    record.job.status = applied.length > 0 ? 'confirmed' : 'rejected';
+    const wroteOrDecided = plan.some((step) => step.decision.action !== 'reject' && step.entityId);
+    record.job.status = wroteOrDecided ? 'confirmed' : 'rejected';
     record.job.updatedAt = new Date(this.clock.now()).toISOString();
     const snapshot = this.snapshot(record);
     return {
       job: snapshot.job,
       suggestions: snapshot.suggestions,
       applied,
+      audits,
       persisted: false,
     };
   }
@@ -180,7 +224,16 @@ export class OcrService {
   private plan(
     record: JobRecord,
     decisions: OcrDecision[],
-  ): Array<{ suggestion: OcrSuggestion; decision: OcrDecision; entityId?: string; value?: unknown }> {
+    actorUserId: string | null,
+  ): Array<{
+    suggestion: OcrSuggestion;
+    decision: OcrDecision;
+    entityId?: string;
+    value?: unknown;
+    kept?: boolean;
+    write?: boolean;
+    audit?: OcrReplaceAudit;
+  }> {
     const known = new Map(record.suggestions.map((suggestion) => [suggestion.id, suggestion]));
     const seen = new Set<string>();
     for (const decision of decisions) {
@@ -195,7 +248,7 @@ export class OcrService {
     const missing = record.suggestions.filter((suggestion) => !seen.has(suggestion.id));
     if (missing.length > 0) {
       throw new UnprocessableEntityException(
-        'Every suggestion needs an explicit accept, reject, or edit.',
+        'Every suggestion needs an explicit accept, replace, reject, or edit.',
       );
     }
 
@@ -204,7 +257,14 @@ export class OcrService {
       decision: OcrDecision;
       entityId?: string;
       value?: unknown;
+      kept?: boolean;
+      write?: boolean;
+      audit?: OcrReplaceAudit;
     }> = [];
+    const context = {
+      now: new Date(this.clock.now()),
+      timeZone: this.lookup.timeZone?.(record.job.propertyId) ?? DEFAULT_PROPERTY_TIMEZONE,
+    };
     for (const decision of decisions) {
       const suggestion = known.get(decision.suggestionId);
       if (!suggestion) {
@@ -215,11 +275,63 @@ export class OcrService {
         continue;
       }
       const entityId = this.resolveTarget(record, suggestion, decision);
-      const rawValue = decision.action === 'edit' ? decision.editedValue : suggestion.suggestedValue;
-      const value = canonicalizeFieldValue(suggestion.fieldPath, suggestion.targetEntityType, rawValue);
-      steps.push({ suggestion, decision, entityId, value });
+      const rawValue =
+        decision.action === 'edit' || (decision.action === 'replace' && decision.editedValue !== undefined)
+          ? decision.editedValue
+          : suggestion.suggestedValue;
+      const value = canonicalizeFieldValue(
+        suggestion.fieldPath,
+        suggestion.targetEntityType,
+        rawValue,
+        context,
+      );
+      const saved = this.readSaved(record.job.propertyId, suggestion, entityId);
+      if (saved.present && decision.action !== 'replace') {
+        steps.push({ suggestion, decision, entityId, value, kept: true });
+        continue;
+      }
+      if (decision.action === 'replace') {
+        const audit: OcrReplaceAudit = saved.present
+          ? {
+              suggestionId: suggestion.id,
+              field: suggestion.fieldPath,
+              action: 'replace',
+              actorUserId,
+              previousValue: saved.value,
+              newValue: value,
+            }
+          : {
+              suggestionId: suggestion.id,
+              field: suggestion.fieldPath,
+              decision: 'replaced',
+              suggestedValue: value,
+            };
+        steps.push({ suggestion, decision, entityId, value, write: saved.present, audit });
+        continue;
+      }
+      steps.push({ suggestion, decision, entityId, value, write: true });
     }
     return steps;
+  }
+
+  private readSaved(
+    propertyId: string,
+    suggestion: OcrSuggestion,
+    entityId: string,
+  ): { present: false } | { present: true; value: unknown } {
+    if (!this.lookup.savedValue) {
+      return { present: false };
+    }
+    const value = this.lookup.savedValue({
+      propertyId,
+      entityType: suggestion.targetEntityType,
+      entityId,
+      fieldPath: suggestion.fieldPath,
+    });
+    if (value === undefined || value === null) {
+      return { present: false };
+    }
+    return { present: true, value };
   }
 
   private resolveTarget(record: JobRecord, suggestion: OcrSuggestion, decision: OcrDecision): string {
@@ -242,7 +354,7 @@ export class OcrService {
         if (!sameProperty) {
           throw new NotFoundException('Not found.');
         }
-        throw new BadRequestException('document_meta cannot be retargeted.');
+        throw new UnprocessableEntityException('document_meta cannot be retargeted.');
       }
       return entityId;
     }
@@ -304,6 +416,7 @@ export class OcrService {
       fieldPath: field.fieldPath,
       suggestedValue: field.suggestedValue,
       confidence,
+      band: confidenceBand(confidence),
       lowConfidence: isLowConfidence(field.fieldPath, field.suggestedValue, confidence),
       userEditedValue: null,
       applyStatus: 'pending',
@@ -356,6 +469,7 @@ export class OcrService {
       status: job.status,
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
+      confidenceBands: CONFIDENCE_BANDS,
     };
     if (job.evidenceId !== undefined) {
       publicJob.evidenceId = job.evidenceId;

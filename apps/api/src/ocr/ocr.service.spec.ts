@@ -11,8 +11,9 @@ import { ManualClock } from './clock.js';
 import type { OcrExtractor } from './ocr-extractor.js';
 import type { OcrTargetLookup } from './ocr-target-lookup.js';
 import { canonicalizeMxText } from './ocr-locale.js';
+import { NEXT_DUE_DATE_ERROR } from '../obligations/next-due-date.js';
 import { OcrService } from './ocr.service.js';
-import type { OcrDecision, OcrSuggestion } from './ocr.types.js';
+import { paymentCreateAuditFromReplace, type OcrDecision, type OcrSuggestion } from './ocr.types.js';
 import { PrivateObjectStorage } from './object-storage.js';
 
 const PROPERTY = '11111111-1111-4111-8111-111111111111';
@@ -93,7 +94,13 @@ describe('OcrService', () => {
     const suggestions = suggestionMap(service, PROPERTY, job.id);
     expect(suggestions.length).toBeGreaterThan(0);
     expect(suggestions.every((row) => row.applyStatus === 'pending')).toBe(true);
-    expect(suggestions.every((row) => row.lowConfidence === false)).toBe(true);
+    expect(job.confidenceBands).toEqual({ alta: 0.9, media: 0.8 });
+    const amount = suggestions.find((row) => row.fieldPath === 'expectedAmount');
+    expect(amount?.confidence).toBe(0.81);
+    expect(amount?.band).toBe('media');
+    expect(amount?.lowConfidence).toBe(false);
+    expect(suggestions.filter((row) => row.fieldPath !== 'expectedAmount').every((row) => row.band === 'revisa')).toBe(true);
+    expect(suggestions.filter((row) => row.fieldPath !== 'expectedAmount').every((row) => row.lowConfidence)).toBe(true);
   });
 
   it('rejects a non-UUID property or document id before building a storage key', () => {
@@ -312,7 +319,7 @@ describe('OcrService', () => {
       );
 
     await expect(service.confirm(PROPERTY, job.id, body(DOCUMENT_2))).rejects.toBeInstanceOf(
-      BadRequestException,
+      UnprocessableEntityException,
     );
     await expect(service.confirm(PROPERTY, job.id, body(FORGED))).rejects.toBeInstanceOf(NotFoundException);
     expect(
@@ -340,6 +347,12 @@ describe('OcrService', () => {
       { fieldPath: 'providerName', editedValue: '' },
       { fieldPath: 'providerName', editedValue: '   ' },
       { fieldPath: 'providerName', editedValue: 'bad\u0000name' },
+      { fieldPath: 'providerName', editedValue: 'c1\u0085name' },
+      { fieldPath: 'providerName', editedValue: 'bidi\u202Ename' },
+      { fieldPath: 'providerName', editedValue: 'bidi\u2066name' },
+      { fieldPath: 'providerName', editedValue: 'zw\u200Bname' },
+      { fieldPath: 'providerName', editedValue: 'zw\uFEFFname' },
+      { fieldPath: 'providerName', editedValue: 'zw\u2060name' },
       { fieldPath: 'providerName', editedValue: 'line\nbreak' },
       { fieldPath: 'providerName', editedValue: 'x'.repeat(201) },
       { fieldPath: 'title', editedValue: 'x'.repeat(301) },
@@ -358,7 +371,9 @@ describe('OcrService', () => {
           targetEntityId: row.targetEntityType === 'document_meta' ? undefined : OBLIGATION,
         };
       });
-      await expect(service.confirm(PROPERTY, job.id, payload)).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.confirm(PROPERTY, job.id, payload)).rejects.toBeInstanceOf(
+        UnprocessableEntityException,
+      );
     }
     expect(
       suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
@@ -655,6 +670,255 @@ describe('OcrService', () => {
     expect(
       suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
     ).toBe(true);
+  });
+
+  it('flags 0.79 and a missing score as revisa and keeps 0.80 as media', () => {
+    const service = serviceWith({
+      extractor: {
+        extract: () => ({
+          outcome: 'suggested',
+          suggestions: [
+            { targetEntityType: 'obligation', fieldPath: 'providerName', suggestedValue: 'A', confidence: 0.79 },
+            { targetEntityType: 'obligation', fieldPath: 'expectedAmount', suggestedValue: '10.00', confidence: 0.8 },
+            { targetEntityType: 'document_meta', fieldPath: 'title', suggestedValue: 'Titulo', confidence: 0.9 },
+            { targetEntityType: 'obligation', fieldPath: 'providerName', suggestedValue: 'B' },
+          ],
+        }),
+      },
+    });
+    const suggestions = suggestionMap(service, PROPERTY, service.enqueue(PROPERTY, DOCUMENT).job.id);
+    const low = suggestions.find((row) => row.suggestedValue === 'A');
+    const boundary = suggestions.find((row) => row.fieldPath === 'expectedAmount');
+    const alta = suggestions.find((row) => row.fieldPath === 'title');
+    const missing = suggestions.find((row) => row.suggestedValue === 'B');
+    expect(low).toMatchObject({ band: 'revisa', lowConfidence: true });
+    expect(boundary).toMatchObject({ band: 'media', lowConfidence: false });
+    expect(alta).toMatchObject({ band: 'alta', lowConfidence: false });
+    expect(missing).toMatchObject({ band: 'revisa', lowConfidence: true, confidence: null });
+  });
+
+  it('does not treat 1,234 as a confident amount', () => {
+    const service = serviceWith({
+      extractor: {
+        extract: () => ({
+          outcome: 'suggested',
+          suggestions: [
+            {
+              targetEntityType: 'obligation',
+              fieldPath: 'expectedAmount',
+              suggestedValue: '1,234',
+              confidence: 0.95,
+            },
+          ],
+        }),
+      },
+    });
+    const [row] = suggestionMap(service, PROPERTY, service.enqueue(PROPERTY, DOCUMENT).job.id);
+    expect(row?.band).toBe('alta');
+    expect(row?.lowConfidence).toBe(true);
+    expect(row?.suggestedValue).toBe('1,234');
+  });
+
+  it('rejects forbidden text instead of stripping it', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    const samples = ['\u0001', '\u0085', '\u202E', '\u2068', '\u200B', '\u200D', '\uFEFF', '\u2060'];
+    for (const sample of samples) {
+      const dirty = `Cafe${sample}x`;
+      await expect(
+        service.confirm(
+          PROPERTY,
+          job.id,
+          suggestions.map((row) =>
+            row.fieldPath === 'providerName'
+              ? { suggestionId: row.id, action: 'edit' as const, editedValue: dirty, targetEntityId: OBLIGATION }
+              : { suggestionId: row.id, action: 'reject' as const },
+          ),
+        ),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      const provider = suggestionMap(service, PROPERTY, job.id).find((row) => row.fieldPath === 'providerName');
+      expect(provider?.applyStatus).toBe('pending');
+      expect(provider?.userEditedValue).toBeNull();
+      expect(provider?.suggestedValue).toBe('BBVA Hipoteca');
+      expect(JSON.stringify(provider)).not.toContain(sample);
+    }
+  });
+
+  it('returns 422 for a nextDueDate outside the property-timezone window', async () => {
+    const clock = new ManualClock(Date.parse('2026-10-21T18:00:00.000Z'));
+    const service = serviceWith({ clock });
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    const beyond = suggestions.map((row) =>
+      row.fieldPath === 'nextDueDate'
+        ? { suggestionId: row.id, action: 'edit' as const, editedValue: '2031-10-22', targetEntityId: OBLIGATION }
+        : { suggestionId: row.id, action: 'reject' as const },
+    );
+    await expect(service.confirm(PROPERTY, job.id, beyond)).rejects.toBeInstanceOf(UnprocessableEntityException);
+    try {
+      await service.confirm(PROPERTY, job.id, beyond);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(UnprocessableEntityException);
+      expect((error as UnprocessableEntityException).getStatus()).toBe(422);
+      expect((error as UnprocessableEntityException).getResponse()).toMatchObject({
+        error: NEXT_DUE_DATE_ERROR,
+      });
+    }
+  });
+
+  it('leaves a saved value unchanged on accept, overwrites it on replace, and keeps it on reject', async () => {
+    const saved = new Map<string, unknown>([['providerName', 'BBVA ya capturado']]);
+    const base = lookup();
+    const service = serviceWith({
+      lookup: {
+        belongsToProperty: (input) => base.belongsToProperty(input),
+        savedValue({ fieldPath }) {
+          return saved.has(fieldPath) ? saved.get(fieldPath) : undefined;
+        },
+        saveValue({ fieldPath }, value) {
+          saved.set(fieldPath, value);
+        },
+      },
+    });
+    const first = service.enqueue(PROPERTY, DOCUMENT);
+    const firstSuggestions = suggestionMap(service, PROPERTY, first.job.id);
+    const firstProvider = firstSuggestions.find((row) => row.fieldPath === 'providerName');
+    const accepted = await service.confirm(
+      PROPERTY,
+      first.job.id,
+      firstSuggestions.map((row) =>
+        row.id === firstProvider?.id
+          ? { suggestionId: row.id, action: 'accept' as const, targetEntityId: OBLIGATION }
+          : { suggestionId: row.id, action: 'reject' as const },
+      ),
+      { actorUserId: 'user-a' },
+    );
+    expect(saved.get('providerName')).toBe('BBVA ya capturado');
+    expect(accepted.applied.find((row) => row.fieldPath === 'providerName')).toBeUndefined();
+    expect(accepted.audits).toEqual([]);
+
+    const second = service.enqueue(PROPERTY, DOCUMENT_2);
+    const secondSuggestions = suggestionMap(service, PROPERTY, second.job.id);
+    const provider = secondSuggestions.find((row) => row.fieldPath === 'providerName');
+    const replaced = await service.confirm(
+      PROPERTY,
+      second.job.id,
+      secondSuggestions.map((row) =>
+        row.id === provider?.id
+          ? { suggestionId: row.id, action: 'replace' as const, editedValue: 'Otro banco', targetEntityId: OBLIGATION }
+          : { suggestionId: row.id, action: 'reject' as const },
+      ),
+      { actorUserId: 'user-a' },
+    );
+    expect(saved.get('providerName')).toBe('Otro banco');
+    expect(replaced.audits).toEqual([
+      {
+        suggestionId: provider?.id,
+        field: 'providerName',
+        action: 'replace',
+        actorUserId: 'user-a',
+        previousValue: 'BBVA ya capturado',
+        newValue: 'Otro banco',
+      },
+    ]);
+    expect(paymentCreateAuditFromReplace(replaced.audits[0]!)).toEqual({
+      source: 'ocr_replace',
+      suggestionId: provider?.id,
+      field: 'providerName',
+    });
+  });
+
+  it('records only the suggestion when replace happens before the record is saved', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    const provider = suggestions.find((row) => row.fieldPath === 'providerName');
+    const result = await service.confirm(
+      PROPERTY,
+      job.id,
+      suggestions.map((row) =>
+        row.id === provider?.id
+          ? { suggestionId: row.id, action: 'replace' as const, targetEntityId: OBLIGATION }
+          : { suggestionId: row.id, action: 'reject' as const },
+      ),
+      { actorUserId: 'user-a' },
+    );
+    expect(result.audits).toEqual([
+      {
+        suggestionId: provider?.id,
+        field: 'providerName',
+        decision: 'replaced',
+        suggestedValue: 'BBVA Hipoteca',
+      },
+    ]);
+    expect(result.audits[0]).not.toHaveProperty('previousValue');
+    expect(result.audits[0]).not.toHaveProperty('clientPriorValue');
+    expect(result.applied).toEqual([]);
+    expect(result.persisted).toBe(false);
+  });
+
+  it('rejects clientPriorValue and a bulk accept-all with 422', async () => {
+    const saved = new Map<string, unknown>([['providerName', 'BBVA ya capturado']]);
+    const base = lookup();
+    const service = serviceWith({
+      lookup: {
+        belongsToProperty: (input) => base.belongsToProperty(input),
+        savedValue({ fieldPath }) {
+          return saved.has(fieldPath) ? saved.get(fieldPath) : undefined;
+        },
+      },
+    });
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    const provider = suggestions.find((row) => row.fieldPath === 'providerName');
+    const withPrior = suggestions.map((row) =>
+      row.id === provider?.id
+        ? {
+            suggestionId: row.id,
+            action: 'replace' as const,
+            editedValue: 'Otro',
+            targetEntityId: OBLIGATION,
+            clientPriorValue: 'typed in the form',
+          }
+        : { suggestionId: row.id, action: 'reject' as const },
+    );
+    await expect(service.confirm(PROPERTY, job.id, withPrior)).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(saved.get('providerName')).toBe('BBVA ya capturado');
+    await expect(
+      service.confirm(PROPERTY, job.id, { acceptAll: true, decisions: withPrior }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(
+      service.confirm(PROPERTY, job.id, { decisions: [{ action: 'accept-all' }] }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(
+      suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
+    ).toBe(true);
+  });
+
+  it('keeps a saved value when the suggestion is rejected', async () => {
+    const saved = new Map<string, unknown>([['providerName', 'BBVA ya capturado']]);
+    const base = lookup();
+    const service = serviceWith({
+      lookup: {
+        belongsToProperty: (input) => base.belongsToProperty(input),
+        savedValue({ fieldPath }) {
+          return saved.get(fieldPath);
+        },
+        saveValue({ fieldPath }, value) {
+          saved.set(fieldPath, value);
+        },
+      },
+    });
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    await service.confirm(
+      PROPERTY,
+      job.id,
+      suggestions.map((row) => ({ suggestionId: row.id, action: 'reject' as const })),
+    );
+    expect(saved.get('providerName')).toBe('BBVA ya capturado');
   });
 
   it('exposes no obligation or payment writer on the service', () => {

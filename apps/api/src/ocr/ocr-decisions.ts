@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, UnprocessableEntityException } from '@nestjs/common';
 import { isUuid } from '../common/path-safety.js';
 import type { OcrDecision } from './ocr.types.js';
 
@@ -18,6 +18,9 @@ function decisionsFromBody(body: unknown): unknown[] {
   if (!isPlainObject(body)) {
     throw new BadRequestException('Body must be an object.');
   }
+  if (isAcceptAll(body)) {
+    throw bulkAcceptAll();
+  }
   for (const key of Object.keys(body)) {
     if (key !== 'decisions') {
       throw new BadRequestException('Unknown field.');
@@ -33,6 +36,12 @@ function parseDecision(value: unknown): OcrDecision {
   if (!isPlainObject(value)) {
     throw new BadRequestException('Each decision needs a suggestionId.');
   }
+  if ('clientPriorValue' in value) {
+    throw new UnprocessableEntityException('clientPriorValue is not accepted.');
+  }
+  if (isAcceptAll(value)) {
+    throw bulkAcceptAll();
+  }
   for (const key of Object.keys(value)) {
     if (!DECISION_KEYS.has(key)) {
       throw new BadRequestException('Unknown field.');
@@ -43,8 +52,8 @@ function parseDecision(value: unknown): OcrDecision {
     throw new BadRequestException('Each decision needs a suggestionId.');
   }
   const action = value.action;
-  if (action !== 'accept' && action !== 'reject' && action !== 'edit') {
-    throw new BadRequestException('action must be accept, reject, or edit.');
+  if (action !== 'accept' && action !== 'reject' && action !== 'edit' && action !== 'replace') {
+    throw new BadRequestException('action must be accept, reject, edit, or replace.');
   }
   let targetEntityId: string | undefined;
   if ('targetEntityId' in value && value.targetEntityId !== undefined) {
@@ -62,6 +71,19 @@ function parseDecision(value: unknown): OcrDecision {
     editedValue: value.editedValue,
     targetEntityId,
   };
+}
+
+function isAcceptAll(value: Record<string, unknown>): boolean {
+  return (
+    value.acceptAll === true ||
+    value.accept_all === true ||
+    value.action === 'accept-all' ||
+    value.action === 'accept_all'
+  );
+}
+
+function bulkAcceptAll(): UnprocessableEntityException {
+  return new UnprocessableEntityException('Bulk accept-all is not accepted.');
 }
 
 function assertNoDangerousKeys(value: unknown, depth = 0): void {
