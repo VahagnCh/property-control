@@ -92,7 +92,7 @@ The response contains the job, the updated suggestions, and `applied`, which lis
 | :---- | :---- |
 | Storage | A `Map` in the Nest process. Jobs vanish on restart. Cap `OCR_JOBS_MAX` (default 50) and TTL `OCR_JOB_TTL_MS` (default 15 minutes). Expired jobs may be dropped. An unexpired suggested job is never evicted; a full map returns 429. |
 | Flag | Off unless `OCR_STUB_ENABLED` is `1`, `true`, `yes`, or `on`. Off returns 501 before path or body parsing. |
-| Auth | Access token first (401), then property membership (404, never 403). A viewer can read and cannot enqueue or confirm (404). |
+| Auth | Access token first (401), then property membership. Unknown property, document, or membership is 404. A viewer can read and cannot enqueue or confirm (403). |
 | Extract | `enqueue()` runs through `processing` synchronously and returns `suggested` with `vendor: "stub"` |
 | Suggestions | Four fixed rows: obligation `expectedAmount` (`"18450.00"`), `nextDueDate`, and `providerName`, plus document `title`. Only the document row is pre-bound, and only to the source document. A confidence below 0.5, or an ambiguous es-MX amount, sets `lowConfidence` and stays `pending`. |
 | Reuse | Posting again for the same document while a job is open and unexpired returns 200 and the existing job instead of creating a second one |

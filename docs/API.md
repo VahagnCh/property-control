@@ -215,7 +215,7 @@ OCR is off unless `OCR_STUB_ENABLED` is exactly `1`, `true`, `yes`, or `on` (any
 When the flag is on, the gates run in this order:
 
 1. A missing, invalid, or expired access token is **401**. The default verifier rejects every token. This API never mints one.
-2. An unknown property, an unknown document, a missing membership, or another account is **404**, never 403. A viewer may read a job and receives **404** on enqueue and confirm.
+2. An unknown property, an unknown document, a missing membership, or another account is **404**. A viewer may read a job and receives **403** on enqueue and confirm.
 3. Path ids that are not UUIDs, and traversal in the path, are **400**. `targetEntityId` must be a UUID for the suggestion's entity type in the same property, or the response is **404**. `document_meta` cannot be retargeted off the job's own document.
 4. `editedValue` is checked against `fieldPath`. Amounts are canonical peso strings (`19000.00` or `1234`), dates are ISO `YYYY-MM-DD`, and text is NFC. A type mismatch, an unknown `fieldPath`, or a prototype key is **400**.
 
@@ -295,7 +295,8 @@ Reminder channels: `email`, `push`, `in_app`. The unique key is (parent, `schedu
 | Missing, invalid, or expired JWT | 401 |
 | Non-UUID path id, path traversal, unknown `fieldPath`, or an `editedValue` that does not match its field | 400 |
 | Valid JWT, no active membership for `:propertyId`, or the property is unknown or soft-deleted | 404 |
-| OCR enqueue or confirm by a viewer, or an OCR target that is not in the property | 404, never 403 |
+| OCR enqueue or confirm by a viewer | 403 |
+| OCR target that is not in the property | 404 |
 | OCR job past its TTL | 410 |
 | OCR job map is full of unexpired jobs | 429 |
 | OCR flag off, or any other scaffold placeholder | 501 |
@@ -322,7 +323,7 @@ Required on `POST .../payments`, `POST .../payments/:paymentId/void`, `POST .../
 | Pause, resume, archive, unarchive, or mark N/A | yes | yes | no |
 | Invite, resend, or revoke an invite | yes | no | no |
 | Upload evidence | yes | yes | no |
-| Trigger OCR, confirm suggestions | yes | yes | 404, never 403 |
+| Trigger OCR, confirm suggestions | yes | yes | 403 |
 | Read OCR jobs and suggestions | yes | yes | yes |
 | Manage memberships | yes | no | no |
 | Soft-delete the property | yes | no | no |

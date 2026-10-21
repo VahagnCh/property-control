@@ -80,7 +80,7 @@ Set `OCR_STUB_ENABLED` to `1`, `true`, `yes`, or `on` or every OCR route stays *
 
 ## Auth
 
-`src/auth/access-token.guard.ts` is attached to the OCR routes. A missing, invalid, or expired token is **401**. The default verifier rejects every token, so the routes fail closed until a verifier is supplied. The membership guard then returns **404** (never 403) when the property, the document, or the membership is unknown. Trust mints access and refresh tokens; this API only validates them and enforces `PropertyMembership`. It never mints a token. See [docs/TRUST.md](../../docs/TRUST.md).
+`src/auth/access-token.guard.ts` is attached to the OCR routes. A missing, invalid, or expired token is **401**. The default verifier rejects every token, so the routes fail closed until a verifier is supplied. The membership guard returns **404** when the property, the document, or the membership is unknown, and **403** when a viewer attempts an OCR write. Trust mints access and refresh tokens; this API only validates them and enforces `PropertyMembership`. It never mints a token. See [docs/TRUST.md](../../docs/TRUST.md).
 
 Non-OCR routes are still open stubs. A path id that is not a UUID is **400** on those routes; a UUID still reaches the **501** placeholder. There is no payment `DELETE`.
 

@@ -314,14 +314,14 @@ describe('OCR lockdown HTTP', () => {
         .post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}/confirm`)
         .set(authViewer)
         .send(rejectAll(read.body.suggestions as SuggestionRow[]))
-        .expect(404);
-      expect(denied.status).not.toBe(403);
+        .expect(403);
+      expect(denied.status).not.toBe(404);
       const after = await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}`).set(authA).expect(200);
       expect((after.body.suggestions as SuggestionRow[]).every((row) => row.applyStatus === 'pending')).toBe(true);
       await request(server)
         .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A2}/ocr-jobs`)
         .set(authViewer)
-        .expect(404);
+        .expect(403);
     });
 
     it('rejects non-UUID ids, bad targets, retargets, and bad edited values', async () => {

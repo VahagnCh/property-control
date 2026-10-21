@@ -2,6 +2,7 @@ import {
   BadRequestException,
   CanActivate,
   ExecutionContext,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -62,7 +63,7 @@ export class PropertyMembershipGuard implements CanActivate {
 
     const method = request.method ?? 'GET';
     if (method !== 'GET' && method !== 'HEAD' && membership.role === 'viewer') {
-      throw new NotFoundException('Not found.');
+      throw new ForbiddenException('Insufficient role.');
     }
 
     request.membership = { role: membership.role, userId };
