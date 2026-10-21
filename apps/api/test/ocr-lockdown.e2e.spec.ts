@@ -378,6 +378,56 @@ describe('OCR lockdown HTTP', () => {
       expect(viewerEnqueue.body.error).toBe('forbidden');
     });
 
+    it('returns 404, not 403, for an unknown suggestion id and leaks nothing', async () => {
+      const server = app.getHttpServer();
+      const created = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A}/ocr-jobs`)
+        .set(authA)
+        .expect(201);
+      const jobId = created.body.id as string;
+      const fetched = await request(server)
+        .get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}`)
+        .set(authA)
+        .expect(200);
+      const suggestions = fetched.body.suggestions as SuggestionRow[];
+      expect(suggestions.length).toBeGreaterThan(0);
+      const onlyForeign = { decisions: [{ suggestionId: FORGED, action: 'reject' }] };
+      const withRealIds = {
+        decisions: [
+          ...suggestions.map((row) => ({ suggestionId: row.id, action: 'reject' })),
+          { suggestionId: FORGED, action: 'reject' },
+        ],
+      };
+      for (const payload of [onlyForeign, withRealIds]) {
+        const response = await request(server)
+          .post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}/confirm`)
+          .set(authA)
+          .send(payload);
+        expect(response.status).toBe(404);
+        expect(response.status).not.toBe(403);
+        expect(response.body).toEqual({ statusCode: 404, error: 'not_found', message: 'Not found.' });
+        const serialized = JSON.stringify(response.body);
+        expect(serialized).not.toContain(FORGED);
+        expect(serialized).not.toContain('Cannot');
+        expect(serialized).not.toMatch(/storage[_-]?key/i);
+        for (const row of suggestions) {
+          expect(serialized).not.toContain(row.id);
+        }
+        expectNoLeak(response.body);
+      }
+      const viewer = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}/confirm`)
+        .set(authViewer)
+        .send(onlyForeign);
+      expect(viewer.status).toBe(403);
+      expect(viewer.body.error).toBe('forbidden');
+      expect(JSON.stringify(viewer.body)).not.toContain(FORGED);
+      const after = await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}`).set(authA).expect(200);
+      expect(after.body.job.status).toBe('suggested');
+      expect((after.body.suggestions as SuggestionRow[]).every((row) => row.applyStatus === 'pending')).toBe(true);
+      expectNoLeak(after.body);
+    });
+
     it('rejects non-UUID ids, bad targets, retargets, and bad edited values', async () => {
       const server = app.getHttpServer();
       const badId = await request(server)
