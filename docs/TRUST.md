@@ -41,7 +41,7 @@ Resolution order:
 
 TODO: Retirar consentimiento leads into account deletion before public launch. Withdrawal is not implemented.
 
-Refresh rows, user-scoped idempotency keys, and auth-code rate limits are stored in Postgres and have no HTTP routes yet. Refresh reuse is one transaction (`UPDATE ... WHERE used_at IS NULL RETURNING` plus the successor insert). A second use within 10 seconds returns the same rotated pair. The raw successor is stored on the consumed row only so another instance can return it during that window. Later reuse revokes the family. An expired or revoked token does not. The sliding lifetime is 30 days and the absolute cap is 90 days, copied and never extended. There is no Redis. The membership role stays `member`.
+Refresh rows, user-scoped idempotency keys, and auth-code rate limits are stored in Postgres and have no HTTP routes yet. Refresh reuse is one transaction (`UPDATE ... WHERE used_at IS NULL RETURNING` plus the successor insert). A second use within 30 seconds returns the same rotated pair, unless that successor has already been used. The column stores AES-256-GCM ciphertext of the successor, never the raw token, and the ciphertext is cleared when the window ends. Later reuse revokes the family. An expired or revoked token does not. The sliding lifetime is 30 days and the absolute cap is 90 days, copied and never extended. There is no Redis. Auth-code subjects are a keyed HMAC, never the plain email. The membership role stays `member`.
 
 ## 403 against 404
 

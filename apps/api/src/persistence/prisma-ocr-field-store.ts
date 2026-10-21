@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import type { OcrAuditAppend, OcrTargetLookup, SavedFieldQuery } from '../ocr/ocr-target-lookup.js';
+import { centavosToWireAmount, wireAmountToCentavos } from '../payments/wire-money.js';
 
 type Db = Prisma.TransactionClient | PrismaClient;
 
@@ -155,7 +156,7 @@ interface ObligationField {
   provider_name: string | null;
   notes: string | null;
   next_due_date: Date | null;
-  expected_amount: number | null;
+  expected_amount: bigint | number | string | null;
 }
 
 function obligationField(row: ObligationField | undefined, fieldPath: string): unknown {
@@ -172,7 +173,7 @@ function obligationField(row: ObligationField | undefined, fieldPath: string): u
     return row.next_due_date ? row.next_due_date.toISOString().slice(0, 10) : null;
   }
   if (fieldPath === 'expectedAmount') {
-    return row.expected_amount === null ? null : centavosToWire(row.expected_amount);
+    return row.expected_amount === null ? null : centavosToWireAmount(asCentavos(row.expected_amount));
   }
   return null;
 }
@@ -188,17 +189,11 @@ function obligationData(fieldPath: string, value: unknown): Prisma.ObligationUpd
     return { nextDueDate: new Date(`${value}T00:00:00.000Z`) };
   }
   if (fieldPath === 'expectedAmount' && typeof value === 'string') {
-    return { expectedAmount: wireToCentavos(value) };
+    return { expectedAmount: wireAmountToCentavos(value) };
   }
   throw new Error(`Unsupported obligation field ${fieldPath}.`);
 }
 
-function centavosToWire(cents: number): string {
-  const abs = Math.abs(cents);
-  return `${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, '0')}`;
-}
-
-function wireToCentavos(value: string): number {
-  const [whole, frac = '00'] = value.split('.');
-  return Number(whole) * 100 + Number(frac.padEnd(2, '0').slice(0, 2));
+function asCentavos(value: bigint | number | string): bigint {
+  return typeof value === 'bigint' ? value : BigInt(value);
 }

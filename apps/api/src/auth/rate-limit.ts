@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { Mutex } from '../persistence/mutex.js';
+import { keyedHmac } from './server-secret.js';
 
 export interface RateLimitDecision {
   allowed: boolean;
@@ -28,33 +29,48 @@ export class MemoryRateLimits {
   private readonly attempts: AuthAttemptInput[] = [];
   private readonly mutex = new Mutex();
 
+  constructor(private readonly secret: string) {}
+
   attemptCount(): number {
     return this.attempts.length;
   }
 
+  /** Stored subjects and bucket keys. Tests use this to prove the email is absent. */
+  storedText(): string {
+    return JSON.stringify({
+      subjects: this.attempts.map((attempt) => attempt.subject),
+      buckets: [...this.buckets.keys()],
+    });
+  }
+
   record(input: AuthAttemptInput): Promise<RateLimitDecision> {
     return this.mutex.run(async () => {
-      this.attempts.push(input);
-      return consume(this.buckets, bucketKey(input), input);
+      const stored = storedAttempt(input, this.secret);
+      this.attempts.push(stored);
+      return consume(this.buckets, bucketKey(stored), stored);
     });
   }
 }
 
 export class PrismaRateLimits {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly secret: string,
+  ) {}
 
   async record(input: AuthAttemptInput): Promise<RateLimitDecision> {
+    const stored = storedAttempt(input, this.secret);
     return this.prisma.$transaction(async (tx) => {
       await tx.authCodeAttempt.create({
         data: {
           id: randomUUID(),
-          subject: input.subject,
-          purpose: input.purpose,
-          success: input.success,
-          attemptedAt: input.now,
+          subject: stored.subject,
+          purpose: stored.purpose,
+          success: stored.success,
+          attemptedAt: stored.now,
         },
       });
-      const key = bucketKey(input);
+      const key = bucketKey(stored);
       const bucketId = randomUUID();
       await tx.$executeRaw`
         INSERT INTO rate_limits (id, bucket_key, window_started_at, attempt_count, updated_at)
@@ -77,7 +93,7 @@ export class PrismaRateLimits {
           attemptCount: row.attempt_count,
           blockedUntil: row.blocked_until,
         },
-        input,
+        stored,
       );
       await tx.rateLimit.update({
         where: { bucketKey: key },
@@ -92,8 +108,16 @@ export class PrismaRateLimits {
   }
 }
 
+export function authSubjectHmac(subject: string, secret: string): string {
+  return keyedHmac(subject, secret, 'auth-subject');
+}
+
 export function bucketKey(input: { subject: string; purpose: string }): string {
   return `${input.purpose}\u001e${input.subject}`;
+}
+
+function storedAttempt(input: AuthAttemptInput, secret: string): AuthAttemptInput {
+  return { ...input, subject: authSubjectHmac(input.subject, secret) };
 }
 
 function consume(buckets: Map<string, Bucket>, key: string, input: AuthAttemptInput): RateLimitDecision {

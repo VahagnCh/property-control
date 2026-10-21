@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { UnprocessableEntityException } from '@nestjs/common';
 import type { AvisoConfig } from './aviso-config.js';
 import {
+  AvisoVersionMissingError,
   ConsentAuditLog,
   ConsentRepository,
   ConsentRow,
@@ -54,7 +55,6 @@ export class ConsentService {
     const appVersion = input.appVersion ?? null;
     const existing = await this.repo.find(input.userId, input.avisoVersion);
     if (existing) {
-      await this.writeAudit(existing, appVersion);
       return { outcome: 'existing', consent: existing };
     }
     const now = this.clock.now();
@@ -67,10 +67,26 @@ export class ConsentService {
       createdAt: now,
     };
     try {
-      const created = await this.repo.insert(row);
-      await this.writeAudit(created, appVersion);
+      const created = await this.repo.acceptAtomic(
+        row,
+        {
+          action: 'consent.accepted',
+          userId: row.userId,
+          avisoVersion: row.avisoVersion,
+          appVersion,
+          consentId: row.id,
+        },
+        this.audit,
+      );
       return { outcome: 'created', consent: created };
     } catch (error) {
+      if (error instanceof AvisoVersionMissingError) {
+        throw new UnprocessableEntityException({
+          statusCode: 422,
+          error: 'aviso_version_missing',
+          message: 'The current aviso version is not published.',
+        });
+      }
       if (!(error instanceof UniqueConsentError)) {
         throw error;
       }
@@ -78,18 +94,7 @@ export class ConsentService {
       if (!winner) {
         throw error;
       }
-      await this.writeAudit(winner, appVersion);
       return { outcome: 'existing', consent: winner };
     }
-  }
-
-  private async writeAudit(row: ConsentRow, appVersion: string | null): Promise<void> {
-    await this.audit.append({
-      action: 'consent.accepted',
-      userId: row.userId,
-      avisoVersion: row.avisoVersion,
-      appVersion,
-      consentId: row.id,
-    });
   }
 }

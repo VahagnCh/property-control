@@ -8,11 +8,9 @@ export function configureApp(
   options?: { corsOrigins?: readonly string[] },
 ): INestApplication {
   app.setGlobalPrefix('v1', {
-    exclude: [
-      { path: 'health', method: RequestMethod.GET },
-      { path: 'v1/health', method: RequestMethod.GET },
-    ],
+    exclude: [{ path: 'v1/health', method: RequestMethod.GET }],
   });
+  // One trusted hop, matching Render. req.ip is the client that hop saw.
   const origins = options?.corsOrigins ?? parseCorsOrigins(process.env.CORS_ORIGINS);
   app.enableCors({ origin: corsOriginOption(origins) });
   app.useGlobalInterceptors(new UuidPathInterceptor());

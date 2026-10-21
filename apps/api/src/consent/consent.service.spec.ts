@@ -2,7 +2,7 @@ import { UnprocessableEntityException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import type { AvisoConfig } from './aviso-config.js';
 import { ConsentService } from './consent.service.js';
-import type { ConsentAuditEntry } from './consent.repository.js';
+import { AvisoVersionMissingError, type ConsentAuditEntry, type ConsentRepository } from './consent.repository.js';
 import { MemoryConsentRepository } from './memory-consent.repository.js';
 import { PrismaConsentRepository } from './prisma-consent.repository.js';
 
@@ -54,8 +54,57 @@ describe('ConsentService', () => {
     expect(second.consent.acceptedAt.toISOString()).toBe('2026-10-21T18:00:00.000Z');
     expect(second.consent.appVersion).toBe('1.0.0');
     expect(await repo.find('user-1', '2026-10-21')).toEqual(first.consent);
-    expect(audits).toHaveLength(2);
-    expect(audits[1]).toMatchObject({ action: 'consent.accepted', appVersion: '2.0.0', consentId: first.consent.id });
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ action: 'consent.accepted', appVersion: '1.0.0', consentId: first.consent.id });
+  });
+
+  it('rolls the consent row back when the audit write fails', async () => {
+    const repo = new MemoryConsentRepository();
+    const config = { avisoVersion: '2026-10-21', avisoUrl: 'https://example.com/aviso' };
+    const service = new ConsentService(
+      repo,
+      {
+        append: async () => {
+          throw new Error('audit failed');
+        },
+      },
+      () => config,
+      { now: () => new Date('2026-10-21T18:00:00.000Z') },
+    );
+    await expect(
+      service.recordConsent({ userId: 'user-1', avisoVersion: '2026-10-21', appVersion: '1.0.0' }),
+    ).rejects.toThrow(/audit failed/);
+    expect(await repo.find('user-1', '2026-10-21')).toBeNull();
+  });
+
+  it('turns a missing aviso version into a domain 422', async () => {
+    const repo: ConsentRepository = {
+      find: async () => null,
+      insert: async () => {
+        throw new Error('unused');
+      },
+      acceptAtomic: async () => {
+        throw new AvisoVersionMissingError();
+      },
+    };
+    const service = new ConsentService(
+      repo,
+      { append: async () => undefined },
+      () => ({ avisoVersion: '2026-10-21', avisoUrl: 'https://example.com/aviso' }),
+      { now: () => new Date('2026-10-21T18:00:00.000Z') },
+    );
+    try {
+      await service.recordConsent({ userId: 'user-1', avisoVersion: '2026-10-21' });
+      throw new Error('expected aviso_version_missing');
+    } catch (error) {
+      expect(error).toBeInstanceOf(UnprocessableEntityException);
+      expect((error as UnprocessableEntityException).getResponse()).toEqual({
+        statusCode: 422,
+        error: 'aviso_version_missing',
+        message: 'The current aviso version is not published.',
+      });
+      expect(error).not.toBeInstanceOf(AvisoVersionMissingError);
+    }
   });
 
   it('rejects an older or other version before insert', async () => {
@@ -90,7 +139,7 @@ describe('ConsentService', () => {
   });
 
   it('keeps a single row when two accepts race', async () => {
-    const { service, repo } = harness();
+    const { service, repo, audits } = harness();
     const [left, right] = await Promise.all([
       service.recordConsent({ userId: 'user-1', avisoVersion: '2026-10-21', appVersion: 'a' }),
       service.recordConsent({ userId: 'user-1', avisoVersion: '2026-10-21', appVersion: 'b' }),
@@ -98,5 +147,6 @@ describe('ConsentService', () => {
     expect(left.consent.id).toBe(right.consent.id);
     expect(left.consent.acceptedAt.toISOString()).toBe(right.consent.acceptedAt.toISOString());
     expect(await repo.find('user-1', '2026-10-21')).toMatchObject({ id: left.consent.id });
+    expect(audits).toHaveLength(1);
   });
 });

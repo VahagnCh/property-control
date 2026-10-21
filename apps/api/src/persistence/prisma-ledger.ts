@@ -1,5 +1,6 @@
 import { Prisma, PrismaClient } from '@prisma/client';
 import type { LedgerStore, LedgerTx, ObligationSnapshot, PaymentSnapshot } from '../payments/ledger.js';
+import { centavosToLedgerNumber } from '../payments/wire-money.js';
 import type { ScheduleCadence } from '../obligations/schedule.js';
 
 type Tx = Prisma.TransactionClient;
@@ -42,7 +43,7 @@ class PrismaLedgerTx implements LedgerTx {
         obligationId: row.obligationId,
         periodDueDate: utcDate(row.periodDueDate),
         recordedByUserId: row.recordedByUserId,
-        amount: row.amount,
+        amount: BigInt(row.amount),
         currency: 'MXN',
         paidAt: row.paidAt,
         status: 'recorded',
@@ -100,7 +101,7 @@ interface ObligationRaw {
   due_day: number | null;
   schedule_anchor: Date | null;
   next_due_date: Date | null;
-  expected_amount: number | null;
+  expected_amount: bigint | number | string | null;
   currency: string;
 }
 
@@ -109,7 +110,7 @@ interface PaymentRaw {
   property_id: string;
   obligation_id: string;
   period_due_date: Date;
-  amount: number;
+  amount: bigint | number | string;
   currency: string;
   paid_at: Date;
   status: 'recorded' | 'voided';
@@ -128,7 +129,7 @@ function toObligation(row: ObligationRaw): ObligationSnapshot {
     dueDay: row.due_day,
     scheduleAnchor: row.schedule_anchor ? isoDate(row.schedule_anchor) : null,
     nextDueDate: row.next_due_date ? isoDate(row.next_due_date) : null,
-    expectedAmount: row.expected_amount,
+    expectedAmount: centavosToLedgerNumber(row.expected_amount),
     currency: row.currency,
   };
 }
@@ -138,7 +139,7 @@ function toPayment(row: {
   propertyId: string;
   obligationId: string;
   periodDueDate: Date;
-  amount: number;
+  amount: bigint | number | string;
   currency: string;
   paidAt: Date;
   status: 'recorded' | 'voided';
@@ -153,7 +154,7 @@ function toPayment(row: {
     propertyId: row.propertyId,
     obligationId: row.obligationId,
     periodDueDate: isoDate(row.periodDueDate),
-    amount: row.amount,
+    amount: ledgerCentavos(row.amount),
     currency: row.currency,
     paidAt: row.paidAt,
     status: row.status,
@@ -172,7 +173,7 @@ function toPaymentRaw(row: PaymentRaw): PaymentSnapshot {
     propertyId: row.property_id,
     obligationId: row.obligation_id,
     periodDueDate: isoDate(row.period_due_date),
-    amount: row.amount,
+    amount: ledgerCentavos(row.amount),
     currency: row.currency,
     paidAt: row.paid_at,
     status: row.status,
@@ -183,6 +184,14 @@ function toPaymentRaw(row: PaymentRaw): PaymentSnapshot {
     recordedByUserId: row.recorded_by_user_id,
     markPartial: false,
   };
+}
+
+function ledgerCentavos(value: bigint | number | string): number {
+  const cents = centavosToLedgerNumber(value);
+  if (cents === null) {
+    throw new Error('payment amount is missing');
+  }
+  return cents;
 }
 
 function isoDate(value: Date): string {

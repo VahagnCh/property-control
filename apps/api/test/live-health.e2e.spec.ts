@@ -66,6 +66,23 @@ describe('GET /v1/health', () => {
       await app.close();
     }
   });
+
+  it('does not let a spoofed leftmost X-Forwarded-For mint a new bucket', async () => {
+    const app = await boot({ ping: async () => undefined });
+    try {
+      const server = app.getHttpServer();
+      for (let i = 0; i < HEALTH_LIMIT_TOKENS; i += 1) {
+        const response = await request(server).get('/v1/health').set('X-Forwarded-For', '203.0.113.9');
+        expect(response.status, `request ${i + 1}`).toBe(200);
+      }
+      const spoofed = await request(server)
+        .get('/v1/health')
+        .set('X-Forwarded-For', '198.51.100.50, 203.0.113.9');
+      expect(spoofed.status).toBe(429);
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 const databaseUrl = process.env.DATABASE_URL;

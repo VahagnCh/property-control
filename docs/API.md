@@ -2,31 +2,28 @@
 
 The v0 HTTP contract, and what the scaffold in `apps/api` actually does today. Source: [Backend formal v0](https://docs.google.com/document/d/1iekHZp5lOq4qTzLhglFproL2JSeI7Uw1q4I817d40dE/edit). Payment, period, reminder, timezone, and invite behavior for the public product, [DueRecord](EDGE_CASES.md), overrides this contract where they disagree.
 
-The Nest stub maps **58** routes, counting each method and path Nest registers, including `GET /health` and `GET /v1/health`.
+The Nest stub maps **57** routes, counting each method and path Nest registers, including `GET /v1/health`.
 
 ## Base
 
-- Routes are under `/v1`. `GET /health` is the one route outside the prefix. `GET /v1/health` is inside it.
+- Routes are under `/v1`. `GET /v1/health` is registered on that path, and the global prefix does not double it.
 
 ```text
-GET    /health
 GET    /v1/health
 ```
 
-`GET /health` is a process check. It does not touch the database and returns `{ status: "ok", service: "property-control-api" }`.
-
-`GET /v1/health` is unauthenticated. It runs `SELECT 1` through Prisma with a 2 second timeout, which is enough to wake a paused database. **200** is exactly `{ "status": "ok" }`. **503** is exactly `{ "status": "unavailable" }` when the query fails or times out. Neither body includes a version, environment, commit, uptime, or database detail. Every response sends `Cache-Control: no-store`. The route is limited to 30 requests per minute per client IP by an in-process token bucket. That bucket is not shared across instances and is not used for any other route. The 31st request in the window is **429** with a `Retry-After` header. The app trusts one proxy hop so the client IP is the one in front of the platform proxy.
+`GET /v1/health` is unauthenticated. It runs `SELECT 1` through Prisma with a 2 second timeout, which is enough to wake a paused database. **200** is exactly `{ "status": "ok" }`. **503** is exactly `{ "status": "unavailable" }` when the query fails or times out. Neither body includes a version, environment, commit, uptime, or database detail. Every response sends `Cache-Control: no-store`. The route is limited to 30 requests per minute per client IP by an in-process token bucket. The bucket keeps at most 1024 client entries and drops the least recently used one. It is not shared across instances and is not used for any other route. The 31st request in the window is **429** with a `Retry-After` header. The app sets `trust proxy` to 1, matching Render's single hop, so the client IP is the address that hop saw. A spoofed leftmost `X-Forwarded-For` does not create a new rate-limit bucket.
 
 ## What the stub does
 - Property-scoped routes will require `Authorization: Bearer <access_jwt>`. Trust mints that token; this API only validates it.
-- JSON in, JSON out. Money amounts (`amount`, `expectedAmount`, `overpaidAmount`) are decimal strings such as `"1234.50"` plus a currency code. They are never JSON numbers and never floats. The database stores the same amounts as integer centavos. `"18450.00"` with currency `MXN` is stored as `1845000` centavos.
+- JSON in, JSON out. Money amounts (`amount`, `expectedAmount`, `overpaidAmount`) are decimal strings such as `"1234.50"` plus a currency code. They are never JSON numbers and never floats, and the API does not send centavos. `amount` and `expectedAmount` are BIGINT centavos in the database. `"18450.00"` with currency `MXN` is stored as `1845000` centavos. Conversion happens at the repository boundary with integer arithmetic.
 - Currency is `MXN` only. Any other currency returns 422.
 
 ## What the stub does
 
 | Behavior | Routes |
 | :---- | :---- |
-| Real response | `GET /health`. `GET /v1/health` runs `SELECT 1`. OCR routes answer in memory only when `OCR_STUB_ENABLED` is `1`, `true`, `yes`, or `on` |
+| Real response | `GET /v1/health` runs `SELECT 1`. OCR routes answer in memory only when `OCR_STUB_ENABLED` is `1`, `true`, `yes`, or `on` |
 | `{ items: [], stub: true, module }` | Collection reads: properties, memberships, invites, obligations, period outcomes, payments, evidence, maintenance tasks, documents, reminders, audit events, home action items |
 | **501** with the module name | Every create, update, delete, single-resource read, both `content-url` routes, and every OCR route while the flag is off |
 
@@ -379,7 +376,7 @@ No consent route is registered. `GET /v1/me` stays **501**. The contract, for th
 
 `GET /v1/me` includes `consent: { required, avisoVersion, avisoUrl }`. `required` is true when the caller has no row for the configured `AVISO_VERSION`.
 
-`POST /v1/me/consent` takes `{ avisoVersion }`. `appVersion` comes from the client header or body. The first accept is **201** and stores `acceptedAt` on the server. A repeat of the same version is **200** and returns the existing row. It does not change `acceptedAt` or `appVersion`. Any other version, including an older published one, is **422** `aviso_version_mismatch`. Publishing a new aviso version makes `required` true again. The old row stays. Reads do not require consent. A write before the current consent is **403** `consent_required`, and only after 501, 401, 400, 413, 404, and the viewer check.
+`POST /v1/me/consent` takes `{ avisoVersion }`. `appVersion` comes from the client header or body. The first accept is **201** and stores `acceptedAt` on the server, in the same transaction as its audit entry. A repeat of the same version is **200** and returns the existing row. It does not change `acceptedAt` or `appVersion`, and it writes no second audit entry. Any other version, including an older published one, is **422** `aviso_version_mismatch`. A current version that is not published is **422** `aviso_version_missing`. Publishing a new aviso version makes `required` true again. The old row stays. Reads do not require consent. A write before the current consent is **403** `consent_required`, and only after 501, 401, 400, 413, 404, and the viewer check.
 
 `AVISO_VERSION` must be a non-empty string and `AVISO_URL` must be an http(s) URL. `main.ts` checks both before it listens. The test app does not.
 
@@ -389,11 +386,11 @@ TODO: Retirar consentimiento leads into account deletion before public launch. W
 
 These tables have repositories and no HTTP routes.
 
-A refresh token slides for 30 days and carries an absolute cap of 90 days, copied on rotation and never extended. Reuse detection is one Postgres transaction: `UPDATE ... WHERE used_at IS NULL RETURNING`, then insert the successor. A second refresh within 10 seconds receives that same rotated pair. The raw successor is stored on the consumed row so another instance can return it. That is the only reason the raw token is kept, and only for the grace window. After 10 seconds, reuse revokes the whole family. An expired or already revoked token does not revoke the family.
+A refresh token slides for 30 days and carries an absolute cap of 90 days, copied on rotation and never extended. Reuse detection is one Postgres transaction: `UPDATE ... WHERE used_at IS NULL RETURNING`, then insert the successor. A second refresh within 30 seconds receives that same rotated pair, unless the successor has already been used. The column holds AES-256-GCM ciphertext of the successor, never the raw token. That ciphertext is cleared when the window ends or the successor has been used. After 30 seconds, or when the successor is already used, reuse revokes the whole family. An expired or already revoked token does not revoke the family.
 
-`idempotency_keys` is separate from the property-scoped `idempotency_records` described below. The same user and key with a different request hash is **422** `idempotency_key_mismatch`. The same hash with a stored response is a replay. The same hash without a response is in progress. An expired row may be replaced.
+`idempotency_keys` is separate from the property-scoped `idempotency_records` described below. A key is scoped by the user (or an email HMAC) plus the HTTP method and route. The same key on a different route is a new request. The key is 8 to 128 characters of letters, digits, underscores, or hyphens, so a UUID v4 passes. Anything else is **400** `idempotency_key_invalid`. The same scope and key with a different request hash is **422** `idempotency_key_mismatch`. The same hash with a stored response is a replay. The same hash without a response is in progress. An expired row may be replaced. `user_id` is nullable. `email_hmac` is ready for auth-code idempotency and stores only the HMAC. Exactly one of the two is set.
 
-Auth-code attempts and rate-limit buckets are rows in Postgres. There is no Redis. A limited call will answer **429** with `Retry-After`. Nothing calls that repository from a route yet.
+Auth-code attempts and rate-limit buckets are rows in Postgres. The attempt subject and the bucket key store a keyed HMAC, never the plain email. There is no Redis. A limited call will answer **429** with `Retry-After`. Nothing calls that repository from a route yet.
 
 The membership role stays `member`. It is not renamed to `editor`, because the invite check and [EDGE_CASES.md](EDGE_CASES.md) EC-8.3 lock `member`.
 

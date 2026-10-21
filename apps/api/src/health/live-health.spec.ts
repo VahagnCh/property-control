@@ -14,6 +14,17 @@ describe('health limiter and database timeout', () => {
     expect(limiter.consume('203.0.113.9', now).allowed).toBe(true);
   });
 
+  it('evicts the least recently used bucket when the cap is full', () => {
+    const limiter = new HealthRateLimiter(30, 60_000, 2);
+    const now = Date.parse('2026-10-21T18:00:00.000Z');
+    expect(limiter.consume('a', now).allowed).toBe(true);
+    expect(limiter.consume('b', now).allowed).toBe(true);
+    expect(limiter.consume('c', now).allowed).toBe(true);
+    expect(limiter.snapshot()).toEqual(['b', 'c']);
+    expect(limiter.consume('b', now).allowed).toBe(true);
+    expect(limiter.snapshot()).toEqual(['c', 'b']);
+  });
+
   it('rejects a query that does not finish within the timeout', async () => {
     await expect(pingDatabase(() => new Promise(() => undefined), 15)).rejects.toThrow(/health timeout/);
   });

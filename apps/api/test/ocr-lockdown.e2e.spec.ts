@@ -741,19 +741,19 @@ describe('OCR lockdown HTTP', () => {
   describe('CORS allow-list', () => {
     it('does not reflect an origin unless it is on the allow-list, and never reflects *', async () => {
       const closed = await boot({});
-      const hidden = await request(closed.app.getHttpServer()).get('/health').set('Origin', 'https://evil.example');
+      const hidden = await request(closed.app.getHttpServer()).get('/v1/health').set('Origin', 'https://evil.example');
       expect(hidden.headers['access-control-allow-origin']).toBeUndefined();
       await closed.app.close();
 
       const open = await boot({ corsOrigins: ['https://app.example'] });
-      const denied = await request(open.app.getHttpServer()).get('/health').set('Origin', 'https://evil.example');
-      const allowed = await request(open.app.getHttpServer()).get('/health').set('Origin', 'https://app.example');
+      const denied = await request(open.app.getHttpServer()).get('/v1/health').set('Origin', 'https://evil.example');
+      const allowed = await request(open.app.getHttpServer()).get('/v1/health').set('Origin', 'https://app.example');
       expect(denied.headers['access-control-allow-origin']).toBeUndefined();
       expect(allowed.headers['access-control-allow-origin']).toBe('https://app.example');
       await open.app.close();
 
       const star = await boot({ corsOrigins: ['*'] });
-      const starred = await request(star.app.getHttpServer()).get('/health').set('Origin', 'https://evil.example');
+      const starred = await request(star.app.getHttpServer()).get('/v1/health').set('Origin', 'https://evil.example');
       expect(starred.headers['access-control-allow-origin']).toBeUndefined();
       expect(starred.headers['access-control-allow-origin']).not.toBe('*');
       await star.app.close();

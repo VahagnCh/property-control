@@ -269,10 +269,12 @@ model Obligation {
   /// API input: today −1y through today +5y in the property timezone.
   /// Database CHECK obligations_next_due_date_sanity: 1990-01-01 through 2100-12-31.
   nextDueDate      DateTime?           @map("next_due_date") @db.Date
-  /// Integer centavos in the database. Null means a variable amount with no
-  /// expected total. The API wire value is a decimal string such as "1234.50"
-  /// plus currency MXN, never a JSON float.
-  expectedAmount   Int?                @map("expected_amount")
+  /// Integer centavos stored as BIGINT. Null means a variable amount with no
+  /// expected total. CHECK allows null or a value greater than 0. The API wire
+  /// value stays a decimal peso string such as "1234.50" plus currency MXN.
+  /// Convert only at the repository boundary, never through a float, and never
+  /// send centavos or a JSON number on the wire.
+  expectedAmount   BigInt?             @map("expected_amount")
   currency         String              @default("MXN") @db.VarChar(3)
   reminderOffsets  Int[]               @default([7, 1]) @map("reminder_offsets")
   preferredMethod  String?             @map("preferred_method")
@@ -301,10 +303,11 @@ model Payment {
   obligationId     String        @map("obligation_id") @db.Uuid
   periodDueDate    DateTime      @map("period_due_date") @db.Date
   recordedByUserId String        @map("recorded_by_user_id") @db.Uuid
-  /// Integer centavos in the database. Must be greater than 0. MVP currency
-  /// is MXN only. The API wire value is a decimal string such as "1234.50"
-  /// plus that currency code, never a JSON float.
-  amount           Int
+  /// Integer centavos stored as BIGINT. Must be greater than 0. MVP currency
+  /// is MXN only. The API wire value stays a decimal peso string such as
+  /// "1234.50" plus that currency code. Convert only at the repository
+  /// boundary, never through a float, and never send centavos on the wire.
+  amount           BigInt
   currency         String        @default("MXN") @db.VarChar(3)
   /// The one-year back-date limit is checked in the property timezone, not UTC.
   paidAt           DateTime      @map("paid_at") @db.Timestamptz(6)
@@ -496,16 +499,17 @@ model NotificationDelivery {
 
 /// Email invite. Only an owner invites, by email, as member or viewer.
 /// The raw token is returned once. tokenHash is lowercase hex SHA-256.
-/// Tokens are single-use. expiresAt is sentAt plus 7 days. A resend
-/// restarts those 7 days. Accept checks, in order: an unknown token or
-/// the wrong account is 404 before any token state is revealed; a used,
-/// revoked, superseded, or expired token is 410; an invitee who is already
-/// a member is 409. A non-owner invite action is 403. Acceptance requires
-/// the invited email.
+/// The invited address is stored as emailHmac, never in plain text.
+/// Tokens are single-use. expiresAt is at most createdAt plus 7 days.
+/// A resend restarts those 7 days and sets supersededAt on the old row.
+/// Accept checks, in order: an unknown token or the wrong account is 404
+/// before any token state is revealed; a used, revoked, superseded, or
+/// expired token is 410; an invitee who is already a member is 409. A
+/// non-owner invite action is 403. Acceptance requires the invited email.
 model MembershipInvite {
   id              String         @id @default(uuid()) @db.Uuid
   propertyId      String         @map("property_id") @db.Uuid
-  email           String
+  emailHmac       String         @map("email_hmac")
   role            MembershipRole
   tokenHash       String         @unique @map("token_hash")
   invitedByUserId String         @map("invited_by_user_id") @db.Uuid
@@ -513,16 +517,18 @@ model MembershipInvite {
   expiresAt       DateTime       @map("expires_at") @db.Timestamptz(6)
   usedAt          DateTime?      @map("used_at") @db.Timestamptz(6)
   revokedAt       DateTime?      @map("revoked_at") @db.Timestamptz(6)
+  supersededAt    DateTime?      @map("superseded_at") @db.Timestamptz(6)
   createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
 
   property  Property @relation(fields: [propertyId], references: [id])
   invitedBy User     @relation("InviteSentBy", fields: [invitedByUserId], references: [id])
 
-  @@index([propertyId, email])
+  @@index([propertyId, emailHmac])
   @@map("membership_invites")
 }
 
-/// Append-only. No updatedAt and no deletedAt.
+/// Append-only. No updatedAt and no deletedAt. Triggers reject UPDATE,
+/// DELETE, and TRUNCATE, including for the table owner.
 model AuditEvent {
   id          String   @id @default(uuid()) @db.Uuid
   propertyId  String?  @map("property_id") @db.Uuid
@@ -604,11 +610,14 @@ model IdempotencyRecord {
   @@map("idempotency_records")
 }
 
-/// One published aviso de privacidad. A new version is a new row.
-/// `textSha256` is the hex SHA-256 of the exact text the person accepted.
+/// One published aviso de privacidad. Versions are insert-only.
+/// `text` is the exact text the person accepts. `textSha256` is its hex
+/// SHA-256. Re-seeding a version that already exists with different text,
+/// URL, or hash fails instead of upserting.
 model AvisoVersion {
   version     String   @id
   url         String
+  text        String
   textSha256  String   @map("text_sha256")
   publishedAt DateTime @default(now()) @map("published_at") @db.Timestamptz(6)
 
@@ -617,7 +626,9 @@ model AvisoVersion {
   @@map("aviso_versions")
 }
 
-/// Append-only. The app has no update or delete path. Triggers reject both.
+/// Append-only. The app has no update or delete path. Triggers reject UPDATE,
+/// DELETE, and TRUNCATE, and the app role has no grant for those. The same
+/// rule covers `audit_events` and `aviso_versions`.
 /// `acceptedAt` is the server clock at first insert and is never rewritten.
 model Consent {
   id           String   @id @default(uuid()) @db.Uuid
@@ -639,8 +650,10 @@ model Consent {
 /// onto every rotation. `absoluteExpiresAt` is the 90-day cap and is never
 /// extended. Reuse is an `UPDATE ... WHERE used_at IS NULL RETURNING` inside
 /// one transaction, so two instances cannot both rotate the same token.
-/// `graceRefreshToken` is the successor raw token, kept only so the duplicate
-/// request can return that same pair within 10 seconds.
+/// `graceRefreshToken` is the AES-256-GCM ciphertext of the successor token,
+/// kept only so the duplicate request can return that same pair within 30
+/// seconds. It is null once the window ends or the successor has been used.
+/// The raw token is never stored.
 model RefreshToken {
   id                String    @id @default(uuid()) @db.Uuid
   userId            String    @map("user_id") @db.Uuid
@@ -663,13 +676,19 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
-/// User-scoped idempotency for multi-instance writes. Distinct from
-/// `idempotency_records`, which stays property-scoped. The same key with a
-/// different request hash is 422. Expired rows may be replaced.
+/// Idempotency for multi-instance writes. Distinct from `idempotency_records`,
+/// which stays property-scoped. Scope is user or email HMAC, plus method and
+/// route, plus the key. The same key on another route is a new request. A
+/// different request hash on the same scope is 422. Expired rows may be replaced.
+/// `userId` is nullable. `emailHmac` is the keyed HMAC for a later auth-code
+/// route; the plain email is never stored. Exactly one of the two is set.
+/// The key is 8–128 characters of [A-Za-z0-9_-], so a UUID v4 is valid.
 model IdempotencyKey {
   id             String   @id @default(uuid()) @db.Uuid
-  userId         String   @map("user_id") @db.Uuid
+  userId         String?  @map("user_id") @db.Uuid
+  emailHmac      String?  @map("email_hmac")
   key            String
+  method         String
   route          String
   requestHash    String   @map("request_hash")
   responseStatus Int?     @map("response_status")
@@ -677,14 +696,14 @@ model IdempotencyKey {
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   expiresAt      DateTime @map("expires_at") @db.Timestamptz(6)
 
-  user User @relation(fields: [userId], references: [id])
+  user User? @relation(fields: [userId], references: [id])
 
-  @@unique([userId, key])
   @@index([expiresAt])
   @@map("idempotency_keys")
 }
 
-/// One row per auth-code submission. The 429 decision lives on `rate_limits`.
+/// One row per auth-code submission. `subject` is a keyed HMAC, never the
+/// plain email. The 429 decision lives on `rate_limits`.
 model AuthCodeAttempt {
   id          String   @id @default(uuid()) @db.Uuid
   subject     String

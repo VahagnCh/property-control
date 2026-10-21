@@ -1,11 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { UnprocessableEntityException } from '@nestjs/common';
+import { BadRequestException, UnprocessableEntityException } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { Mutex } from '../persistence/mutex.js';
 
+/** 8–128 characters. Hyphens are allowed, so a UUID v4 (36 characters) passes. */
+export const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{8,128}$/;
+
 export interface IdempotencyInput {
-  userId: string;
+  userId?: string | null;
+  emailHmac?: string | null;
   key: string;
+  method: string;
   route: string;
   requestHash: string;
   now: Date;
@@ -19,8 +24,10 @@ export type ReserveResult =
 
 interface StoredKey {
   id: string;
-  userId: string;
+  userId: string | null;
+  emailHmac: string | null;
   key: string;
+  method: string;
   route: string;
   requestHash: string;
   responseStatus: number | null;
@@ -29,9 +36,24 @@ interface StoredKey {
   expiresAt: Date;
 }
 
+export function assertIdempotencyKey(key: string): void {
+  if (!IDEMPOTENCY_KEY.test(key)) {
+    throw new BadRequestException({
+      statusCode: 400,
+      error: 'idempotency_key_invalid',
+      message: 'Idempotency-Key must be 8 to 128 characters of letters, digits, underscores, or hyphens.',
+    });
+  }
+}
+
 export class MemoryIdempotencyKeys {
   private readonly rows = new Map<string, StoredKey>();
   private readonly mutex = new Mutex();
+
+  /** Stored rows. Tests use this to prove a plain email was never written. */
+  storedText(): string {
+    return JSON.stringify([...this.rows.values()]);
+  }
 
   reserve(input: IdempotencyInput): Promise<ReserveResult> {
     return this.mutex.run(async () => reserveStored(this.rows, input));
@@ -53,6 +75,8 @@ export class PrismaIdempotencyKeys {
   constructor(private readonly prisma: PrismaClient) {}
 
   async reserve(input: IdempotencyInput): Promise<ReserveResult> {
+    assertIdempotencyKey(input.key);
+    scopeOf(input);
     try {
       return await this.prisma.$transaction((tx) => reservePrisma(tx, input));
     } catch (error) {
@@ -72,7 +96,9 @@ export class PrismaIdempotencyKeys {
 }
 
 function reserveStored(rows: Map<string, StoredKey>, input: IdempotencyInput): ReserveResult {
-  const mapKey = `${input.userId}\0${input.key}`;
+  assertIdempotencyKey(input.key);
+  const scope = scopeOf(input);
+  const mapKey = scopeKey(scope, input);
   const existing = rows.get(mapKey);
   if (existing && existing.expiresAt > input.now) {
     return decision(existing, input.requestHash);
@@ -82,8 +108,10 @@ function reserveStored(rows: Map<string, StoredKey>, input: IdempotencyInput): R
   }
   const created: StoredKey = {
     id: randomUUID(),
-    userId: input.userId,
+    userId: scope.kind === 'user' ? scope.subject : null,
+    emailHmac: scope.kind === 'email' ? scope.subject : null,
     key: input.key,
+    method: input.method,
     route: input.route,
     requestHash: input.requestHash,
     responseStatus: null,
@@ -96,8 +124,12 @@ function reserveStored(rows: Map<string, StoredKey>, input: IdempotencyInput): R
 }
 
 async function reservePrisma(tx: Prisma.TransactionClient, input: IdempotencyInput): Promise<ReserveResult> {
-  const existing = await tx.idempotencyKey.findUnique({
-    where: { userId_key: { userId: input.userId, key: input.key } },
+  const scope = scopeOf(input);
+  const existing = await tx.idempotencyKey.findFirst({
+    where:
+      scope.kind === 'user'
+        ? { userId: scope.subject, method: input.method, route: input.route, key: input.key }
+        : { emailHmac: scope.subject, method: input.method, route: input.route, key: input.key },
   });
   if (existing && existing.expiresAt > input.now) {
     return decision(
@@ -115,8 +147,10 @@ async function reservePrisma(tx: Prisma.TransactionClient, input: IdempotencyInp
   const created = await tx.idempotencyKey.create({
     data: {
       id: randomUUID(),
-      userId: input.userId,
+      userId: scope.kind === 'user' ? scope.subject : null,
+      emailHmac: scope.kind === 'email' ? scope.subject : null,
       key: input.key,
+      method: input.method,
       route: input.route,
       requestHash: input.requestHash,
       expiresAt: input.expiresAt,
@@ -145,4 +179,25 @@ function decision(
     };
   }
   return { outcome: 'in_progress' };
+}
+
+interface Scope {
+  kind: 'user' | 'email';
+  subject: string;
+}
+
+function scopeOf(input: IdempotencyInput): Scope {
+  const userId = input.userId ?? null;
+  const emailHmac = input.emailHmac ?? null;
+  if ((userId === null) === (emailHmac === null)) {
+    throw new Error('An idempotency key needs exactly one of userId or emailHmac.');
+  }
+  if (userId !== null) {
+    return { kind: 'user', subject: userId };
+  }
+  return { kind: 'email', subject: emailHmac ?? '' };
+}
+
+function scopeKey(scope: Scope, input: IdempotencyInput): string {
+  return [scope.kind, scope.subject, input.method, input.route, input.key].join('\u001e');
 }

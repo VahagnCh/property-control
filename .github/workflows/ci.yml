@@ -28,10 +28,10 @@ jobs:
           --health-retries 5
     env:
       OCR_STUB_ENABLED: ""
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/property_control
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/property_control
       AVISO_VERSION: "2026-10-21"
       AVISO_URL: "https://example.com/aviso"
+      SERVER_SECRET: test-server-secret-at-least-32-characters
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -42,9 +42,22 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: pnpm api:typecheck
-      - run: pnpm --filter @property-control/api exec prisma migrate deploy
-      - run: pnpm api:test
+      - name: Create the non-owner app role
+        run: bash apps/api/prisma/bootstrap-app-role.sh
+        env:
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/property_control
+      - name: Migrate as the database owner
+        run: pnpm --filter @property-control/api exec prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/property_control
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/property_control
+      - name: Test as the app role
+        run: pnpm api:test
+        env:
+          DATABASE_URL: postgresql://property_control_app:property_control_app@localhost:5432/property_control
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/property_control
       - run: pnpm api:build
       - run: pnpm mobile:typecheck
       - run: pnpm mobile:test

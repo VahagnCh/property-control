@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Mutex } from '../persistence/mutex.js';
+import { openSealed, sealString } from './server-secret.js';
 
 /** Sliding refresh lifetime. The family cannot outlive the absolute cap. */
 export const REFRESH_SLIDING_MS = 30 * 24 * 60 * 60 * 1000;
@@ -9,7 +10,7 @@ export const REFRESH_ABSOLUTE_MS = 90 * 24 * 60 * 60 * 1000;
  * A second refresh that loses the atomic claim returns the winner's pair
  * when the winner's `usedAt` is at most this old. Later reuse revokes the family.
  */
-export const REFRESH_GRACE_MS = 10_000;
+export const REFRESH_GRACE_MS = 30_000;
 
 export interface RefreshTokenRow {
   id: string;
@@ -44,6 +45,7 @@ interface RefreshTokenTx {
   findById(id: string): Promise<RefreshTokenRow | null>;
   insert(row: RefreshTokenRow): Promise<RefreshTokenRow>;
   attachSuccessor(parentId: string, successorId: string, graceToken: string): Promise<void>;
+  clearGrace(parentId: string): Promise<void>;
   revokeFamily(familyId: string, now: Date): Promise<void>;
 }
 
@@ -82,16 +84,19 @@ export async function rotateInStore(
   if (!row.usedAt && (row.expiresAt <= input.now || row.absoluteExpiresAt <= input.now)) {
     return { outcome: 'expired' };
   }
-  if (row.usedAt && row.graceRefreshToken && row.replacedById) {
+  if (row.usedAt && row.replacedById) {
     const age = input.now.getTime() - row.usedAt.getTime();
-    if (age <= REFRESH_GRACE_MS) {
-      const successor = await store.findById(row.replacedById);
-      if (successor) {
-        return { outcome: 'grace', refreshToken: row.graceRefreshToken, token: successor };
-      }
+    const successor = await store.findById(row.replacedById);
+    const successorLive = Boolean(successor && !successor.usedAt && !successor.revokedAt);
+    if (row.graceRefreshToken && age <= REFRESH_GRACE_MS && successorLive && successor) {
+      return { outcome: 'grace', refreshToken: row.graceRefreshToken, token: successor };
     }
+    await store.clearGrace(row.id);
+    await store.revokeFamily(row.familyId, input.now);
+    return { outcome: 'reused' };
   }
   if (row.usedAt) {
+    await store.clearGrace(row.id);
     await store.revokeFamily(row.familyId, input.now);
     return { outcome: 'reused' };
   }
@@ -101,6 +106,8 @@ export async function rotateInStore(
 export class MemoryRefreshTokens {
   private readonly rows = new Map<string, RefreshTokenRow>();
   private readonly mutex = new Mutex();
+
+  constructor(private readonly secret: string) {}
 
   list(): RefreshTokenRow[] {
     return [...this.rows.values()].map((row) => ({ ...row }));
@@ -129,12 +136,15 @@ export class MemoryRefreshTokens {
   }
 
   async rotate(input: { rawToken: string; now: Date; nextRawToken: string }): Promise<RotateResult> {
-    return this.mutex.run(() => rotateInStore(new MemoryRefreshTx(this.rows), input));
+    return this.mutex.run(() => rotateInStore(new MemoryRefreshTx(this.rows, this.secret), input));
   }
 }
 
 class MemoryRefreshTx implements RefreshTokenTx {
-  constructor(private readonly rows: Map<string, RefreshTokenRow>) {}
+  constructor(
+    private readonly rows: Map<string, RefreshTokenRow>,
+    private readonly secret: string,
+  ) {}
 
   async claimUnused(tokenHash: string, now: Date): Promise<RefreshTokenRow | null> {
     const row = [...this.rows.values()].find((item) => item.tokenHash === tokenHash);
@@ -147,12 +157,12 @@ class MemoryRefreshTx implements RefreshTokenTx {
 
   async findByHash(tokenHash: string): Promise<RefreshTokenRow | null> {
     const row = [...this.rows.values()].find((item) => item.tokenHash === tokenHash);
-    return row ? { ...row } : null;
+    return row ? this.reveal(row) : null;
   }
 
   async findById(id: string): Promise<RefreshTokenRow | null> {
     const row = this.rows.get(id);
-    return row ? { ...row } : null;
+    return row ? this.reveal(row) : null;
   }
 
   async insert(row: RefreshTokenRow): Promise<RefreshTokenRow> {
@@ -166,7 +176,21 @@ class MemoryRefreshTx implements RefreshTokenTx {
       return;
     }
     parent.replacedById = successorId;
-    parent.graceRefreshToken = graceToken;
+    parent.graceRefreshToken = sealString(graceToken, this.secret);
+  }
+
+  async clearGrace(parentId: string): Promise<void> {
+    const parent = this.rows.get(parentId);
+    if (parent) {
+      parent.graceRefreshToken = null;
+    }
+  }
+
+  private reveal(row: RefreshTokenRow): RefreshTokenRow {
+    if (!row.graceRefreshToken) {
+      return { ...row };
+    }
+    return { ...row, graceRefreshToken: openSealed(row.graceRefreshToken, this.secret) };
   }
 
   async revokeFamily(familyId: string, now: Date): Promise<void> {

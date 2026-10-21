@@ -3,30 +3,46 @@ import { ConflictException, UnprocessableEntityException } from '@nestjs/common'
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaIdempotencyKeys } from '../src/auth/idempotency-keys.js';
-import { PrismaRateLimits, bucketKey } from '../src/auth/rate-limit.js';
+import { PrismaRateLimits, authSubjectHmac, bucketKey } from '../src/auth/rate-limit.js';
 import { PrismaRefreshTokens } from '../src/auth/prisma-refresh-tokens.js';
+import { hashToken } from '../src/auth/refresh-tokens.js';
+import { TEST_SERVER_SECRET } from '../src/auth/server-secret.js';
 import { PrismaConsentRepository } from '../src/consent/prisma-consent.repository.js';
 import { ConsentService } from '../src/consent/consent.service.js';
 import type { ConsentAuditEntry, ConsentAuditLog } from '../src/consent/consent.repository.js';
+import { AVISO_TEXT } from '../src/consent/aviso-text.js';
+import { inviteEmailHmac } from '../src/invites/invite-accept.js';
+import { centavosToWireAmount, wireAmountToCentavos } from '../src/payments/wire-money.js';
 import type { OcrExtractor } from '../src/ocr/ocr-extractor.js';
 import { OcrService } from '../src/ocr/ocr.service.js';
 import type { OcrTargetLookup } from '../src/ocr/ocr-target-lookup.js';
 import { PrismaOcrFieldStore } from '../src/persistence/prisma-ocr-field-store.js';
-import { seedDatabase, DEMO_OBLIGATION_ID, DEMO_USER_ID } from '../src/persistence/seed-data.js';
+import {
+  AvisoVersionConflictError,
+  DEMO_OBLIGATION_ID,
+  DEMO_USER_ID,
+  publishAvisoVersion,
+  seedDatabase,
+} from '../src/persistence/seed-data.js';
 import { PrismaLedger } from '../src/persistence/prisma-ledger.js';
 import { recordPayment, voidPayment } from '../src/payments/ledger.js';
 
 const enabled = Boolean(process.env.DATABASE_URL && process.env.DIRECT_URL);
+let ownerClient: PrismaClient;
 
 describe.skipIf(!enabled)('persistence against Postgres', () => {
   let prisma: PrismaClient;
+  let owner: PrismaClient;
 
   beforeAll(() => {
     prisma = new PrismaClient();
+    owner = new PrismaClient({ datasourceUrl: process.env.DIRECT_URL });
+    ownerClient = owner;
   });
 
   afterAll(async () => {
     await prisma?.$disconnect();
+    await owner?.$disconnect();
   });
 
   it('has no storage_key column', async () => {
@@ -57,7 +73,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
             obligationId: fixture.obligationId,
             periodDueDate: new Date('2026-03-15T00:00:00.000Z'),
             recordedByUserId: fixture.userId,
-            amount: 0,
+            amount: 0n,
             currency: 'MXN',
             paidAt: new Date('2026-03-03T18:00:00.000Z'),
             status: 'recorded',
@@ -272,6 +288,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
         data: {
           version,
           url: 'https://example.com/aviso',
+          text: 'Aviso de prueba.',
           textSha256: 'a'.repeat(64),
         },
       });
@@ -303,21 +320,25 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
         prisma.$executeRaw`
           UPDATE consents SET app_version = 'changed' WHERE id = CAST(${left.consent.id} AS uuid)
         `,
-      ).rejects.toThrow(/consents are append-only/);
+      ).rejects.toThrow(/permission denied|consents are append-only/);
       await expect(
         prisma.$executeRaw`DELETE FROM consents WHERE id = CAST(${left.consent.id} AS uuid)`,
-      ).rejects.toThrow(/consents are append-only/);
+      ).rejects.toThrow(/permission denied|consents are append-only/);
+      const audits = await prisma.auditEvent.count({
+        where: { entityType: 'consent', entityId: left.consent.id },
+      });
+      expect(audits).toBe(1);
       const still = await prisma.consent.findUnique({ where: { id: left.consent.id } });
       expect(still?.appVersion).toBe(left.consent.appVersion);
     } finally {
-      await deleteFixture(prisma, fixture);
+      await deleteFixture(prisma, fixture, version);
     }
   });
 
   it('returns one rotated refresh pair inside the grace window', async () => {
     const fixture = await createFixture(prisma);
     try {
-      const tokens = new PrismaRefreshTokens(prisma);
+      const tokens = new PrismaRefreshTokens(prisma, TEST_SERVER_SECRET);
       const raw = randomUUID();
       const now = new Date('2026-10-21T12:00:00.000Z');
       const issued = await tokens.issue({ userId: fixture.userId, rawToken: raw, now });
@@ -348,6 +369,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       const reserved = await keys.reserve({
         userId: fixture.userId,
         key,
+        method: 'POST',
         route: 'POST /v1/payments',
         requestHash: 'hash-a',
         now,
@@ -362,6 +384,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
         await keys.reserve({
           userId: fixture.userId,
           key,
+          method: 'POST',
           route: 'POST /v1/payments',
           requestHash: 'hash-b',
           now,
@@ -381,13 +404,14 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
   });
 
   it('stores auth-code rate limits in Postgres and returns Retry-After', async () => {
-    const limits = new PrismaRateLimits(prisma);
-    const subject = `user-${randomUUID()}`;
+    const limits = new PrismaRateLimits(prisma, TEST_SERVER_SECRET);
+    const email = `person-${randomUUID()}@example.com`;
+    const subject = authSubjectHmac(email, TEST_SERVER_SECRET);
     const now = new Date('2026-10-21T12:00:00.000Z');
     try {
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const decision = await limits.record({
-          subject,
+          subject: email,
           purpose: 'login',
           success: false,
           now,
@@ -397,7 +421,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
         expect(decision.allowed).toBe(true);
       }
       const blocked = await limits.record({
-        subject,
+        subject: email,
         purpose: 'login',
         success: false,
         now: new Date(now.getTime() + 1000),
@@ -406,6 +430,13 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       });
       expect(blocked.allowed).toBe(false);
       expect(blocked.retryAfterSeconds).toBe(59);
+      const attempts = await prisma.authCodeAttempt.findMany({ where: { subject } });
+      const buckets = await prisma.rateLimit.findMany({
+        where: { bucketKey: bucketKey({ purpose: 'login', subject }) },
+      });
+      expect(attempts).toHaveLength(4);
+      expect(buckets).toHaveLength(1);
+      expect(JSON.stringify({ attempts, buckets })).not.toContain(email);
     } finally {
       await prisma.authCodeAttempt.deleteMany({ where: { subject } });
       await prisma.rateLimit.deleteMany({
@@ -419,16 +450,299 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       AVISO_VERSION: 'seed-v1',
       AVISO_URL: 'https://example.com/aviso',
     };
+    await purgeAppendOnly({ avisoVersion: 'seed-v1' });
     await seedDatabase(prisma, env);
     await seedDatabase(prisma, env);
     const obligation = await prisma.obligation.findUnique({ where: { id: DEMO_OBLIGATION_ID } });
     expect(obligation?.title).toBe('CFE');
-    expect(obligation?.expectedAmount).toBe(85000);
+    expect(obligation?.expectedAmount).toBe(85000n);
     expect(obligation?.dueDay).toBe(15);
     expect(await prisma.consent.count({ where: { userId: DEMO_USER_ID } })).toBe(0);
     const aviso = await prisma.avisoVersion.findUnique({ where: { version: 'seed-v1' } });
     expect(aviso?.url).toBe('https://example.com/aviso');
     expect(await prisma.obligation.count({ where: { id: DEMO_OBLIGATION_ID } })).toBe(1);
+    expect(aviso?.text).toBe(AVISO_TEXT);
+  });
+
+  it('round-trips a peso string above int32 through BIGINT and rejects 0 and negative', async () => {
+    const fixture = await createFixture(prisma);
+    const wire = '21474836.48';
+    const cents = wireAmountToCentavos(wire);
+    try {
+      expect(cents).toBe(2147483648n);
+      await prisma.obligation.update({
+        where: { id: fixture.obligationId },
+        data: { expectedAmount: cents },
+      });
+      const stored = await prisma.obligation.findUnique({ where: { id: fixture.obligationId } });
+      expect(stored?.expectedAmount).toBe(cents);
+      expect(centavosToWireAmount(stored?.expectedAmount ?? 0n)).toBe(wire);
+      const raw = await prisma.$queryRaw<Array<{ expected_amount: bigint | string }>>`
+        SELECT expected_amount FROM obligations WHERE id = CAST(${fixture.obligationId} AS uuid)
+      `;
+      expect(centavosToWireAmount(BigInt(raw[0]?.expected_amount ?? 0))).toBe(wire);
+      await expect(
+        prisma.$executeRaw`
+          UPDATE obligations SET expected_amount = 0 WHERE id = CAST(${fixture.obligationId} AS uuid)
+        `,
+      ).rejects.toThrow(/obligations_expected_amount_positive/);
+      await expect(
+        prisma.$executeRaw`
+          UPDATE obligations SET expected_amount = -1 WHERE id = CAST(${fixture.obligationId} AS uuid)
+        `,
+      ).rejects.toThrow(/obligations_expected_amount_positive/);
+      const paymentId = randomUUID();
+      await expect(
+        prisma.$executeRaw`
+          INSERT INTO payments (
+            id, property_id, obligation_id, period_due_date, recorded_by_user_id,
+            amount, currency, paid_at, status, idempotency_key, created_at, updated_at
+          ) VALUES (
+            CAST(${paymentId} AS uuid),
+            CAST(${fixture.propertyId} AS uuid),
+            CAST(${fixture.obligationId} AS uuid),
+            DATE '2026-03-15',
+            CAST(${fixture.userId} AS uuid),
+            -1,
+            'MXN',
+            TIMESTAMPTZ '2026-03-03 18:00:00+00',
+            'recorded',
+            ${paymentId},
+            NOW(),
+            NOW()
+          )
+        `,
+      ).rejects.toThrow(/payments_amount_positive/);
+    } finally {
+      await deleteFixture(prisma, fixture);
+    }
+  });
+
+  it('keeps a payments idempotency key from replaying on another route', async () => {
+    const fixture = await createFixture(prisma);
+    try {
+      const keys = new PrismaIdempotencyKeys(prisma);
+      const now = new Date('2026-10-21T12:00:00.000Z');
+      const key = '123e4567-e89b-42d3-a456-426614174000';
+      const reserved = await keys.reserve({
+        userId: fixture.userId,
+        key,
+        method: 'POST',
+        route: 'POST /v1/payments',
+        requestHash: 'hash-a',
+        now,
+        expiresAt: new Date('2026-10-22T12:00:00.000Z'),
+      });
+      expect(reserved.outcome).toBe('reserved');
+      if (reserved.outcome !== 'reserved') {
+        return;
+      }
+      await keys.complete(reserved.id, 201, { ok: true });
+      const other = await keys.reserve({
+        userId: fixture.userId,
+        key,
+        method: 'POST',
+        route: 'POST /v1/properties',
+        requestHash: 'hash-a',
+        now,
+        expiresAt: new Date('2026-10-22T12:00:00.000Z'),
+      });
+      expect(other.outcome).toBe('reserved');
+      const different = await keys.reserve({
+        userId: fixture.userId,
+        key,
+        method: 'POST',
+        route: 'POST /v1/obligations',
+        requestHash: 'hash-b',
+        now,
+        expiresAt: new Date('2026-10-22T12:00:00.000Z'),
+      });
+      expect(different.outcome).toBe('reserved');
+    } finally {
+      await deleteFixture(prisma, fixture);
+    }
+  });
+
+  it('stores grace ciphertext and clears it after 31 seconds or a used successor', async () => {
+    const fixture = await createFixture(prisma);
+    try {
+      const tokens = new PrismaRefreshTokens(prisma, TEST_SERVER_SECRET);
+      const raw = 'root-refresh-token';
+      const next = 'successor-refresh-token';
+      const now = new Date('2026-10-21T12:00:00.000Z');
+      await tokens.issue({ userId: fixture.userId, rawToken: raw, now });
+      const rotated = await tokens.rotate({ rawToken: raw, now, nextRawToken: next });
+      expect(rotated.outcome).toBe('rotated');
+      const stored = await prisma.$queryRaw<Array<{ grace_refresh_token: string | null }>>`
+        SELECT grace_refresh_token FROM refresh_tokens WHERE token_hash = ${hashToken(raw)}
+      `;
+      expect(stored[0]?.grace_refresh_token?.startsWith('v1.')).toBe(true);
+      expect(stored[0]?.grace_refresh_token).not.toContain(next);
+      const at29 = await tokens.rotate({
+        rawToken: raw,
+        now: new Date(now.getTime() + 29_000),
+        nextRawToken: 'later-token',
+      });
+      expect(at29).toMatchObject({ outcome: 'grace', refreshToken: next });
+      await tokens.rotate({
+        rawToken: next,
+        now: new Date(now.getTime() + 30_000),
+        nextRawToken: 'used-successor',
+      });
+      const blocked = await tokens.rotate({
+        rawToken: raw,
+        now: new Date(now.getTime() + 30_000),
+        nextRawToken: 'should-not-return',
+      });
+      expect(blocked.outcome).toBe('reused');
+      const cleared = await prisma.$queryRaw<Array<{ grace_refresh_token: string | null }>>`
+        SELECT grace_refresh_token FROM refresh_tokens WHERE token_hash = ${hashToken(raw)}
+      `;
+      expect(cleared[0]?.grace_refresh_token).toBeNull();
+    } finally {
+      await deleteFixture(prisma, fixture);
+    }
+  });
+
+  it('refuses append-only mutations for the app role and for the owner', async () => {
+    const who = await prisma.$queryRaw<Array<{ current_user: string }>>`SELECT current_user`;
+    expect(who[0]?.current_user).toBe('property_control_app');
+    const fixture = await createFixture(prisma);
+    const version = `aviso-${randomUUID()}`;
+    try {
+      await prisma.avisoVersion.create({
+        data: { version, url: 'https://example.com/aviso', text: 'Texto.', textSha256: 'c'.repeat(64) },
+      });
+      await prisma.consent.create({
+        data: {
+          userId: fixture.userId,
+          avisoVersion: version,
+          acceptedAt: new Date('2026-10-21T12:00:00.000Z'),
+        },
+      });
+      await prisma.auditEvent.create({
+        data: { actorUserId: fixture.userId, action: 'test', entityType: 'consent' },
+      });
+      for (const statement of [
+        `UPDATE consents SET app_version = 'x'`,
+        `DELETE FROM consents`,
+        `TRUNCATE TABLE consents`,
+        `UPDATE audit_events SET action = 'x'`,
+        `DELETE FROM audit_events`,
+        `TRUNCATE TABLE audit_events`,
+        `UPDATE aviso_versions SET url = 'https://example.com/other'`,
+        `DELETE FROM aviso_versions`,
+        `TRUNCATE TABLE aviso_versions`,
+      ]) {
+        await expect(prisma.$executeRawUnsafe(statement), statement).rejects.toThrow(/permission denied/i);
+      }
+      await expect(
+        prisma.$executeRawUnsafe(`ALTER TABLE consents ADD COLUMN trust_blocker_probe text`),
+      ).rejects.toThrow(/permission denied|must be owner/i);
+      await expect(
+        prisma.$executeRawUnsafe(`ALTER TABLE consents DISABLE TRIGGER ALL`),
+      ).rejects.toThrow(/permission denied|must be owner/i);
+      await expect(
+        prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT set_config('session_replication_role', 'replica', true)`;
+        }),
+      ).rejects.toThrow(/permission denied/i);
+      for (const [statement, message] of [
+        [`UPDATE consents SET app_version = 'x'`, /consents are append-only/],
+        [`DELETE FROM consents`, /consents are append-only/],
+        [`TRUNCATE TABLE consents`, /consents are append-only/],
+        [`UPDATE audit_events SET action = 'x'`, /audit_events are append-only/],
+        [`DELETE FROM audit_events`, /audit_events are append-only/],
+        [`TRUNCATE TABLE audit_events`, /audit_events are append-only/],
+        [`UPDATE aviso_versions SET url = 'https://example.com/other'`, /aviso_versions are append-only/],
+        [`DELETE FROM aviso_versions`, /aviso_versions are append-only/],
+        [`TRUNCATE TABLE aviso_versions CASCADE`, /aviso_versions are append-only/],
+      ] as const) {
+        await expect(owner.$executeRawUnsafe(statement), statement).rejects.toThrow(message);
+      }
+    } finally {
+      await deleteFixture(prisma, fixture, version);
+    }
+  });
+
+  it('rejects a re-seed that changes aviso text and stores invite email as an HMAC', async () => {
+    const fixture = await createFixture(prisma);
+    const version = `aviso-${randomUUID()}`;
+    const email = 'Invitee@Example.com';
+    try {
+      await prisma.avisoVersion.create({
+        data: { version, url: 'https://example.com/old', text: 'old text', textSha256: 'd'.repeat(64) },
+      });
+      await expect(
+        publishAvisoVersion(prisma, { version, url: 'https://example.com/new', text: AVISO_TEXT }),
+      ).rejects.toBeInstanceOf(AvisoVersionConflictError);
+      const still = await prisma.avisoVersion.findUnique({ where: { version } });
+      expect(still?.text).toBe('old text');
+      expect(still?.url).toBe('https://example.com/old');
+      await expect(
+        prisma.consent.count({ where: { avisoVersion: 'missing-aviso-version' } }),
+      ).resolves.toBe(0);
+      const service = new ConsentService(
+        new PrismaConsentRepository(prisma),
+        new PrismaConsentAudit(prisma),
+        () => ({ avisoVersion: 'missing-aviso-version', avisoUrl: 'https://example.com/missing' }),
+        { now: () => new Date() },
+      );
+      try {
+        await service.recordConsent({ userId: fixture.userId, avisoVersion: 'missing-aviso-version' });
+        throw new Error('expected aviso_version_missing');
+      } catch (error) {
+        expect(error).toBeInstanceOf(UnprocessableEntityException);
+        expect((error as UnprocessableEntityException).getResponse()).toMatchObject({
+          statusCode: 422,
+          error: 'aviso_version_missing',
+        });
+      }
+      expect(await prisma.consent.count({ where: { userId: fixture.userId } })).toBe(0);
+      const created = new Date('2026-10-01T00:00:00.000Z');
+      const hmac = inviteEmailHmac(email, TEST_SERVER_SECRET);
+      await prisma.membershipInvite.create({
+        data: {
+          propertyId: fixture.propertyId,
+          emailHmac: hmac,
+          role: 'member',
+          tokenHash: randomUUID(),
+          invitedByUserId: fixture.userId,
+          createdAt: created,
+          sentAt: created,
+          expiresAt: new Date(created.getTime() + 7 * 24 * 60 * 60 * 1000),
+        },
+      });
+      await expect(
+        prisma.membershipInvite.create({
+          data: {
+            propertyId: fixture.propertyId,
+            emailHmac: hmac,
+            role: 'viewer',
+            tokenHash: randomUUID(),
+            invitedByUserId: fixture.userId,
+            createdAt: created,
+            sentAt: created,
+            expiresAt: new Date(created.getTime() + 8 * 24 * 60 * 60 * 1000),
+          },
+        }),
+      ).rejects.toThrow(/membership_invites_expires_within_7_days/);
+      const columns = await prisma.$queryRaw<Array<{ column_name: string }>>`
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'membership_invites'
+      `;
+      const names = columns.map((column) => column.column_name);
+      expect(names).toContain('email_hmac');
+      expect(names).toContain('superseded_at');
+      expect(names).not.toContain('email');
+      const stored = await prisma.$queryRaw<Array<{ email_hmac: string }>>`
+        SELECT email_hmac FROM membership_invites WHERE property_id = CAST(${fixture.propertyId} AS uuid)
+      `;
+      expect(stored.map((row) => row.email_hmac)).toEqual([hmac]);
+      expect(JSON.stringify(stored)).not.toContain(email.toLowerCase());
+    } finally {
+      await deleteFixture(prisma, fixture, version);
+    }
   });
 });
 
@@ -461,17 +775,20 @@ async function createFixture(prisma: PrismaClient): Promise<Fixture> {
       dueDay: 15,
       scheduleAnchor: new Date('2026-03-01T00:00:00.000Z'),
       nextDueDate: new Date('2026-03-15T00:00:00.000Z'),
-      expectedAmount: 10000,
+      expectedAmount: 10000n,
       currency: 'MXN',
     },
   });
   return { userId, propertyId, obligationId };
 }
 
-async function deleteFixture(prisma: PrismaClient, fixture: Fixture): Promise<void> {
-  await prisma.auditEvent.deleteMany({
-    where: { OR: [{ propertyId: fixture.propertyId }, { actorUserId: fixture.userId }] },
+async function deleteFixture(prisma: PrismaClient, fixture: Fixture, avisoVersion?: string): Promise<void> {
+  await purgeAppendOnly({
+    propertyId: fixture.propertyId,
+    userId: fixture.userId,
+    avisoVersion,
   });
+  await prisma.membershipInvite.deleteMany({ where: { propertyId: fixture.propertyId } });
   await prisma.payment.deleteMany({ where: { propertyId: fixture.propertyId } });
   await prisma.refreshToken.deleteMany({ where: { userId: fixture.userId } });
   await prisma.idempotencyKey.deleteMany({ where: { userId: fixture.userId } });
@@ -479,6 +796,32 @@ async function deleteFixture(prisma: PrismaClient, fixture: Fixture): Promise<vo
   await prisma.propertyMembership.deleteMany({ where: { propertyId: fixture.propertyId } });
   await prisma.property.delete({ where: { id: fixture.propertyId } });
   await prisma.user.delete({ where: { id: fixture.userId } }).catch(() => undefined);
+}
+
+async function purgeAppendOnly(scope: {
+  propertyId?: string;
+  userId?: string;
+  avisoVersion?: string;
+}): Promise<void> {
+  await ownerClient.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT set_config('session_replication_role', 'replica', true)`;
+    if (scope.propertyId || scope.userId) {
+      await tx.auditEvent.deleteMany({
+        where: {
+          OR: [
+            ...(scope.propertyId ? [{ propertyId: scope.propertyId }] : []),
+            ...(scope.userId ? [{ actorUserId: scope.userId }] : []),
+          ],
+        },
+      });
+    }
+    if (scope.userId) {
+      await tx.consent.deleteMany({ where: { userId: scope.userId } });
+    }
+    if (scope.avisoVersion) {
+      await tx.avisoVersion.deleteMany({ where: { version: scope.avisoVersion } });
+    }
+  });
 }
 
 function twoFields(providerName: string, notes: string): OcrExtractor {

@@ -1,5 +1,13 @@
+import { randomUUID } from 'node:crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
-import { ConsentRepository, ConsentRow, UniqueConsentError } from './consent.repository.js';
+import {
+  AvisoVersionMissingError,
+  ConsentAuditEntry,
+  ConsentAuditLog,
+  ConsentRepository,
+  ConsentRow,
+  UniqueConsentError,
+} from './consent.repository.js';
 
 export class PrismaConsentRepository implements ConsentRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -31,6 +39,54 @@ export class PrismaConsentRepository implements ConsentRepository {
       throw error;
     }
   }
+
+  /**
+   * The consent row and its audit event commit together. The external audit
+   * log is not called, so a repeat cannot write a second entry from here.
+   */
+  async acceptAtomic(row: ConsentRow, entry: ConsentAuditEntry, _audit: ConsentAuditLog): Promise<ConsentRow> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const created = await tx.consent.create({
+          data: {
+            id: row.id,
+            userId: row.userId,
+            avisoVersion: row.avisoVersion,
+            acceptedAt: row.acceptedAt,
+            appVersion: row.appVersion,
+            createdAt: row.createdAt,
+          },
+        });
+        await tx.auditEvent.create({
+          data: {
+            id: randomUUID(),
+            actorUserId: entry.userId,
+            action: entry.action,
+            entityType: 'consent',
+            entityId: entry.consentId,
+            metadata: {
+              avisoVersion: entry.avisoVersion,
+              appVersion: entry.appVersion,
+              consentId: entry.consentId,
+            },
+          },
+        });
+        return toRow(created);
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new UniqueConsentError();
+      }
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003' && mentionsAviso(error)) {
+        throw new AvisoVersionMissingError();
+      }
+      throw error;
+    }
+  }
+}
+
+function mentionsAviso(error: Prisma.PrismaClientKnownRequestError): boolean {
+  return `${error.message} ${JSON.stringify(error.meta ?? {})}`.toLowerCase().includes('aviso');
 }
 
 function toRow(row: {

@@ -53,6 +53,20 @@ export class LiveHealthController {
   }
 }
 
+/**
+ * One trusted hop. The rightmost X-Forwarded-For address is the client that
+ * hop saw. A leftmost address the caller added does not mint a new bucket.
+ * With no header, req.ip is the socket peer (`trust proxy` is 1).
+ */
 function clientIp(req: Request): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  const header = Array.isArray(forwarded) ? forwarded.join(',') : forwarded;
+  if (typeof header === 'string' && header.trim()) {
+    const parts = header.split(',').map((part) => part.trim()).filter(Boolean);
+    const client = parts[parts.length - 1];
+    if (client) {
+      return client;
+    }
+  }
   return req.ip || req.socket.remoteAddress || 'unknown';
 }

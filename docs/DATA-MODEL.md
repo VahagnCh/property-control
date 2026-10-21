@@ -74,7 +74,7 @@ The rule, not the event. What is owed, how often, and when next.
 | `due_day` | Integer 1–31. Required with `schedule_anchor` for every recurrence except `custom` and `irregular`. |
 | `schedule_anchor` | Calendar date whose year and month are period index 0. The day used for each period is `due_day`, clamped to the month. |
 | `next_due_date` | A date, not a timestamp. Recomputed from the anchor, not from the previous clamped date. API input allows today minus 1 year through today plus 5 years in the property timezone (`America/Mexico_City` when omitted) and returns 422 `next_due_date_out_of_range` outside that window. The column CHECK is the 1990-01-01 through 2100-12-31 sanity bound. |
-| `expected_amount` | Integer centavos in the database, nullable when the bill is variable. The API wire value is a decimal string such as `"1234.50"` plus currency `MXN`, never a float. |
+| `expected_amount` | BIGINT centavos in the database, nullable when the bill is variable, and greater than 0 when set. The API wire value is a decimal string such as `"1234.50"` plus currency `MXN`, never a float and never centavos. |
 | `currency` | `MXN` only |
 | `reminder_offsets` | `integer[]`, defaults to `{7,1}` — days before the due date |
 | `preferred_method` | Descriptive text. Not a stored payment instrument. |
@@ -97,7 +97,7 @@ An event that settles some or all of an obligation period. A record of something
 | :---- | :---- |
 | `obligation_id`, `property_id`, `period_due_date` | Required. The period the payment applies to. |
 | `recorded_by_user_id` | Who entered it |
-| `amount` | Integer centavos in the database, greater than zero. The API wire value is a decimal string such as `"1234.50"` plus currency `MXN`, never a float. A non-positive amount, a JSON number, or a string that is not that decimal form returns 422. |
+| `amount` | BIGINT centavos in the database, greater than zero. The API wire value is a decimal string such as `"1234.50"` plus currency `MXN`, never a float and never centavos. A non-positive amount, a JSON number, or a string that is not that decimal form returns 422. |
 | `currency` | `MXN` only |
 | `paid_at` | When the person says they paid. The client picker caps the day at today in the property timezone. The server allows one calendar day of clock skew after now in that timezone, at the same local time, and returns 422 beyond it. The lower bound is one calendar year earlier in that timezone, with 29 February clamped. |
 | `method` | Free text: "SPEI", "efectivo", "tarjeta". Descriptive only. |
@@ -137,7 +137,7 @@ One row per pause. `paused_on` and `resumed_on` are property-timezone dates. `re
 
 ## MembershipInvite
 
-Only an owner invites, by email, as `member` or `viewer`. `token_hash` is the lowercase hex SHA-256 of a raw token that the create and resend responses return once. Tokens are single-use. `expires_at` is `sent_at` plus 7 days, and a resend restarts those 7 days. Acceptance requires the invited email. Accept checks run in this order: an unknown token or the wrong account is 404 before any token state is revealed; a used, revoked, superseded-by-resend, or expired token is 410; an invitee who is already a member is 409. A non-owner invite action is 403. A caller with no membership, and an unknown property, is 404.
+Only an owner invites, by email, as `member` or `viewer`. The invited address is stored as `email_hmac`, never in plain text. `token_hash` is the lowercase hex SHA-256 of a raw token that the create and resend responses return once. Tokens are single-use. `expires_at` is at most `created_at` plus 7 days, and a resend restarts those 7 days and sets `superseded_at` on the previous row. Acceptance requires the invited email. Accept checks run in this order: an unknown token or the wrong account is 404 before any token state is revealed; a used, revoked, superseded-by-resend, or expired token is 410; an invitee who is already a member is 409. A non-owner invite action is 403. A caller with no membership, and an unknown property, is 404.
 
 ## Evidence
 
@@ -269,4 +269,4 @@ The statements are in [`apps/api/prisma/sql/checks.sql`](../apps/api/prisma/sql/
 - The two reminder partial unique indexes named above
 - Invite `role` is `member` or `viewer`
 - UUID primary keys default to `gen_random_uuid()`, which is core Postgres 13+. No extension is created.
-- `consents` rejects `UPDATE` and `DELETE` with `consents are append-only`
+- `consents`, `audit_events`, and `aviso_versions` reject `UPDATE`, `DELETE`, and `TRUNCATE`. The message is `<table> are append-only`, so consents still say `consents are append-only`. The app role also has no grant for those statements, and it cannot `ALTER TABLE`, disable a trigger, or set `session_replication_role`.

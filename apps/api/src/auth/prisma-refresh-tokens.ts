@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
+import { openSealed, sealString } from './server-secret.js';
 import {
   REFRESH_ABSOLUTE_MS,
   hashToken,
@@ -12,7 +13,10 @@ import {
 type Tx = Prisma.TransactionClient;
 
 export class PrismaRefreshTokens {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly secret: string,
+  ) {}
 
   async issue(input: { userId: string; rawToken: string; now: Date }): Promise<RefreshTokenRow> {
     const issuedAt = input.now;
@@ -32,7 +36,7 @@ export class PrismaRefreshTokens {
   }
 
   async rotate(input: { rawToken: string; now: Date; nextRawToken: string }): Promise<RotateResult> {
-    return this.prisma.$transaction((tx) => rotateInStore(new PrismaRefreshTx(tx), input));
+    return this.prisma.$transaction((tx) => rotateInStore(new PrismaRefreshTx(tx, this.secret), input));
   }
 
   async countByFamily(familyId: string): Promise<number> {
@@ -41,7 +45,10 @@ export class PrismaRefreshTokens {
 }
 
 class PrismaRefreshTx {
-  constructor(private readonly tx: Tx) {}
+  constructor(
+    private readonly tx: Tx,
+    private readonly secret: string,
+  ) {}
 
   async claimUnused(tokenHash: string, now: Date): Promise<RefreshTokenRow | null> {
     const rows = await this.tx.$queryRaw<RawRefresh[]>`
@@ -68,7 +75,7 @@ class PrismaRefreshTx {
       FOR UPDATE
     `;
     const row = rows[0];
-    return row ? fromRaw(row) : null;
+    return row ? this.reveal(fromRaw(row)) : null;
   }
 
   async findById(id: string): Promise<RefreshTokenRow | null> {
@@ -79,7 +86,7 @@ class PrismaRefreshTx {
       WHERE id = CAST(${id} AS uuid)
     `;
     const row = rows[0];
-    return row ? fromRaw(row) : null;
+    return row ? this.reveal(fromRaw(row)) : null;
   }
 
   async insert(row: RefreshTokenRow): Promise<RefreshTokenRow> {
@@ -100,8 +107,22 @@ class PrismaRefreshTx {
   async attachSuccessor(parentId: string, successorId: string, graceToken: string): Promise<void> {
     await this.tx.refreshToken.update({
       where: { id: parentId },
-      data: { replacedById: successorId, graceRefreshToken: graceToken },
+      data: { replacedById: successorId, graceRefreshToken: sealString(graceToken, this.secret) },
     });
+  }
+
+  async clearGrace(parentId: string): Promise<void> {
+    await this.tx.refreshToken.update({
+      where: { id: parentId },
+      data: { graceRefreshToken: null },
+    });
+  }
+
+  private reveal(row: RefreshTokenRow): RefreshTokenRow {
+    if (!row.graceRefreshToken) {
+      return row;
+    }
+    return { ...row, graceRefreshToken: openSealed(row.graceRefreshToken, this.secret) };
   }
 
   async revokeFamily(familyId: string, now: Date): Promise<void> {

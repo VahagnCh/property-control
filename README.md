@@ -100,7 +100,7 @@ pnpm workspaces. Node 20.19 or newer (22 is what `.nvmrc` pins).
 
 | Path | What it is today |
 | :---- | :---- |
-| `apps/api` | Boots without a database. `GET /health` is a process check. `GET /v1/health` checks the database. Collection reads return an empty stub list. Mutations return **501**. OCR is in memory and also returns **501** unless `OCR_STUB_ENABLED` is set. The stub maps **58** routes. |
+| `apps/api` | Boots without a database. `GET /v1/health` checks the database. Collection reads return an empty stub list. Mutations return **501**. OCR is in memory and also returns **501** unless `OCR_STUB_ENABLED` is set. The stub maps **57** routes. |
 | `apps/api/prisma/schema.prisma` | PostgreSQL schema and the init migration. Nest reads it for `GET /v1/health` only. |
 | `apps/mobile` | Bottom tabs and placeholder copy. No data fetching. |
 | `docs/` | The written contract for this repo, summarized from the Drive sources. |
