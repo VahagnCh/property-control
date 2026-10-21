@@ -73,7 +73,7 @@ The rule, not the event. What is owed, how often, and when next.
 | `recurrence` | `monthly` · `bimonthly` · `quarterly` · `semiannual` · `annual` · `custom` · `irregular`. `irregular` is approximately one-time. |
 | `due_day` | Integer 1–31. Required with `schedule_anchor` for every recurrence except `custom` and `irregular`. |
 | `schedule_anchor` | Calendar date whose year and month are period index 0. The day used for each period is `due_day`, clamped to the month. |
-| `next_due_date` | A date, not a timestamp. Recomputed from the anchor, not from the previous clamped date. |
+| `next_due_date` | A date, not a timestamp. Recomputed from the anchor, not from the previous clamped date. API input allows today minus 1 year through today plus 5 years in the property timezone (`America/Mexico_City` when omitted) and returns 422 `next_due_date_out_of_range` outside that window. The column CHECK is the 1990-01-01 through 2100-12-31 sanity bound. |
 | `expected_amount` | Integer centavos in the database, nullable when the bill is variable. The API wire value is a decimal string such as `"1234.50"` plus currency `MXN`, never a float. |
 | `currency` | `MXN` only |
 | `reminder_offsets` | `integer[]`, defaults to `{7,1}` — days before the due date |
@@ -99,7 +99,7 @@ An event that settles some or all of an obligation period. A record of something
 | `recorded_by_user_id` | Who entered it |
 | `amount` | Integer centavos in the database, greater than zero. The API wire value is a decimal string such as `"1234.50"` plus currency `MXN`, never a float. A non-positive amount, a JSON number, or a string that is not that decimal form returns 422. |
 | `currency` | `MXN` only |
-| `paid_at` | When the person says they paid. Later than now plus 24 hours returns 422. Earlier than one calendar year before now returns 422. That one-year bound is the server instant with the year reduced by one in the property timezone, not in UTC. |
+| `paid_at` | When the person says they paid. The client picker caps the day at today in the property timezone. The server allows one calendar day of clock skew after now in that timezone, at the same local time, and returns 422 beyond it. The lower bound is one calendar year earlier in that timezone, with 29 February clamped. |
 | `method` | Free text: "SPEI", "efectivo", "tarjeta". Descriptive only. |
 | `reference` | The folio |
 | `status` | `recorded` · `voided`. This is the stored status. The client labels `voided` as Anulado. |

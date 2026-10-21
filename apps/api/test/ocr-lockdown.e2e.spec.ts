@@ -405,14 +405,18 @@ describe('OCR lockdown HTTP', () => {
             ? { suggestionId: row.id, action: 'accept', targetEntityId: DOCUMENT_A }
             : { suggestionId: row.id, action: 'reject' },
         ),
-      ).expect(400);
-      await send(
+      ).expect(422);
+      const badEdit = await send(
         suggestions.map((row) =>
           row.id === amount?.id
             ? { suggestionId: row.id, action: 'edit', editedValue: '0.00', targetEntityId: OBLIGATION_A }
             : { suggestionId: row.id, action: 'reject' },
         ),
-      ).expect(400);
+      ).expect(422);
+      expect(badEdit.body).toMatchObject({
+        suggestionId: amount?.id,
+        field: 'expectedAmount',
+      });
       await request(server).post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}/confirm`).set(authA).send({}).expect(400);
       const still = await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}`).set(authA).expect(200);
       expect((still.body.suggestions as SuggestionRow[]).every((row) => row.applyStatus === 'pending')).toBe(true);

@@ -39,6 +39,17 @@ ALTER TABLE payments
   );
 
 ALTER TABLE obligations
+  DROP CONSTRAINT IF EXISTS obligations_next_due_date_sanity;
+ALTER TABLE obligations
+  ADD CONSTRAINT obligations_next_due_date_sanity CHECK (
+    next_due_date IS NULL
+    OR (
+      next_due_date >= DATE '1990-01-01'
+      AND next_due_date <= DATE '2100-12-31'
+    )
+  );
+
+ALTER TABLE obligations
   DROP CONSTRAINT IF EXISTS obligations_currency_mxn;
 ALTER TABLE obligations
   ADD CONSTRAINT obligations_currency_mxn CHECK (currency = 'MXN');

@@ -136,7 +136,7 @@ Upload a document, run extract, show suggestions, wait for the person.
 1. `POST /v1/properties/:propertyId/documents/:documentId/ocr-jobs` creates a job. The in-memory stub finishes the extract immediately and returns status `suggested`, with `vendor: "stub"`. There is no model call.
 2. Suggestions come back with `applyStatus: "pending"`.
 3. `POST .../ocr-jobs/:ocrJobId/confirm` is the only route that accepts or rejects them. The person may edit a value first.
-4. The stub sets `persisted: false`. It does not update an obligation, a payment, a property, or a document row.
+4. `persisted` is true only when that confirm's saves commit. With no `saveValue` writer, the stub leaves it false and does not update an obligation, a payment, a property, or a document row.
 
 Rejecting every suggestion leaves the file in place and writes no entity fields. Read [docs/OCR.md](docs/OCR.md) before changing this flow.
 

@@ -103,6 +103,8 @@ Archiving is `DELETE`. It sets `deletedAt` and also pauses. Payments and N/A the
 
 `dueDay` (1–31) and `scheduleAnchor` are required for monthly, bimonthly, quarterly, semiannual, and annual. The due date clamps to the month's last day and the anchor does not drift.
 
+`nextDueDate` has two layers. The API accepts a property-timezone calendar date from today minus one year through today plus five years, inclusive. February 29 clamps when the target year is not a leap year. Outside that window the response is 422 with error `next_due_date_out_of_range`. The default timezone is `America/Mexico_City`. The database CHECK, and a defensive check, also reject a date before `1990-01-01` or after `2100-12-31`.
+
 ## Payments
 
 ```text
@@ -126,7 +128,7 @@ There is no `DELETE` for a payment. A correction is the void route. It sets `voi
 
 This records a payment the person already made somewhere else. The API does not charge a card, debit an account, or hold a balance. `method` and `reference` are descriptive text — "SPEI", a folio — not instructions to a payment processor.
 
-`amount` is a decimal string such as `"1234.50"` plus currency `MXN`. It is never a float. The database stores integer centavos, and the stored amount must be greater than 0. The wire type is `WireMoney` in `apps/api/src/payments/wire-money.ts`. `paidAt` later than now plus 24 hours returns 422. `paidAt` earlier than one calendar year before now returns 422, and that bound is the server instant with the year reduced by one in the property timezone, not in UTC. A non-voided payment with the same obligation, the same amount, and a property-timezone date within 3 days adds a `possible_duplicate` warning and still returns 201. Voided payments, different amounts, and idempotency replays do not run that check again. A viewer write, such as void, returns 403. A non-member, and an unknown payment, returns 404.
+`amount` is a decimal string such as `"1234.50"` plus currency `MXN`. It is never a float. The database stores integer centavos, and the stored amount must be greater than 0. The wire type is `WireMoney` in `apps/api/src/payments/wire-money.ts`. The client date picker caps `paidAt` at today in the property timezone. The server allows one calendar day of clock skew after the server instant in that timezone, at the same local time of day, and returns 422 past that bound. The lower bound is the existing one-year back-date in the property timezone, not UTC. A non-voided payment with the same obligation, the same amount, and a property-timezone date within 3 days adds a `possible_duplicate` warning and still returns 201. Voided payments, different amounts, and idempotency replays do not run that check again. A viewer write, such as void, returns 403. A non-member, and an unknown payment, returns 404.
 
 Creating or voiding a payment recomputes the period from recorded, non-voided payments. A sum below the expected amount is `partial` and does not move `nextDueDate`. A sum that reaches the expected amount is `paid` and moves `nextDueDate` forward exactly one period. A larger sum stores the excess as `overpaidAmount` on that period and still moves forward only one period. A void can move `nextDueDate` back to the earliest candidate that is not settled. The rules are in [EDGE_CASES.md](EDGE_CASES.md) sections 1, 2, and 7.
 
@@ -225,7 +227,7 @@ When the flag is on, the gates run in this order:
 1. A missing, invalid, or expired access token is **401**, before path checks and before the JSON body is read. A non-UUID path or an oversized body with no token is still **401**. The default verifier rejects every token. This API never mints one.
 2. Path ids that are not UUIDs, and traversal in the path, are **400**. Malformed JSON is **400**. A body over 32kb is **413**.
 3. An unknown property, an unknown document, a missing membership, or another account is **404**. A viewer may read a job and receives **403** on enqueue and confirm.
-4. `targetEntityId` must be a UUID for the suggestion's entity type in the same property, or the response is **404**. `document_meta` cannot be retargeted off the job's own document. `editedValue` is checked against `fieldPath`. Amounts are canonical peso strings (`19000.00` or `1234`), dates are ISO `YYYY-MM-DD`, and text is NFC. A type mismatch, an unknown `fieldPath`, or a prototype key is **400**.
+4. `targetEntityId` must be a UUID for the suggestion's entity type in the same property. An unbound accept, replace, or edit with no target is **422**. A non-UUID target is **400**. A missing, wrong-type, foreign, forged, or soft-deleted target is **404**. A voided payment target is **422**. Confirm does not create an entity. An already-bound target is immutable: retargeting it is **422** when the new id is in the same property, and **404** when that id is foreign or forged. `editedValue`, and an accepted suggested value, are checked against `fieldPath`. Amounts are canonical peso strings (`19000.00` or `1234`), dates are ISO `YYYY-MM-DD`, and text is NFC. A bad value is **422**, and that body includes `suggestionId` and `field`. An unknown `fieldPath` or a prototype key is **400**. Text rejects C0 and C1 controls, bidi overrides, and zero-width characters instead of stripping them. A title longer than 300 characters is **422**. The JSON body limit is 32 KB.
 
 `OCR_JOBS_MAX` (default 50) is the cap for one property. `OCR_JOBS_GLOBAL_MAX` (default 1000) is the ceiling across properties. Either limit returns **429** and does not evict an unexpired suggested job. A suggested job with no suggestions does not take a slot.
 
@@ -237,13 +239,21 @@ GET  /v1/properties/:propertyId/documents/:documentId/ocr-jobs
 GET  /v1/properties/:propertyId/ocr-jobs/:ocrJobId
        → 200 { job, suggestions }
 POST /v1/properties/:propertyId/ocr-jobs/:ocrJobId/confirm
-       Body: { decisions: Array<{ suggestionId, action: "accept" | "reject" | "edit",
-                                  editedValue?, targetEntityId? }> }
-       → 200 { job, suggestions, applied: Array<{ suggestionId, entityType,
-                                                  entityId, fieldPath }> }
+       Body: { decisions: [{ suggestionId, action: accept|reject|edit|replace, editedValue?, targetEntityId? }] }
+       → 200 { job, suggestions, applied, audits, persisted }
 ```
 
 Path ids are UUIDs. A non-UUID id on any matched route is **400**. The in-memory map has a cap (`OCR_JOBS_MAX`, default 50) and a TTL (`OCR_JOB_TTL_MS`, default 15 minutes). Expired jobs can be dropped. An unexpired suggested job is never evicted; a full map returns **429**. Confirming an expired job returns **410**. Confirming a job that is not `suggested`, including a second confirm, returns **409**.
+
+Confirm requires one decision for every suggestion. The body is exactly `{ decisions: [{ suggestionId, action: accept|reject|edit|replace, editedValue?, targetEntityId? }] }`. A missing decision is **422** and the body names that `suggestionId`.
+
+Each suggestion carries `band`: `alta` at or above the configured alta cutoff, `media` from the media cutoff up to alta, and `revisa` below the media cutoff. The defaults are 0.90 and 0.80, read from `OCR_CONFIDENCE_ALTA` and `OCR_CONFIDENCE_MEDIA`. A low-confidence flag forces `revisa` whatever the score, including an ambiguous amount such as `1,234`. A score above 1, below 0, NaN, or non-numeric is also `revisa`. The job returns the configured `confidenceBands`.
+
+`accept` and `edit` of a saved non-null field return **409** `field_already_set` and do not mark the suggestion accepted. `replace` is the only overwrite, and it writes the replace audit. `reject` leaves the value. There is no silent prefill. Confirm validates every decision, then writes the accepted set together. If one write fails, the earlier writes in that confirm are restored and no suggestion changes status. `persisted` is true only when those writes commit. A body with `acceptAll: true`, or a decision whose action is `accept-all`, returns **422**. `clientPriorValue` on the body or on a decision returns **422**. The API does not accept or store unsaved typed text.
+
+Single-line text rejects every C0 character, including tab, CR, and LF. The `notes` field is the multi-line exception: it allows LF, and CR or CRLF is stored as LF. A tab in notes is still rejected. An invalid property `timezone` is **422** on write. A stored invalid timezone falls back to `America/Mexico_City` and does not raise 500.
+
+When the field is already saved, the replace audit is `{ suggestionId, field, action: "replace", actorUserId, previousValue, newValue }`. `previousValue` is the persisted server value. Before the record is saved, the audit is `{ suggestionId, field, decision: "replaced", suggestedValue }` and has no previous value. On payment create, that field's audit source is `ocr_replace` with the `suggestionId`.
 
 Job statuses: `pending` → `processing` → `suggested` → `confirmed` | `rejected` | `failed`.
 Suggestion apply statuses: `pending` → `accepted` | `rejected`.
@@ -252,7 +262,7 @@ Suggestion apply statuses: `pending` → `accepted` | `rejected`.
 
 Responses never include `storageKey`, `storage_key`, or a raw bucket path. The stub may build a private key from the validated UUIDs and then leave it off the payload.
 
-What the stub does differently: it finishes the extract synchronously with four fixed suggestions and `vendor: "stub"`, keeps everything in memory, requires a decision for every suggestion, and returns `persisted: false`. There is no model call. Details in [OCR.md](OCR.md).
+What the stub does differently: it finishes the extract synchronously with four fixed suggestions and `vendor: "stub"`, keeps the job in memory, and requires one decision per suggestion. `persisted` is true only when the confirm's saves commit. There is no model call. Details in [OCR.md](OCR.md).
 
 CORS is an allow-list from `CORS_ORIGINS` (comma-separated origins). The default is no cross-origin access. `*` is ignored and is never reflected.
 
@@ -303,7 +313,9 @@ Reminder channels: `email`, `push`, `in_app`. The unique key is (parent, `schedu
 | Condition | Status |
 | :---- | :---- |
 | Missing, invalid, or expired JWT | 401 |
-| Non-UUID path id, path traversal, unknown `fieldPath`, or an `editedValue` that does not match its field | 400 |
+| Non-UUID path id, path traversal, or unknown `fieldPath` | 400 |
+| Bad `editedValue` (body includes `suggestionId` and `field`), missing decision (body includes `suggestionId`), same-property retarget of a bound target, voided or unchecked payment target, `clientPriorValue`, bulk accept-all, or invalid property timezone on write | 422 |
+| Accept or edit of a field that already has a saved value | 409 `field_already_set` |
 | Valid JWT, no active membership for `:propertyId`, or the property is unknown or soft-deleted | 404 |
 | Viewer write, such as void, OCR enqueue, or OCR confirm | 403 |
 | Unknown invite token, or accept from the wrong account | 404 |
