@@ -78,7 +78,7 @@ Rules:
 
 - **Accept** applies the suggested value only when the saved field is null. **Edit** applies `editedValue` when the saved field is null. Accept or edit of a saved non-null value returns 409 `field_already_set` and does not mark the suggestion accepted. **Replace** overwrites a saved value and writes the replace audit. **Reject** writes nothing and sets `apply_status = 'rejected'`.
 - Confirm validates every decision first, then writes them together. A failed write rolls back the fields already written in that confirm. `persisted` is true only when the writes commit.
-- A bulk `acceptAll` shape, and `clientPriorValue` on the body or a decision, return 422. Unsaved typed text is not stored.
+- A bulk `acceptAll` shape returns 422 `bulk_accept_rejected`, and `clientPriorValue` on the body or a decision returns 422 `client_prior_value_rejected`. Unsaved typed text is not stored. OCR 4xx bodies carry a stable `error` code, listed in [API.md](API.md). A 404 is always `not_found`.
 - A suggestion needs a `target_entity_id`, from the row or from the decision, before it can be accepted, replaced, or edited. Missing is 422. A non-UUID is 400. A bound target cannot be changed: the same property is 422, and a foreign or forged id is 404. A missing, wrong-type, or soft-deleted target is 404. A voided payment is 422. Confirm does not create an entity.
 - All-or-nothing for the accepted set. A partial failure returns 409 or 422 rather than applying some fields and silently dropping others.
 - Every decision rejected means the job ends `rejected`, no entity field changes, and the document stays stored.

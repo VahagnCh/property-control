@@ -22,10 +22,11 @@ export interface OcrTargetLookup {
     entityId: string;
   }): boolean;
   /**
-   * Payment targets only. 'voided' rejects confirm with 422.
-   * Omitted means the payment is recorded.
+   * Payment targets only. `recorded` allows confirm. `voided` is 422
+   * `target_voided`. Any other status, or a missing method, is 422
+   * `target_status_unknown`.
    */
-  paymentStatus?(input: { propertyId: string; entityId: string }): 'recorded' | 'voided';
+  paymentStatus?(input: { propertyId: string; entityId: string }): string;
   /** IANA name. Omitted means America/Mexico_City. */
   timeZone?(propertyId: string): string | undefined;
   /**

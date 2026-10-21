@@ -2,6 +2,7 @@ import { Inject, Injectable, type NestMiddleware } from '@nestjs/common';
 import { json, urlencoded, type NextFunction, type Request, type Response } from 'express';
 import { ACCESS_TOKEN_VERIFIER, verifyBearer, type AccessTokenVerifier } from '../auth/access-token.verifier.js';
 import { earlyRequestStatus, isOcrPath, pathOnly } from '../common/path-safety.js';
+import { OCR_ERROR, ocrBody } from './ocr-errors.js';
 import { OCR_RUNTIME, ocrDisabledBody, type OcrRuntime } from './ocr-runtime.js';
 
 const JSON_LIMIT = '32kb';
@@ -27,7 +28,7 @@ export class RequestGuardMiddleware implements NestMiddleware {
       const verdict = verifyBearer(this.verifier, req.headers.authorization);
       if (!verdict.ok) {
         req.resume();
-        res.status(401).json({ statusCode: 401, message: verdict.message });
+        res.status(401).json(ocrBody(401, verdict.error, verdict.message));
         return;
       }
     }
@@ -39,10 +40,7 @@ export class RequestGuardMiddleware implements NestMiddleware {
     }
     if (status === 400) {
       req.resume();
-      res.status(400).json({
-        statusCode: 400,
-        message: 'Invalid path parameter.',
-      });
+      res.status(400).json(ocrBody(400, OCR_ERROR.invalidPath, 'Invalid path parameter.'));
       return;
     }
     this.jsonParser(req, res, (error?: unknown) => {
@@ -68,8 +66,9 @@ function writeParseError(res: Response, error: unknown): void {
   if (res.headersSent) {
     return;
   }
-  res.status(status).json({
-    statusCode: status,
-    message: tooLarge ? 'Payload too large.' : 'Invalid JSON payload.',
-  });
+  res.status(status).json(
+    tooLarge
+      ? ocrBody(413, OCR_ERROR.payloadTooLarge, 'Payload too large.')
+      : ocrBody(400, OCR_ERROR.invalidJson, 'Invalid JSON payload.'),
+  );
 }

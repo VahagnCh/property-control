@@ -171,6 +171,7 @@ describe('OCR lockdown HTTP', () => {
       for (const call of calls) {
         const response = await call().expect(501);
         expect(response.body.module).toBe('ocr');
+        expect(response.body.error).toBe('ocr_disabled');
         expectNoLeak(response.body);
       }
       expect(storage.calls).toEqual([]);
@@ -190,9 +191,16 @@ describe('OCR lockdown HTTP', () => {
     it('returns 401 for a missing, bad, or any token while the verifier fails closed', async () => {
       const server = app.getHttpServer();
       const path = `/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A}/ocr-jobs`;
-      for (const header of [undefined, 'Bearer nope', 'Bearer expired', 'Bearer valid-a']) {
+      const cases: Array<[string | undefined, string]> = [
+        [undefined, 'token_missing'],
+        ['Bearer nope', 'token_invalid'],
+        ['Bearer expired', 'token_invalid'],
+        ['Bearer valid-a', 'token_invalid'],
+      ];
+      for (const [header, code] of cases) {
         const call = request(server).post(path);
         const response = header ? await call.set('Authorization', header).expect(401) : await call.expect(401);
+        expect(response.body.error).toBe(code);
         expectNoLeak(response.body);
       }
     });
@@ -231,23 +239,35 @@ describe('OCR lockdown HTTP', () => {
     it('returns 401 for no token, a bad token, or an expired token', async () => {
       const server = app.getHttpServer();
       const path = `/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A}/ocr-jobs`;
-      await request(server).post(path).expect(401);
-      await request(server).post(path).set('Authorization', 'Bearer nope').expect(401);
-      await request(server).post(path).set('Authorization', 'Bearer expired').expect(401);
+      const missing = await request(server).post(path).expect(401);
+      const invalid = await request(server).post(path).set('Authorization', 'Bearer nope').expect(401);
+      const expired = await request(server).post(path).set('Authorization', 'Bearer expired').expect(401);
+      expect(missing.body.error).toBe('token_missing');
+      expect(invalid.body.error).toBe('token_invalid');
+      expect(expired.body.error).toBe('token_expired');
     });
 
     it('returns 400 and 413 after a valid token', async () => {
       const server = app.getHttpServer();
-      await request(server)
+      const badPath = await request(server)
         .post('/v1/properties/property-1/documents/document-1/ocr-jobs')
         .set(authA)
         .expect(400);
+      expect(badPath.body.error).toBe('invalid_path');
+      const malformed = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A}/ocr-jobs`)
+        .set(authA)
+        .set('Content-Type', 'application/json')
+        .send('{');
+      expect(malformed.status).toBe(400);
+      expect(malformed.body.error).toBe('invalid_json');
       const oversized = await request(server)
         .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A}/ocr-jobs`)
         .set(authA)
         .set('Content-Type', 'application/json')
         .send(`{"pad":"${'x'.repeat(40_000)}"}`);
       expect(oversized.status).toBe(413);
+      expect(oversized.body.error).toBe('payload_too_large');
       expectNoLeak(oversized.body);
     });
 
@@ -265,6 +285,8 @@ describe('OCR lockdown HTTP', () => {
       for (const response of responses) {
         expect(response.status).toBe(404);
         expect(response.status).not.toBe(403);
+        expect(response.body.error).toBe('not_found');
+        expect(response.body.message).toBe('Not found.');
         expectNoLeak(response.body);
       }
       expect(storage.calls).toEqual([]);
@@ -328,6 +350,7 @@ describe('OCR lockdown HTTP', () => {
           decisions: suggestions.map((row) => ({ suggestionId: row.id, action: 'reject' })),
         })
         .expect(409);
+      expect(again.body.error).toBe('job_not_confirmable');
       expectNoLeak(again.body);
     });
 
@@ -344,18 +367,24 @@ describe('OCR lockdown HTTP', () => {
         .set(authViewer)
         .send(rejectAll(read.body.suggestions as SuggestionRow[]))
         .expect(403);
+      expect(denied.body.error).toBe('forbidden');
       expect(denied.status).not.toBe(404);
       const after = await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}`).set(authA).expect(200);
       expect((after.body.suggestions as SuggestionRow[]).every((row) => row.applyStatus === 'pending')).toBe(true);
-      await request(server)
+      const viewerEnqueue = await request(server)
         .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A2}/ocr-jobs`)
         .set(authViewer)
         .expect(403);
+      expect(viewerEnqueue.body.error).toBe('forbidden');
     });
 
     it('rejects non-UUID ids, bad targets, retargets, and bad edited values', async () => {
       const server = app.getHttpServer();
-      await request(server).post('/v1/properties/property-1/documents/document-1/ocr-jobs').set(authA).expect(400);
+      const badId = await request(server)
+        .post('/v1/properties/property-1/documents/document-1/ocr-jobs')
+        .set(authA)
+        .expect(400);
+      expect(badId.body.error).toBe('invalid_path');
       const created = await request(server)
         .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A2}/ocr-jobs`)
         .set(authA)
@@ -371,13 +400,25 @@ describe('OCR lockdown HTTP', () => {
       const send = (decisions: unknown[]) =>
         request(server).post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}/confirm`).set(authA).send({ decisions });
 
-      await send([{ suggestionId: amount?.id, action: 'accept', targetEntityId: 'obligation-9' }]).expect(400);
-      await send([{ suggestionId: amount?.id, action: 'accept', targetEntityId: 42 }]).expect(400);
-      await send([{ suggestionId: amount?.id, action: 'accept', targetEntityId: null }]).expect(400);
-      await send([{ suggestionId: amount?.id, action: 'accept', targetEntityId: [OBLIGATION_A] }]).expect(400);
-      await send([
-        { suggestionId: amount?.id, action: 'accept', targetEntityId: OBLIGATION_A, fieldPath: 'expectedAmount' },
-      ]).expect(400);
+      expect((await send([{ suggestionId: amount?.id, action: 'accept', targetEntityId: 'obligation-9' }])).body.error).toBe(
+        'target_invalid',
+      );
+      expect((await send([{ suggestionId: amount?.id, action: 'accept', targetEntityId: 42 }])).body.error).toBe(
+        'target_invalid',
+      );
+      expect((await send([{ suggestionId: amount?.id, action: 'accept', targetEntityId: null }])).body.error).toBe(
+        'target_invalid',
+      );
+      expect((await send([{ suggestionId: amount?.id, action: 'accept', targetEntityId: [OBLIGATION_A] }])).body.error).toBe(
+        'target_invalid',
+      );
+      expect(
+        (
+          await send([
+            { suggestionId: amount?.id, action: 'accept', targetEntityId: OBLIGATION_A, fieldPath: 'expectedAmount' },
+          ])
+        ).body.error,
+      ).toBe('unknown_field');
       await send(
         suggestions.map((row) =>
           row.id === amount?.id
@@ -385,27 +426,37 @@ describe('OCR lockdown HTTP', () => {
             : { suggestionId: row.id, action: 'reject' },
         ),
       ).expect(404);
-      await send(
-        suggestions.map((row) =>
-          row.id === amount?.id
-            ? { suggestionId: row.id, action: 'accept', targetEntityId: PAYMENT_A }
-            : { suggestionId: row.id, action: 'reject' },
-        ),
-      ).expect(404);
-      await send(
-        suggestions.map((row) =>
-          row.id === title?.id
-            ? { suggestionId: row.id, action: 'accept', targetEntityId: DOCUMENT_B }
-            : { suggestionId: row.id, action: 'reject' },
-        ),
-      ).expect(404);
-      await send(
+      expect(
+        (
+          await send(
+            suggestions.map((row) =>
+              row.id === amount?.id
+                ? { suggestionId: row.id, action: 'accept', targetEntityId: PAYMENT_A }
+                : { suggestionId: row.id, action: 'reject' },
+            ),
+          )
+        ).body.error,
+      ).toBe('not_found');
+      expect(
+        (
+          await send(
+            suggestions.map((row) =>
+              row.id === title?.id
+                ? { suggestionId: row.id, action: 'accept', targetEntityId: DOCUMENT_B }
+                : { suggestionId: row.id, action: 'reject' },
+            ),
+          )
+        ).body.error,
+      ).toBe('not_found');
+      const retarget = await send(
         suggestions.map((row) =>
           row.id === title?.id
             ? { suggestionId: row.id, action: 'accept', targetEntityId: DOCUMENT_A }
             : { suggestionId: row.id, action: 'reject' },
         ),
-      ).expect(422);
+      );
+      expect(retarget.status).toBe(422);
+      expect(retarget.body.error).toBe('bound_target_immutable');
       const badEdit = await send(
         suggestions.map((row) =>
           row.id === amount?.id
@@ -414,10 +465,16 @@ describe('OCR lockdown HTTP', () => {
         ),
       ).expect(422);
       expect(badEdit.body).toMatchObject({
+        error: 'edited_value_invalid',
         suggestionId: amount?.id,
         field: 'expectedAmount',
       });
-      await request(server).post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}/confirm`).set(authA).send({}).expect(400);
+      const empty = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}/confirm`)
+        .set(authA)
+        .send({})
+        .expect(400);
+      expect(empty.body.error).toBe('decisions_invalid');
       const still = await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}`).set(authA).expect(200);
       expect((still.body.suggestions as SuggestionRow[]).every((row) => row.applyStatus === 'pending')).toBe(true);
       expectNoLeak(still.body);
@@ -436,6 +493,7 @@ describe('OCR lockdown HTTP', () => {
         .post(`/v1/properties/..%2F/documents/${DOCUMENT_A}/ocr-jobs`)
         .set(authA);
       expect(ocr.status).toBe(400);
+      expect(ocr.body.error).toBe('invalid_path');
       expect(storage.calls).toHaveLength(before);
     });
 
@@ -453,6 +511,8 @@ describe('OCR lockdown HTTP', () => {
         request(server).post(`/v1/properties/${PROPERTY_B}/ocr-jobs/${jobId}/confirm`).set(authB).send(payload),
       ]);
       expect([first.status, second.status].sort()).toEqual([200, 409]);
+      const loser = first.status === 409 ? first : second;
+      expect(loser.body.error).toBe('job_not_confirmable');
       const after = await request(server).get(`/v1/properties/${PROPERTY_B}/ocr-jobs/${jobId}`).set(authB).expect(200);
       expect(after.body.job.status).toBe('rejected');
       expect((after.body.suggestions as SuggestionRow[]).every((row) => row.applyStatus === 'rejected')).toBe(true);
@@ -473,6 +533,7 @@ describe('OCR lockdown HTTP', () => {
         .set(authB)
         .send({ decisions: [{ suggestionId: FORGED, action: 'reject' }] })
         .expect(409);
+      expect(response.body.error).toBe('job_not_confirmable');
       expectNoLeak(response.body);
     });
 
@@ -484,6 +545,7 @@ describe('OCR lockdown HTTP', () => {
         .set('Content-Type', 'application/json')
         .send(`{"decisions":"${'x'.repeat(40_000)}"}`);
       expect(oversized.status).toBe(413);
+      expect(oversized.body.error).toBe('payload_too_large');
       expectNoLeak(oversized.body);
       const evidence = await request(server).get(`/v1/properties/${PROPERTY_A}/evidence`).expect(200);
       expectNoLeak(evidence.body);
@@ -505,6 +567,7 @@ describe('OCR lockdown HTTP', () => {
         .get(`/v1/properties/${PROPERTY_A}/documents/${FORGED}/ocr-jobs`)
         .set(authA)
         .expect(404);
+      expect(listed.body.error).toBe('not_found');
       expectNoLeak(listed.body);
     });
   });
@@ -540,6 +603,7 @@ describe('OCR lockdown HTTP', () => {
         .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A2}/ocr-jobs`)
         .set(authA)
         .expect(429);
+      expect(blocked.body.error).toBe('ocr_capacity');
       expectNoLeak(blocked.body);
       const still = await request(server).get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${jobId}`).set(authA).expect(200);
       expect(still.body.job.status).toBe('suggested');
@@ -554,6 +618,7 @@ describe('OCR lockdown HTTP', () => {
         .set(authA)
         .send({ decisions: [{ suggestionId: FORGED, action: 'reject' }] })
         .expect(410);
+      expect(expired.body.error).toBe('job_expired');
       expectNoLeak(expired.body);
     });
   });
@@ -634,11 +699,12 @@ describe('OCR lockdown HTTP', () => {
         .set(authA)
         .expect(200);
       expect(failedRead.body.suggestions).toEqual([]);
-      await request(failed.app.getHttpServer())
+      const failedConfirm = await request(failed.app.getHttpServer())
         .post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${failedJob.body.id as string}/confirm`)
         .set(authA)
         .send({ decisions: [] })
         .expect(409);
+      expect(failedConfirm.body.error).toBe('job_not_confirmable');
       await failed.app.close();
     });
   });
@@ -684,18 +750,22 @@ describe('OCR lockdown HTTP', () => {
         throw new Error('HTTP server did not bind a port.');
       }
       const before = storage.calls.length;
-      const status = await new Promise<number>((resolve, reject) => {
+      const raw = await new Promise<{ status: number; body: string }>((resolve, reject) => {
         const req = http.request(
           { hostname: '127.0.0.1', port: address.port, path: '/v1/properties/../payments', method: 'GET' },
           (res) => {
-            res.resume();
-            resolve(res.statusCode ?? 0);
+            const chunks: Buffer[] = [];
+            res.on('data', (chunk: Buffer) => chunks.push(chunk));
+            res.on('end', () => {
+              resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') });
+            });
           },
         );
         req.on('error', reject);
         req.end();
       });
-      expect(status).toBe(400);
+      expect(raw.status).toBe(400);
+      expect(JSON.parse(raw.body).error).toBe('invalid_path');
       expect(storage.calls).toHaveLength(before);
     });
   });

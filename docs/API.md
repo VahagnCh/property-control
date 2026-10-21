@@ -245,11 +245,47 @@ POST /v1/properties/:propertyId/ocr-jobs/:ocrJobId/confirm
 
 Path ids are UUIDs. A non-UUID id on any matched route is **400**. The in-memory map has a cap (`OCR_JOBS_MAX`, default 50) and a TTL (`OCR_JOB_TTL_MS`, default 15 minutes). Expired jobs can be dropped. An unexpired suggested job is never evicted; a full map returns **429**. Confirming an expired job returns **410**. Confirming a job that is not `suggested`, including a second confirm, returns **409**.
 
-Confirm requires one decision for every suggestion. The body is exactly `{ decisions: [{ suggestionId, action: accept|reject|edit|replace, editedValue?, targetEntityId? }] }`. A missing decision is **422** and the body names that `suggestionId`.
+Confirm requires one decision for every suggestion. The body is exactly `{ decisions: [{ suggestionId, action: accept|reject|edit|replace, editedValue?, targetEntityId? }] }`. A missing decision is **422** `missing_decision` and the body names that `suggestionId`.
 
 Each suggestion carries `band`: `alta` at or above the configured alta cutoff, `media` from the media cutoff up to alta, and `revisa` below the media cutoff. The defaults are 0.90 and 0.80, read from `OCR_CONFIDENCE_ALTA` and `OCR_CONFIDENCE_MEDIA`. A low-confidence flag forces `revisa` whatever the score, including an ambiguous amount such as `1,234`. A score above 1, below 0, NaN, or non-numeric is also `revisa`. The job returns the configured `confidenceBands`.
 
-`accept` and `edit` of a saved non-null field return **409** `field_already_set` and do not mark the suggestion accepted. `replace` is the only overwrite, and it writes the replace audit. `reject` leaves the value. There is no silent prefill. Confirm validates every decision, then writes the accepted set together. If one write fails, the earlier writes in that confirm are restored and no suggestion changes status. `persisted` is true only when those writes commit. A body with `acceptAll: true`, or a decision whose action is `accept-all`, returns **422**. `clientPriorValue` on the body or on a decision returns **422**. The API does not accept or store unsaved typed text.
+`accept` and `edit` of a saved non-null field return **409** `field_already_set` and do not mark the suggestion accepted. `replace` is the only overwrite, and it writes the replace audit. `reject` leaves the value. There is no silent prefill. Confirm validates every decision, then writes the accepted set together. If one write fails, the earlier writes in that confirm are restored and no suggestion changes status. `persisted` is true only when those writes commit. A body with `acceptAll: true`, or a decision whose action is `accept-all`, returns **422** `bulk_accept_rejected`. `clientPriorValue` on the body or on a decision returns **422** `client_prior_value_rejected`. The API does not accept or store unsaved typed text.
+
+Every OCR 4xx body includes a stable `error` string next to `message`. Clients match `error`, never the English text. A 404 is always `not_found` with message `Not found.`, whether the missing id is a job, a suggestion, a property, a document, a membership, or a target. That keeps the response from revealing which id was unknown.
+
+| `error` | Status | When | Extra fields |
+| :---- | :---- | :---- | :---- |
+| `token_missing` | 401 | No `Authorization: Bearer` token | |
+| `token_invalid` | 401 | Token is present and not accepted | |
+| `token_expired` | 401 | Verifier reports the token expired | |
+| `invalid_path` | 400 | Path id is not a UUID, or the path contains traversal | |
+| `invalid_json` | 400 | JSON body does not parse | |
+| `payload_too_large` | 413 | JSON body is over 32 KB | |
+| `not_found` | 404 | Unknown job, suggestion, property, document, membership, or target. One code for every 404 | |
+| `forbidden` | 403 | Viewer enqueue or confirm | |
+| `ocr_disabled` | 501 | `OCR_STUB_ENABLED` is off. Body also has `module: "ocr"` | |
+| `ocr_capacity` | 429 | Property or global job cap is full | |
+| `job_expired` | 410 | Confirm or read of a job past its TTL | |
+| `job_not_confirmable` | 409 | Job is not `suggested`, including a second confirm | |
+| `decisions_invalid` | 400 | Body is not an object, `decisions` is missing or empty, or the payload is too deep | |
+| `unknown_field` | 400 | Unknown key, or `__proto__` / `constructor` / `prototype` | |
+| `suggestion_invalid` | 400 | A decision is not an object, or `suggestionId` is not a UUID | |
+| `duplicate_decision` | 400 | The same `suggestionId` is listed twice | |
+| `action_invalid` | 400 | `action` is not `accept`, `reject`, `edit`, or `replace` | |
+| `edited_value_required` | 400 | `edit` without `editedValue` | |
+| `target_invalid` | 400 | `targetEntityId` is not a UUID | |
+| `field_path_unknown` | 400 | Suggestion `fieldPath` is not a known field | |
+| `invalid_storage_key` | 400 | Storage key inputs are not UUIDs. Not returned on a normal confirm | |
+| `missing_decision` | 422 | A suggestion has no decision | `suggestionId` |
+| `client_prior_value_rejected` | 422 | `clientPriorValue` on the body or on a decision | |
+| `bulk_accept_rejected` | 422 | `acceptAll`, `accept_all`, or action `accept-all` / `accept_all` | |
+| `edited_value_invalid` | 422 | `editedValue` or an accepted suggestion does not match `fieldPath` | `suggestionId`, `field` |
+| `next_due_date_out_of_range` | 422 | `nextDueDate` is outside the property-timezone window or the 1990–2100 bound | `suggestionId`, `field` |
+| `bound_target_immutable` | 422 | Same-property retarget of an already-bound suggestion | |
+| `target_required` | 422 | Unbound accept, edit, or replace with no target | |
+| `target_voided` | 422 | Payment target status is `voided` | |
+| `target_status_unknown` | 422 | Payment target has no status check, or a status other than `recorded` or `voided` | |
+| `field_already_set` | 409 | Accept or edit of a saved non-null value | `suggestionId`, `field` |
 
 Single-line text rejects every C0 character, including tab, CR, and LF. The `notes` field is the multi-line exception: it allows LF, and CR or CRLF is stored as LF. A tab in notes is still rejected. An invalid property `timezone` is **422** on write. A stored invalid timezone falls back to `America/Mexico_City` and does not raise 500.
 
@@ -314,7 +350,7 @@ Reminder channels: `email`, `push`, `in_app`. The unique key is (parent, `schedu
 | :---- | :---- |
 | Missing, invalid, or expired JWT | 401 |
 | Non-UUID path id, path traversal, or unknown `fieldPath` | 400 |
-| Bad `editedValue` (body includes `suggestionId` and `field`), missing decision (body includes `suggestionId`), same-property retarget of a bound target, voided or unchecked payment target, `clientPriorValue`, bulk accept-all, or invalid property timezone on write | 422 |
+| Bad `editedValue` (`edited_value_invalid`, body includes `suggestionId` and `field`), date window (`next_due_date_out_of_range`), missing decision (`missing_decision`, body includes `suggestionId`), same-property retarget (`bound_target_immutable`), unbound target (`target_required`), voided payment (`target_voided`), unchecked payment (`target_status_unknown`), `clientPriorValue` (`client_prior_value_rejected`), bulk accept-all (`bulk_accept_rejected`), or invalid property timezone on write (`invalid_timezone`) | 422 |
 | Accept or edit of a field that already has a saved value | 409 `field_already_set` |
 | Valid JWT, no active membership for `:propertyId`, or the property is unknown or soft-deleted | 404 |
 | Viewer write, such as void, OCR enqueue, or OCR confirm | 403 |

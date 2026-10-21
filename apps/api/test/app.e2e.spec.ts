@@ -158,6 +158,7 @@ describe('API scaffold', () => {
       .send({ storageKey: 'properties/secret/documents/deed', admin: true })
       .expect(501);
     expect(created.body.module).toBe('ocr');
+    expect(created.body.error).toBe('ocr_disabled');
     expect(created.body).not.toHaveProperty('storageKey');
     expect(JSON.stringify(created.body)).not.toMatch(/storageKey|storage_key|properties\//i);
 

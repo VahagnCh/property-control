@@ -110,7 +110,23 @@ describe('OcrService', () => {
     const storage = new PrivateObjectStorage();
     const service = serviceWith({ storage });
     expect(() => service.enqueue('property-1', DOCUMENT)).toThrow(BadRequestException);
-    expect(() => service.enqueue(PROPERTY, 'document-1')).toThrow(BadRequestException);
+    try {
+      service.enqueue(PROPERTY, 'document-1');
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect((error as BadRequestException).getResponse()).toMatchObject({
+        error: 'invalid_path',
+        statusCode: 400,
+      });
+    }
+    expect(() => storage.buildOcrSourceKey('property-1', DOCUMENT)).toThrow(BadRequestException);
+    try {
+      storage.buildOcrSourceKey('property-1', DOCUMENT);
+      expect.unreachable();
+    } catch (error) {
+      expect((error as BadRequestException).getResponse()).toMatchObject({ error: 'invalid_storage_key' });
+    }
     expect(storage.calls).toEqual([]);
   });
 
@@ -243,7 +259,7 @@ describe('OcrService', () => {
             : { suggestionId: row.id, action: 'accept' as const, targetEntityId: 'obligation-9' },
         ),
       ),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toMatchObject({ response: { error: 'target_invalid', statusCode: 400 } });
   });
 
   it('rejects numeric, null, and array targetEntityId values and unknown decision fields', async () => {
@@ -261,25 +277,25 @@ describe('OcrService', () => {
         { suggestionId: amount?.id, action: 'accept', targetEntityId: 12 },
         ...rest,
       ]),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toMatchObject({ response: { error: 'target_invalid', statusCode: 400 } });
     await expect(
       service.confirm(PROPERTY, job.id, [
         { suggestionId: amount?.id, action: 'accept', targetEntityId: null },
         ...rest,
       ]),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toMatchObject({ response: { error: 'target_invalid', statusCode: 400 } });
     await expect(
       service.confirm(PROPERTY, job.id, [
         { suggestionId: amount?.id, action: 'accept', targetEntityId: [OBLIGATION] },
         ...rest,
       ]),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toMatchObject({ response: { error: 'target_invalid', statusCode: 400 } });
     await expect(
       service.confirm(PROPERTY, job.id, [
         { suggestionId: amount?.id, action: 'accept', targetEntityId: OBLIGATION, extra: true },
         ...rest,
       ]),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toMatchObject({ response: { error: 'unknown_field', statusCode: 400 } });
     expect(
       suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
     ).toBe(true);
@@ -298,11 +314,15 @@ describe('OcrService', () => {
           : { suggestionId: row.id, action: 'reject' as const },
       );
 
-    await expect(service.confirm(PROPERTY, job.id, body(FORGED))).rejects.toBeInstanceOf(NotFoundException);
-    await expect(service.confirm(PROPERTY, job.id, body(OTHER_OBLIGATION))).rejects.toBeInstanceOf(
-      NotFoundException,
-    );
-    await expect(service.confirm(PROPERTY, job.id, body(PAYMENT))).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.confirm(PROPERTY, job.id, body(FORGED))).rejects.toMatchObject({
+      response: { error: 'not_found', message: 'Not found.', statusCode: 404 },
+    });
+    await expect(service.confirm(PROPERTY, job.id, body(OTHER_OBLIGATION))).rejects.toMatchObject({
+      response: { error: 'not_found', message: 'Not found.', statusCode: 404 },
+    });
+    await expect(service.confirm(PROPERTY, job.id, body(PAYMENT))).rejects.toMatchObject({
+      response: { error: 'not_found', message: 'Not found.', statusCode: 404 },
+    });
     expect(
       suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
     ).toBe(true);
@@ -327,6 +347,7 @@ describe('OcrService', () => {
       expect(error).toBeInstanceOf(UnprocessableEntityException);
       expect((error as UnprocessableEntityException).getStatus()).toBe(422);
       expect((error as UnprocessableEntityException).getResponse()).toMatchObject({
+        error: 'edited_value_invalid',
         message: 'editedValue does not match fieldPath.',
         suggestionId: amount?.id,
         field: 'expectedAmount',
@@ -364,6 +385,7 @@ describe('OcrService', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(UnprocessableEntityException);
       expect((error as UnprocessableEntityException).getResponse()).toMatchObject({
+        error: 'edited_value_invalid',
         suggestionId: amount?.id,
         field: 'expectedAmount',
       });
@@ -406,13 +428,17 @@ describe('OcrService', () => {
         { suggestionId: row?.id ?? '', action: 'accept', targetEntityId: OTHER_OBLIGATION },
       ]),
     ).rejects.toMatchObject({
-      response: { message: 'A bound target cannot be changed.', statusCode: 422 },
+      response: {
+        error: 'bound_target_immutable',
+        message: 'A bound target cannot be changed.',
+        statusCode: 422,
+      },
     });
     await expect(
       service.confirm(PROPERTY, job.id, [
         { suggestionId: row?.id ?? '', action: 'accept', targetEntityId: FORGED },
       ]),
-    ).rejects.toBeInstanceOf(NotFoundException);
+    ).rejects.toMatchObject({ response: { error: 'not_found', statusCode: 404 } });
     const kept = await service.confirm(PROPERTY, job.id, [
       { suggestionId: row?.id ?? '', action: 'accept', targetEntityId: OBLIGATION },
     ]);
@@ -448,22 +474,27 @@ describe('OcrService', () => {
     const id = row?.id ?? '';
     await expect(
       service.confirm(PROPERTY, job.id, [{ suggestionId: id, action: 'accept' }]),
-    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    ).rejects.toMatchObject({ response: { error: 'target_required', statusCode: 422 } });
     await expect(
       service.confirm(PROPERTY, job.id, [
         { suggestionId: id, action: 'edit', editedValue: 'Otro banco' },
       ]),
-    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    ).rejects.toMatchObject({ response: { error: 'target_required', statusCode: 422 } });
+    await expect(
+      service.confirm(PROPERTY, job.id, [
+        { suggestionId: id, action: 'replace' },
+      ]),
+    ).rejects.toMatchObject({ response: { error: 'target_required', statusCode: 422 } });
     await expect(
       service.confirm(PROPERTY, job.id, [
         { suggestionId: id, action: 'accept', targetEntityId: 'obligation-9' },
       ]),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toMatchObject({ response: { error: 'target_invalid', statusCode: 400 } });
     await expect(
       service.confirm(PROPERTY, job.id, [
         { suggestionId: id, action: 'edit', editedValue: 'Otro banco', targetEntityId: 'obligation-9' },
       ]),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toMatchObject({ response: { error: 'target_invalid', statusCode: 400 } });
     expect(suggestionMap(service, PROPERTY, job.id)[0]?.applyStatus).toBe('pending');
   });
 
@@ -520,11 +551,11 @@ describe('OcrService', () => {
 
     await expect(
       service.confirm(PROPERTY, job.id, decisionsFor(softDeleted, PAYMENT)),
-    ).rejects.toBeInstanceOf(NotFoundException);
+    ).rejects.toMatchObject({ response: { error: 'not_found', statusCode: 404 } });
     await expect(
       service.confirm(PROPERTY, job.id, decisionsFor(OBLIGATION, voided)),
     ).rejects.toMatchObject({
-      response: { message: 'A voided payment cannot be a confirm target.', statusCode: 422 },
+      response: { error: 'target_voided', message: 'A voided payment cannot be a confirm target.', statusCode: 422 },
     });
     expect(knownPayments).toEqual(new Set([PAYMENT]));
     expect(
@@ -551,10 +582,12 @@ describe('OcrService', () => {
           : { suggestionId: row.id, action: 'reject' as const },
       );
 
-    await expect(service.confirm(PROPERTY, job.id, body(DOCUMENT_2))).rejects.toBeInstanceOf(
-      UnprocessableEntityException,
-    );
-    await expect(service.confirm(PROPERTY, job.id, body(FORGED))).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.confirm(PROPERTY, job.id, body(DOCUMENT_2))).rejects.toMatchObject({
+      response: { error: 'bound_target_immutable', statusCode: 422 },
+    });
+    await expect(service.confirm(PROPERTY, job.id, body(FORGED))).rejects.toMatchObject({
+      response: { error: 'not_found', statusCode: 404 },
+    });
     expect(
       suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
     ).toBe(true);
@@ -604,9 +637,15 @@ describe('OcrService', () => {
           targetEntityId: row.targetEntityType === 'document_meta' ? undefined : OBLIGATION,
         };
       });
-      await expect(service.confirm(PROPERTY, job.id, payload)).rejects.toBeInstanceOf(
-        UnprocessableEntityException,
-      );
+      const window = testCase.editedValue === '1989-12-31' || testCase.editedValue === '2101-01-01';
+      await expect(service.confirm(PROPERTY, job.id, payload)).rejects.toMatchObject({
+        response: {
+          error: window ? 'next_due_date_out_of_range' : 'edited_value_invalid',
+          suggestionId: suggestions.find((row) => row.fieldPath === testCase.fieldPath)?.id,
+          field: testCase.fieldPath,
+          statusCode: 422,
+        },
+      });
     }
     expect(
       suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
@@ -683,7 +722,7 @@ describe('OcrService', () => {
           targetEntityId: OBLIGATION,
         })),
       ),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toMatchObject({ response: { error: 'field_path_unknown', statusCode: 400 } });
     expect(
       suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
     ).toBe(true);
@@ -749,25 +788,27 @@ describe('OcrService', () => {
     expect(failedJob.errorCode).toBe('extract_failed');
     expect(JSON.stringify(failedJob)).not.toMatch(/corrupt/);
     expect(failed.getJob(PROPERTY, failedJob.id).suggestions).toEqual([]);
-    await expect(failed.confirm(PROPERTY, failedJob.id, [])).rejects.toBeInstanceOf(ConflictException);
+    await expect(failed.confirm(PROPERTY, failedJob.id, [])).rejects.toMatchObject({
+      response: { error: 'job_not_confirmable', statusCode: 409 },
+    });
 
     const pending = serviceWith({
       extractor: { extract: () => ({ outcome: 'pending' }) },
     });
     const pendingJob = pending.enqueue(PROPERTY, DOCUMENT_2).job;
     expect(pendingJob.status).toBe('pending');
-    await expect(pending.confirm(PROPERTY, pendingJob.id, { decisions: [] })).rejects.toBeInstanceOf(
-      ConflictException,
-    );
+    await expect(pending.confirm(PROPERTY, pendingJob.id, { decisions: [] })).rejects.toMatchObject({
+      response: { error: 'job_not_confirmable', statusCode: 409 },
+    });
 
     const processing = serviceWith({
       extractor: { extract: () => ({ outcome: 'processing' }) },
     });
     const processingJob = processing.enqueue(PROPERTY, DOCUMENT).job;
     expect(processingJob.status).toBe('processing');
-    await expect(processing.confirm(PROPERTY, processingJob.id, [])).rejects.toBeInstanceOf(
-      ConflictException,
-    );
+    await expect(processing.confirm(PROPERTY, processingJob.id, [])).rejects.toMatchObject({
+      response: { error: 'job_not_confirmable', statusCode: 409 },
+    });
   });
 
   it('lets exactly one of two concurrent confirms win', async () => {
@@ -784,6 +825,9 @@ describe('OcrService', () => {
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(1);
     expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
+    expect(((rejected[0] as PromiseRejectedResult).reason as ConflictException).getResponse()).toMatchObject({
+      error: 'job_not_confirmable',
+    });
     expect(suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'rejected')).toBe(
       true,
     );
@@ -801,6 +845,7 @@ describe('OcrService', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(HttpException);
       expect((error as HttpException).getStatus()).toBe(429);
+      expect((error as HttpException).getResponse()).toMatchObject({ error: 'ocr_capacity', statusCode: 429 });
     }
     expect(service.getJob(PROPERTY, first.id).job.status).toBe('suggested');
     expect(service.getJob(PROPERTY, second.id).job.status).toBe('suggested');
@@ -830,16 +875,34 @@ describe('OcrService', () => {
     const service = serviceWith({ jobsMax: 5, jobsGlobalMax: 1 });
     const held = service.enqueue(PROPERTY, DOCUMENT).job;
     expect(() => service.enqueue(otherProperty, DOCUMENT)).toThrow(HttpException);
+    try {
+      service.enqueue(otherProperty, DOCUMENT);
+      expect.unreachable();
+    } catch (error) {
+      expect((error as HttpException).getResponse()).toMatchObject({ error: 'ocr_capacity', statusCode: 429 });
+    }
     expect(service.getJob(PROPERTY, held.id).job.status).toBe('suggested');
   });
 
   it('rejects an unknown job before queueing and clears the confirm tail', async () => {
     const service = serviceWith();
     expect(() => service.confirm(PROPERTY, FORGED, { decisions: [] })).toThrow(NotFoundException);
+    try {
+      service.confirm(PROPERTY, FORGED, { decisions: [] });
+      expect.unreachable();
+    } catch (error) {
+      expect((error as NotFoundException).getResponse()).toMatchObject({ error: 'not_found', message: 'Not found.' });
+    }
     expect(service.confirmQueueSize()).toBe(0);
 
     const { job } = service.enqueue(PROPERTY, DOCUMENT);
-    expect(() => service.confirm(DOCUMENT, job.id, [])).toThrow(NotFoundException);
+    try {
+      service.confirm(DOCUMENT, job.id, []);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(NotFoundException);
+      expect((error as NotFoundException).getResponse()).toMatchObject({ error: 'not_found' });
+    }
     expect(service.confirmQueueSize()).toBe(0);
 
     const suggestions = suggestionMap(service, PROPERTY, job.id);
@@ -883,8 +946,16 @@ describe('OcrService', () => {
       action: 'reject' as const,
     }));
     clock.nowMs = 1_500;
-    await expect(service.confirm(PROPERTY, job.id, payload)).rejects.toBeInstanceOf(GoneException);
+    await expect(service.confirm(PROPERTY, job.id, payload)).rejects.toMatchObject({
+      response: { error: 'job_expired', message: 'OCR job has expired.', statusCode: 410 },
+    });
     expect(() => service.getJob(PROPERTY, job.id)).toThrow(GoneException);
+    try {
+      service.getJob(PROPERTY, job.id);
+      expect.unreachable();
+    } catch (error) {
+      expect((error as GoneException).getResponse()).toMatchObject({ error: 'job_expired' });
+    }
 
     clock.nowMs = 1_600;
     const created = service.enqueue(PROPERTY, DOCUMENT_2);
@@ -898,7 +969,9 @@ describe('OcrService', () => {
     const payload = JSON.parse(
       '{"__proto__":{"admin":true},"decisions":[{"suggestionId":"11111111-1111-4111-8111-111111111111","action":"reject","constructor":{"x":1}}]}',
     ) as unknown;
-    await expect(service.confirm(PROPERTY, job.id, payload)).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.confirm(PROPERTY, job.id, payload)).rejects.toMatchObject({
+      response: { error: 'unknown_field', statusCode: 400 },
+    });
     expect(Object.prototype).not.toHaveProperty('admin');
     expect(
       suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
@@ -1071,10 +1144,11 @@ describe('OcrService', () => {
       expect((error as UnprocessableEntityException).getStatus()).toBe(422);
       const due = suggestions.find((row) => row.fieldPath === 'nextDueDate');
       expect((error as UnprocessableEntityException).getResponse()).toMatchObject({
-        error: NEXT_DUE_DATE_ERROR,
+        error: 'next_due_date_out_of_range',
         suggestionId: due?.id,
         field: 'nextDueDate',
       });
+      expect(NEXT_DUE_DATE_ERROR).toBe('next_due_date_out_of_range');
     }
   });
 
@@ -1242,7 +1316,42 @@ describe('OcrService', () => {
       service.confirm(PROPERTY, job.id, [
         { suggestionId: row?.id ?? '', action: 'accept', targetEntityId: PAYMENT },
       ]),
-    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    ).rejects.toMatchObject({
+      response: { error: 'target_status_unknown', statusCode: 422 },
+    });
+    const unchecked = serviceWith({
+      lookup: {
+        belongsToProperty({ entityType, entityId }) {
+          if (entityType === 'payment') return entityId === PAYMENT;
+          return false;
+        },
+        paymentStatus() {
+          return 'scheduled';
+        },
+      },
+      extractor: {
+        extract: () => ({
+          outcome: 'suggested',
+          suggestions: [
+            {
+              targetEntityType: 'payment',
+              fieldPath: 'expectedAmount',
+              suggestedValue: '100.00',
+              confidence: 0.95,
+            },
+          ],
+        }),
+      },
+    });
+    const uncheckedJob = unchecked.enqueue(PROPERTY, DOCUMENT_2).job;
+    const [uncheckedRow] = suggestionMap(unchecked, PROPERTY, uncheckedJob.id);
+    await expect(
+      unchecked.confirm(PROPERTY, uncheckedJob.id, [
+        { suggestionId: uncheckedRow?.id ?? '', action: 'accept', targetEntityId: PAYMENT },
+      ]),
+    ).rejects.toMatchObject({
+      response: { error: 'target_status_unknown', message: 'A payment target must be checked before confirm.' },
+    });
     expect(suggestionMap(service, PROPERTY, job.id)[0]?.applyStatus).toBe('pending');
   });
 
@@ -1263,7 +1372,9 @@ describe('OcrService', () => {
       expect(error).toBeInstanceOf(UnprocessableEntityException);
       expect((error as UnprocessableEntityException).getStatus()).toBe(422);
       expect((error as UnprocessableEntityException).getResponse()).toMatchObject({
+        error: 'missing_decision',
         suggestionId: skipped?.id,
+        statusCode: 422,
       });
     }
   });
@@ -1285,6 +1396,10 @@ describe('OcrService', () => {
       );
     expect(error).toBeInstanceOf(UnprocessableEntityException);
     expect((error as UnprocessableEntityException).getStatus()).toBe(422);
+    expect((error as UnprocessableEntityException).getResponse()).toMatchObject({
+      error: 'client_prior_value_rejected',
+      statusCode: 422,
+    });
     expect(error).not.toBeInstanceOf(BadRequestException);
   });
 
@@ -1345,13 +1460,13 @@ describe('OcrService', () => {
         return { suggestionId: row.id, action: 'edit' as const, editedValue: notes, targetEntityId: OBLIGATION };
       });
     for (const sample of ['Cafe\t', 'Cafe\r', 'Cafe\n']) {
-      await expect(service.confirm(PROPERTY, job.id, body(sample, 'nota'))).rejects.toBeInstanceOf(
-        UnprocessableEntityException,
-      );
+      await expect(service.confirm(PROPERTY, job.id, body(sample, 'nota'))).rejects.toMatchObject({
+        response: { error: 'edited_value_invalid', field: 'providerName', statusCode: 422 },
+      });
     }
-    await expect(service.confirm(PROPERTY, job.id, body('BBVA', 'linea\t2'))).rejects.toBeInstanceOf(
-      UnprocessableEntityException,
-    );
+    await expect(service.confirm(PROPERTY, job.id, body('BBVA', 'linea\t2'))).rejects.toMatchObject({
+      response: { error: 'edited_value_invalid', field: 'notes', statusCode: 422 },
+    });
     const result = await service.confirm(PROPERTY, job.id, body('BBVA', 'linea 1\r\nlinea 2'));
     expect(result.suggestions.find((row) => row.fieldPath === 'notes')?.userEditedValue).toBe('linea 1\nlinea 2');
     expect(
@@ -1413,14 +1528,19 @@ describe('OcrService', () => {
           }
         : { suggestionId: row.id, action: 'reject' as const },
     );
-    await expect(service.confirm(PROPERTY, job.id, withPrior)).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(service.confirm(PROPERTY, job.id, withPrior)).rejects.toMatchObject({
+      response: { error: 'client_prior_value_rejected', statusCode: 422 },
+    });
     expect(saved.get('providerName')).toBe('BBVA ya capturado');
     await expect(
       service.confirm(PROPERTY, job.id, { acceptAll: true, decisions: withPrior }),
-    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    ).rejects.toMatchObject({ response: { error: 'bulk_accept_rejected', statusCode: 422 } });
     await expect(
       service.confirm(PROPERTY, job.id, { decisions: [{ action: 'accept-all' }] }),
-    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    ).rejects.toMatchObject({ response: { error: 'bulk_accept_rejected', statusCode: 422 } });
+    await expect(
+      service.confirm(PROPERTY, job.id, { accept_all: true }),
+    ).rejects.toMatchObject({ response: { error: 'bulk_accept_rejected', statusCode: 422 } });
     expect(
       suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
     ).toBe(true);
@@ -1448,6 +1568,59 @@ describe('OcrService', () => {
       suggestions.map((row) => ({ suggestionId: row.id, action: 'reject' as const })),
     );
     expect(saved.get('providerName')).toBe('BBVA ya capturado');
+  });
+
+  it('stamps the remaining confirm parser codes', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    const first = suggestions[0];
+    expect(first).toBeDefined();
+    const rejectRest = suggestions.map((row) => ({ suggestionId: row.id, action: 'reject' as const }));
+
+    await expect(service.confirm(PROPERTY, job.id, [])).rejects.toMatchObject({
+      response: { error: 'decisions_invalid', statusCode: 400 },
+    });
+    await expect(service.confirm(PROPERTY, job.id, 'nope')).rejects.toMatchObject({
+      response: { error: 'decisions_invalid', statusCode: 400 },
+    });
+    await expect(service.confirm(PROPERTY, job.id, { decisions: 'nope' })).rejects.toMatchObject({
+      response: { error: 'decisions_invalid', statusCode: 400 },
+    });
+    await expect(service.confirm(PROPERTY, job.id, { decisions: [null] })).rejects.toMatchObject({
+      response: { error: 'suggestion_invalid', statusCode: 400 },
+    });
+    await expect(
+      service.confirm(PROPERTY, job.id, { decisions: [{ suggestionId: 'not-a-uuid', action: 'reject' }] }),
+    ).rejects.toMatchObject({ response: { error: 'suggestion_invalid', statusCode: 400 } });
+    await expect(
+      service.confirm(PROPERTY, job.id, {
+        decisions: [{ suggestionId: first?.id, action: 'keep' }],
+      }),
+    ).rejects.toMatchObject({ response: { error: 'action_invalid', statusCode: 400 } });
+    await expect(
+      service.confirm(PROPERTY, job.id, {
+        decisions: [{ suggestionId: first?.id, action: 'edit' }],
+      }),
+    ).rejects.toMatchObject({ response: { error: 'edited_value_required', statusCode: 400 } });
+    await expect(
+      service.confirm(PROPERTY, job.id, {
+        decisions: [rejectRest[0], rejectRest[0]],
+      }),
+    ).rejects.toMatchObject({ response: { error: 'duplicate_decision', statusCode: 400 } });
+    const nested: Record<string, unknown> = { decisions: [] };
+    let cursor = nested;
+    for (let depth = 0; depth < 25; depth += 1) {
+      const next: Record<string, unknown> = {};
+      cursor.child = next;
+      cursor = next;
+    }
+    await expect(service.confirm(PROPERTY, job.id, nested)).rejects.toMatchObject({
+      response: { error: 'decisions_invalid', statusCode: 400 },
+    });
+    await expect(
+      service.confirm(PROPERTY, job.id, { extra: true, decisions: rejectRest }),
+    ).rejects.toMatchObject({ response: { error: 'unknown_field', statusCode: 400 } });
   });
 
   it('exposes no obligation or payment writer on the service', () => {
