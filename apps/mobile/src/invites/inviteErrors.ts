@@ -1,6 +1,6 @@
-export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+import { copyText } from '../copy/userFacing';
 
-export const INVITE_WRONG_ACCOUNT_MESSAGE = 'Esta invitación no es válida para tu cuenta.';
+export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type InviteProblem =
   | { reason: 'unknown_token' }
@@ -22,16 +22,19 @@ export type InviteAcceptInput = {
   alreadyMember: boolean;
 };
 
-const MESSAGES: Record<InviteProblem['reason'], string> = {
-  wrong_account: INVITE_WRONG_ACCOUNT_MESSAGE,
-  unknown_token: 'No encontramos esta invitación.',
-  used: 'Esta invitación ya no está disponible.',
-  revoked: 'Esta invitación ya no está disponible.',
-  superseded: 'Esta invitación ya no está disponible.',
-  expired: 'Esta invitación ya no está disponible.',
-  already_member: 'Ya perteneces a esta propiedad.',
-  non_owner: 'No tienes permiso para invitar a esta propiedad.',
+export type InviteCopyKey =
+  | 'invite.unavailable'
+  | 'invite.expired'
+  | 'invite.alreadyMember'
+  | 'invite.nonOwner';
+
+export type InviteCopy = {
+  key: InviteCopyKey;
+  message: string;
 };
+
+const ALREADY_MEMBER = 'Ya perteneces a esta propiedad.';
+const NON_OWNER = 'No tienes permiso para invitar a esta propiedad.';
 
 /**
  * Wrong account is 404, the same code as an unknown token. An unknown token
@@ -81,27 +84,37 @@ export function inviteStatus(problem: InviteProblem): 404 | 410 | 409 | 403 {
   }
 }
 
-export function mapInviteProblem(problem: InviteProblem): string {
-  return MESSAGES[problem.reason];
+export function mapInviteProblem(problem: InviteProblem): InviteCopy {
+  switch (problem.reason) {
+    case 'unknown_token':
+    case 'wrong_account':
+      return { key: 'invite.unavailable', message: copyText('invite.unavailable') };
+    case 'used':
+    case 'revoked':
+    case 'superseded':
+    case 'expired':
+      return { key: 'invite.expired', message: copyText('invite.expired') };
+    case 'already_member':
+      return { key: 'invite.alreadyMember', message: ALREADY_MEMBER };
+    case 'non_owner':
+      return { key: 'invite.nonOwner', message: NON_OWNER };
+  }
 }
 
 /**
- * Accept route only. A 403 here still shows the neutral wrong-account message.
- * A 404 shows that message for a wrong account, and the unknown-token message
- * when the token itself is missing. A bare 404 does not pick one of those.
+ * Accept route. Every 404 (unknown token or wrong account) and a defensive
+ * 403 use invite.unavailable. A 410 uses invite.expired. The reason does not
+ * change the 404 copy.
  */
 export function mapAcceptRouteStatus(
   status: number,
-  reason?: 'wrong_account' | 'unknown_token',
-): string | null {
-  if (status === 403) {
-    return INVITE_WRONG_ACCOUNT_MESSAGE;
+  _reason?: 'wrong_account' | 'unknown_token',
+): InviteCopy | null {
+  if (status === 403 || status === 404) {
+    return { key: 'invite.unavailable', message: copyText('invite.unavailable') };
   }
-  if (status === 404 && reason === 'wrong_account') {
-    return INVITE_WRONG_ACCOUNT_MESSAGE;
-  }
-  if (status === 404 && reason === 'unknown_token') {
-    return MESSAGES.unknown_token;
+  if (status === 410) {
+    return { key: 'invite.expired', message: copyText('invite.expired') };
   }
   return null;
 }

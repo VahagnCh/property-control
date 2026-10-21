@@ -25,12 +25,15 @@ describe('record payment validation', () => {
 
   it('still refuses a paid date outside the property window when evidence is absent', () => {
     expect(
+      validateRecordPayment({ ...draft, paidDate: '2026-10-22', evidenceId: null }, now, timeZone),
+    ).toEqual({ ok: false, issues: ['paid_date_too_future'] });
+    expect(
       validateRecordPayment({ ...draft, paidDate: '2026-10-23', evidenceId: null }, now, timeZone),
     ).toEqual({ ok: false, issues: ['paid_date_too_future'] });
     expect(
       validateRecordPayment({ ...draft, paidDate: '2025-10-20' }, now, timeZone),
     ).toEqual({ ok: false, issues: ['paid_date_too_old'] });
-    expect(validateRecordPayment({ ...draft, paidDate: '2026-10-22' }, now, timeZone).ok).toBe(true);
+    expect(validateRecordPayment({ ...draft, paidDate: '2026-10-21' }, now, timeZone).ok).toBe(true);
     expect(validateRecordPayment({ ...draft, paidDate: '2025-10-21' }, now, timeZone).ok).toBe(true);
   });
 

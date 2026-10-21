@@ -5,27 +5,22 @@ const MEXICO_CITY = 'America/Mexico_City';
 const TIJUANA = 'America/Tijuana';
 const CANCUN = 'America/Cancun';
 
-function expectWindow(
-  now: Date,
-  timeZone: string,
-  today: string,
-  span: 365 | 366,
-) {
+function expectWindow(now: Date, timeZone: string, today: string, span: 365 | 366) {
   const window = paidDateWindow(now, timeZone);
   expect(window.today).toBe(today);
+  expect(window.max).toBe(today);
   expect(calendarDaysBetween(window.min, window.today)).toBe(span);
-  expect(calendarDaysBetween(window.today, window.max)).toBe(1);
+  expect(calendarDaysBetween(window.today, window.max)).toBe(0);
   expect(validatePaidDate(window.min, now, timeZone).ok).toBe(true);
   expect(validatePaidDate(addDaysIso(window.min, -1), now, timeZone)).toEqual({
     ok: false,
     reason: 'too_old',
   });
-  expect(validatePaidDate(window.max, now, timeZone).ok).toBe(true);
-  expect(validatePaidDate(addDaysIso(window.max, 1), now, timeZone)).toEqual({
+  expect(validatePaidDate(today, now, timeZone).ok).toBe(true);
+  expect(validatePaidDate(addDaysIso(today, 1), now, timeZone)).toEqual({
     ok: false,
     reason: 'too_future',
   });
-  expect(validatePaidDate(today, now, timeZone).ok).toBe(true);
 }
 
 function addDaysIso(iso: string, days: number): string {
@@ -38,29 +33,38 @@ function addDaysIso(iso: string, days: number): string {
 }
 
 describe('paid date limits', () => {
-  it('accepts today-365 and rejects the day before, and accepts today+1 while rejecting today+2', () => {
+  it('AC-DATE-01 / EC-7.1: today is allowed and today+1 is rejected', () => {
     const afternoon = new Date('2026-10-21T18:00:00.000Z');
     expectWindow(afternoon, MEXICO_CITY, '2026-10-21', 365);
+    expect(paidDateWindow(afternoon).today).toBe('2026-10-21');
+    expect(paidDateWindow(afternoon).max).toBe(paidDateWindow(afternoon, MEXICO_CITY).max);
+    expect(validatePaidDate('2026-10-21', afternoon, MEXICO_CITY).ok).toBe(true);
+    expect(validatePaidDate('2026-10-22', afternoon, MEXICO_CITY)).toEqual({
+      ok: false,
+      reason: 'too_future',
+    });
+    expect(validatePaidDate('2026-10-23', afternoon, MEXICO_CITY)).toEqual({
+      ok: false,
+      reason: 'too_future',
+    });
     expect(validatePaidDate('2025-10-21', afternoon, MEXICO_CITY).ok).toBe(true);
     expect(validatePaidDate('2025-10-20', afternoon, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_old' });
-    expect(validatePaidDate('2026-10-22', afternoon, MEXICO_CITY).ok).toBe(true);
-    expect(validatePaidDate('2026-10-23', afternoon, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_future' });
   });
 
-  it('uses a 366-day minimum when the span includes 29 February', () => {
+  it('uses a 366-day minimum when the span includes 29 February, and still caps at today', () => {
     const afternoon = new Date('2024-03-01T18:00:00.000Z');
     expectWindow(afternoon, MEXICO_CITY, '2024-03-01', 366);
     expect(validatePaidDate('2023-03-01', afternoon, MEXICO_CITY).ok).toBe(true);
     expect(validatePaidDate('2023-02-28', afternoon, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_old' });
-    expect(validatePaidDate('2024-03-02', afternoon, MEXICO_CITY).ok).toBe(true);
-    expect(validatePaidDate('2024-03-03', afternoon, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_future' });
+    expect(validatePaidDate('2024-03-01', afternoon, MEXICO_CITY).ok).toBe(true);
+    expect(validatePaidDate('2024-03-02', afternoon, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_future' });
 
     const leapDay = new Date('2024-02-29T18:00:00.000Z');
     expectWindow(leapDay, MEXICO_CITY, '2024-02-29', 366);
     expect(validatePaidDate('2023-02-28', leapDay, MEXICO_CITY).ok).toBe(true);
     expect(validatePaidDate('2023-02-27', leapDay, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_old' });
-    expect(validatePaidDate('2024-03-01', leapDay, MEXICO_CITY).ok).toBe(true);
-    expect(validatePaidDate('2024-03-02', leapDay, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_future' });
+    expect(validatePaidDate('2024-02-29', leapDay, MEXICO_CITY).ok).toBe(true);
+    expect(validatePaidDate('2024-03-01', leapDay, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_future' });
   });
 
   it('moves the window at 23:59, 00:00, and 00:01 in the property zone on a UTC device', () => {
@@ -69,31 +73,39 @@ describe('paid date limits', () => {
     const at0000 = new Date('2026-10-22T06:00:00.000Z');
     const at0001 = new Date('2026-10-22T06:01:00.000Z');
 
-    expect(validatePaidDate('2026-10-22', at2359, MEXICO_CITY).ok).toBe(true);
-    expect(validatePaidDate('2026-10-23', at2359, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_future' });
+    expect(paidDateWindow(at2359, MEXICO_CITY).today).toBe('2026-10-21');
+    expect(validatePaidDate('2026-10-21', at2359, MEXICO_CITY).ok).toBe(true);
+    expect(validatePaidDate('2026-10-22', at2359, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_future' });
     expect(validatePaidDate('2025-10-21', at2359, MEXICO_CITY).ok).toBe(true);
     expect(validatePaidDate('2025-10-20', at2359, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_old' });
 
-    expect(validatePaidDate('2026-10-23', at0000, MEXICO_CITY).ok).toBe(true);
-    expect(validatePaidDate('2026-10-24', at0000, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_future' });
+    expect(paidDateWindow(at0000, MEXICO_CITY).today).toBe('2026-10-22');
+    expect(validatePaidDate('2026-10-22', at0000, MEXICO_CITY).ok).toBe(true);
+    expect(validatePaidDate('2026-10-23', at0000, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_future' });
     expect(validatePaidDate('2025-10-22', at0000, MEXICO_CITY).ok).toBe(true);
     expect(validatePaidDate('2025-10-21', at0000, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_old' });
 
-    expect(validatePaidDate('2026-10-23', at0001, MEXICO_CITY).ok).toBe(true);
-    expect(validatePaidDate('2026-10-24', at0001, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_future' });
+    expect(paidDateWindow(at0001, MEXICO_CITY).max).toBe('2026-10-22');
+    expect(validatePaidDate('2026-10-22', at0001, MEXICO_CITY).ok).toBe(true);
+    expect(validatePaidDate('2026-10-23', at0001, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_future' });
   });
 
   it('does not use the device zone when the property zone is not Mexico City', () => {
     const instant = new Date('2026-10-22T06:30:00.000Z');
-    expect(validatePaidDate('2026-10-23', instant, MEXICO_CITY).ok).toBe(true);
-    expect(validatePaidDate('2026-10-23', instant, TIJUANA)).toEqual({ ok: false, reason: 'too_future' });
-    expect(validatePaidDate('2026-10-22', instant, TIJUANA).ok).toBe(true);
+    expect(paidDateWindow(instant, MEXICO_CITY).today).toBe('2026-10-22');
+    expect(paidDateWindow(instant, TIJUANA).today).toBe('2026-10-21');
+    expect(validatePaidDate('2026-10-22', instant, MEXICO_CITY).ok).toBe(true);
+    expect(validatePaidDate('2026-10-23', instant, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_future' });
+    expect(validatePaidDate('2026-10-21', instant, TIJUANA).ok).toBe(true);
+    expect(validatePaidDate('2026-10-22', instant, TIJUANA)).toEqual({ ok: false, reason: 'too_future' });
 
     const cancunMidnight = new Date('2026-10-22T05:30:00.000Z');
     expect(paidDateWindow(cancunMidnight, CANCUN).today).toBe('2026-10-22');
+    expect(paidDateWindow(cancunMidnight, CANCUN).max).toBe('2026-10-22');
     expect(paidDateWindow(cancunMidnight, MEXICO_CITY).today).toBe('2026-10-21');
-    expect(validatePaidDate('2026-10-23', cancunMidnight, CANCUN).ok).toBe(true);
-    expect(validatePaidDate('2026-10-23', cancunMidnight, MEXICO_CITY)).toEqual({
+    expect(validatePaidDate('2026-10-22', cancunMidnight, CANCUN).ok).toBe(true);
+    expect(validatePaidDate('2026-10-23', cancunMidnight, CANCUN)).toEqual({ ok: false, reason: 'too_future' });
+    expect(validatePaidDate('2026-10-22', cancunMidnight, MEXICO_CITY)).toEqual({
       ok: false,
       reason: 'too_future',
     });
