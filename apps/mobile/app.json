@@ -2,7 +2,7 @@
   "expo": {
     "name": "DueRecord",
     "slug": "property-control",
-    "scheme": "property-control",
+    "scheme": "duerecord",
     "version": "0.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
