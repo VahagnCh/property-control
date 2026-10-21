@@ -48,8 +48,17 @@ export function retryAccessibilityLabel(context: string): string {
 
 export const COPY = {
   'ocr.edit.invalid': 'Este valor no es válido. Revisa el formato e inténtalo de nuevo.',
-  'ocr.field.alreadySet': 'Este campo ya estaba guardado. Usa Reemplazar si quieres cambiarlo.',
+  'ocr.field.saved': 'Este campo ya estaba guardado. Usa Reemplazar si quieres cambiarlo.',
+  'ocr.conflict': 'Este dato cambió. Revisa la sugerencia otra vez.',
+  'ocr.target.locked': 'Esta sugerencia ya está ligada a otro registro. Revísala otra vez.',
+  'ocr.target.required': 'Elige a qué pago aplica esta sugerencia.',
+  'ocr.target.voided': 'Este registro ya no se puede usar. Elige otro o descarta la sugerencia.',
+  'ocr.target.unchecked': 'No pudimos comprobar el registro de destino. Elige otro o descarta la sugerencia.',
+  'ocr.bulk.refused': 'Hay que decidir cada sugerencia por separado.',
+  'ocr.job.notSuggested': 'Esta revisión ya estaba registrada. Actualiza la pantalla.',
+  'ocr.job.expired': 'Esta revisión ya no está disponible. Vuelve a intentarlo.',
   'form.text.invalidChars': 'Este texto tiene caracteres no permitidos. Bórralos e inténtalo de nuevo.',
+  'form.text.required': 'Este campo no puede quedar vacío.',
   'form.title.tooLong': 'El título admite hasta 300 caracteres.',
   'form.body.tooLong': 'El texto admite hasta 32 KB.',
   'obligation.nextDueDate.invalid':

@@ -3,10 +3,11 @@ import {
   OCR_REPLACE_KEEP_LABEL,
   OCR_REPLACE_TOAST,
   OCR_UNREVIEWED_DISCARD_COPY,
+  copyText,
   ocrReplacePrompt,
   type CopyKey,
 } from '../copy/userFacing';
-import { validateTextInput, type TextField } from '../forms/textInput';
+import { validateOcrEditValue } from './ocrEditValue';
 
 export type OcrSuggestion = {
   suggestionId?: string;
@@ -79,7 +80,9 @@ export type ReplaceFieldResult<T extends Record<string, string>> = {
   previousValue: string;
   decision: OcrUiDecision | null;
   toast: string | null;
-  /** Set when the field is already saved and accept must not be sent. */
+  /** Set when the field is already saved and accept or edit must not be sent. */
+  blockedMessage?: string | null;
+  /** AC-OCR-12. Only Mantener and Reemplazar. Present when the field already has a value. */
   offerReplace?: OcrReplaceRowModel | null;
 };
 
@@ -88,7 +91,9 @@ export type EditFieldResult<T extends Record<string, string>> = {
   previousValue: string;
   decision: OcrUiDecision | null;
   error: { key: CopyKey; message: string } | null;
-  /** Set when a saved field cannot take accept or edit. */
+  /** Safety net when a saved field is edited without the Reemplazar tap. Key `ocr.field.saved`. */
+  blockedMessage?: string | null;
+  /** AC-OCR-12. Only Mantener and Reemplazar. */
   offerReplace?: OcrReplaceRowModel | null;
 };
 
@@ -105,7 +110,21 @@ export type OcrReplaceRowModel = {
   toast: string;
 };
 
-type FieldOptions = { targetEntityId?: string };
+type FieldOptions = { targetEntityId?: string; now?: Date; timeZone?: string };
+
+/** Row id the screen scrolls into view when this suggestion blocks confirm. */
+export function ocrSuggestionScrollTarget(suggestionId: string): string {
+  return `ocr-suggestion-${suggestionId}`;
+}
+
+export type OcrTargetRequiredBlock = {
+  suggestionId: string;
+  field: string;
+  key: 'ocr.target.required';
+  message: string;
+  scrollIntoView: true;
+  scrollTargetId: string;
+};
 
 export function suggestOcrField(
   field: string,
@@ -181,9 +200,11 @@ export function applyOcrSuggestions<T extends Record<string, string>>(
 }
 
 /**
- * One field. Requires an explicit confirm. Overwrites a typed value only
- * then, and returns the previous value for a local undo. The confirm request
- * does not carry that previous value.
+ * Empty unsaved field: confirm as `accept` and fill the form.
+ * A field that already has a typed value, and a field that is already saved,
+ * do not emit `replace`. They offer the AC-OCR-12 row (Mantener / Reemplazar).
+ * A saved field also sets `ocr.field.saved` and leaves the form unchanged.
+ * `replace` comes only from `tapReemplazar`.
  */
 export function replaceField<T extends Record<string, string>>(
   form: T,
@@ -199,14 +220,16 @@ export function replaceField<T extends Record<string, string>>(
   if (suggestion.field !== field || !isApplyableField(form, field) || isEmpty(suggestion.value)) {
     return unchanged;
   }
-  const ui: OcrUiChoice = isEmpty(previousValue) ? 'accepted' : 'replaced';
-  if (fieldIsSaved(suggestion) && ui === 'accepted') {
+  if (fieldIsSaved(suggestion)) {
+    return savedFieldHold(unchanged, suggestion, previousValue);
+  }
+  if (!isEmpty(previousValue)) {
     return {
       ...unchanged,
-      offerReplace: replaceSuggestionRow(String(suggestion.savedValue), suggestion.value),
+      offerReplace: replaceSuggestionRow(previousValue, suggestion.value),
     };
   }
-  const decision = clientDecision(suggestion, field, ui, options);
+  const decision = clientDecision(suggestion, field, 'accepted', options);
   if (!decision) {
     return unchanged;
   }
@@ -214,7 +237,36 @@ export function replaceField<T extends Record<string, string>>(
     form: { ...form, [field]: suggestion.value },
     previousValue,
     decision,
-    toast: ui === 'replaced' ? OCR_REPLACE_TOAST : null,
+    toast: null,
+  };
+}
+
+/**
+ * The Reemplazar tap. This is the only path that sets action `replace`.
+ * It writes the suggested value and returns the previous value for a local undo.
+ * The wire does not include `editedValue` or the unsaved typed text.
+ * A saved field can be replaced from this tap.
+ */
+export function tapReemplazar<T extends Record<string, string>>(
+  form: T,
+  suggestion: OcrSuggestion,
+  field: string,
+  options?: FieldOptions,
+): ReplaceFieldResult<T> {
+  const previousValue = isApplyableField(form, field) ? (form[field] ?? '') : '';
+  const unchanged: ReplaceFieldResult<T> = { form, previousValue, decision: null, toast: null };
+  if (!suggestion.confirmed || suggestion.field !== field || !isApplyableField(form, field) || isEmpty(suggestion.value)) {
+    return unchanged;
+  }
+  const decision = clientDecision(suggestion, field, 'replaced', options);
+  if (!decision) {
+    return unchanged;
+  }
+  return {
+    form: { ...form, [field]: suggestion.value },
+    previousValue,
+    decision,
+    toast: OCR_REPLACE_TOAST,
   };
 }
 
@@ -243,22 +295,22 @@ export function editOcrField<T extends Record<string, string>>(
   if (!suggestion.suggestionId) {
     return unchanged(null);
   }
-  const validated = validateTextInput(editedValue, textFieldFor(field));
+  const validated = validateOcrEditValue(field, editedValue, {
+    now: options?.now,
+    timeZone: options?.timeZone,
+  });
   if (!validated.ok) {
     return unchanged({ key: validated.key, message: validated.message });
   }
   if (fieldIsSaved(suggestion)) {
-    const replaced = clientDecision(suggestion, field, 'replaced', options);
-    if (!replaced) {
-      return unchanged(null);
-    }
-    replaced.editedValue = validated.value;
+    const held = savedFieldHold({ form, previousValue, decision: null, toast: null }, suggestion, previousValue);
     return {
-      form: { ...form, [field]: validated.value },
+      form,
       previousValue,
-      decision: replaced,
-      error: null,
-      offerReplace: replaceSuggestionRow(String(suggestion.savedValue), validated.value),
+      decision: null,
+      error: { key: 'ocr.field.saved', message: held.blockedMessage ?? copyText('ocr.field.saved') },
+      blockedMessage: held.blockedMessage,
+      offerReplace: held.offerReplace,
     };
   }
   const decision = clientDecision(suggestion, field, 'edited', options);
@@ -301,9 +353,9 @@ export function rejectOcrField<T extends Record<string, string>>(
 }
 
 /**
- * Row shown when the field already has a typed value.
- * "Mantener lo que escribí" is the default and the highlighted action.
- * An empty field has no replace row; it still fills only after confirm.
+ * AC-OCR-12. A field that already has a value offers only
+ * "Mantener lo que escribí" (default, highlighted) and "Reemplazar".
+ * It never offers Aceptar or Editar. An empty field has no replace row.
  */
 export function replaceSuggestionRow(actual: string, suggested: string): OcrReplaceRowModel | null {
   if (isEmpty(actual)) {
@@ -337,16 +389,7 @@ const WIRE_ACTION: Record<OcrUiChoice, OcrWireAction> = {
   rejected: 'reject',
 };
 
-const TYPED_VALUE_KEYS = new Set([
-  'previousTypedValue',
-  'typedValue',
-  'previousValue',
-  'persistedPreviousValue',
-  'clientPriorValue',
-  'actual',
-]);
-
-/** Maps a local choice onto one confirm decision. Never emits decision, field, or suggestedValue. */
+/** Maps a local choice onto one confirm decision. Never emits decision, field, suggestedValue, or a typed-value key. */
 export function ocrDecisionForServer(decision: OcrUiDecision): OcrWireDecision {
   const action = WIRE_ACTION[decision.ui];
   const payload: OcrWireDecision = {
@@ -362,24 +405,6 @@ export function ocrDecisionForServer(decision: OcrUiDecision): OcrWireDecision {
   return payload;
 }
 
-export type OcrDecisionWire =
-  | { ok: true; payload: OcrWireDecision }
-  | { ok: false; reason: 'typed_value' };
-
-/**
- * Refuses a local record that carries a typed value or clientPriorValue.
- * The success payload is one confirm decision and nothing else.
- */
-export function prepareOcrDecision(
-  decision: OcrUiDecision & Record<string, unknown>,
-  unsavedTypedValue: string,
-): OcrDecisionWire {
-  if (decisionCarriesTypedValue(decision, unsavedTypedValue)) {
-    return { ok: false, reason: 'typed_value' };
-  }
-  return { ok: true, payload: ocrDecisionForServer(decision) };
-}
-
 export type DiscardUnreviewedResult<T extends Record<string, string>> = {
   form: T;
   discarded: OcrSuggestion[];
@@ -388,9 +413,11 @@ export type DiscardUnreviewedResult<T extends Record<string, string>> = {
 
 export type ConfirmOnRegistrarResult<T extends Record<string, string>> = DiscardUnreviewedResult<T> & {
   payload: OcrWireDecision[];
-  /** Null when sending the body would be a 409 field_already_set or a 422 for a missing target. */
+  /** Null when sending the body would be a saved-field accept/edit or a row with no target. */
   request: OcrConfirmRequest | null;
   blockedSaved: OcrSuggestion[];
+  /** Unbound non-reject rows that have no target. Confirm scrolls the first of these into view. */
+  targetErrors: OcrTargetRequiredBlock[];
 };
 
 /**
@@ -405,15 +432,13 @@ export function confirmOnRegistrar<T extends Record<string, string>>(
 ): ConfirmOnRegistrarResult<T> {
   const reviewedById = new Map<string, OcrUiDecision>();
   for (const decision of reviewed) {
-    if (!reviewedById.has(decision.suggestionId)) {
-      reviewedById.set(decision.suggestionId, decision);
-    }
+    reviewedById.set(decision.suggestionId, decision);
   }
   const seen = new Set<string>();
   const payload: OcrWireDecision[] = [];
   const discarded: OcrSuggestion[] = [];
   const blockedSaved: OcrSuggestion[] = [];
-  let missingTarget = false;
+  const targetErrors: OcrTargetRequiredBlock[] = [];
   for (const suggestion of suggestions) {
     if (!suggestion.suggestionId || seen.has(suggestion.suggestionId)) {
       continue;
@@ -430,14 +455,21 @@ export function confirmOnRegistrar<T extends Record<string, string>>(
       blockedSaved.push(suggestion);
       continue;
     }
-    if (wire.action !== 'reject' && !suggestion.bound && !wire.targetEntityId) {
-      missingTarget = true;
+    if (wire.action !== 'reject' && !suggestion.bound && !wire.targetEntityId && suggestion.suggestionId) {
+      targetErrors.push({
+        suggestionId: suggestion.suggestionId,
+        field: suggestion.field,
+        key: 'ocr.target.required',
+        message: copyText('ocr.target.required'),
+        scrollIntoView: true,
+        scrollTargetId: ocrSuggestionScrollTarget(suggestion.suggestionId),
+      });
     }
     payload.push(wire);
   }
   const notice = discarded.length > 0 ? OCR_UNREVIEWED_DISCARD_COPY : null;
-  if (blockedSaved.length > 0 || missingTarget) {
-    return { form, discarded, payload: [], request: null, blockedSaved, notice };
+  if (blockedSaved.length > 0 || targetErrors.length > 0) {
+    return { form, discarded, payload: [], request: null, blockedSaved, targetErrors, notice };
   }
   const request = buildConfirmRequest(payload);
   return {
@@ -446,6 +478,7 @@ export function confirmOnRegistrar<T extends Record<string, string>>(
     payload: request.decisions,
     request,
     blockedSaved,
+    targetErrors,
     notice,
   };
 }
@@ -539,25 +572,18 @@ function wireOnly(decision: OcrWireDecision): OcrWireDecision {
   return payload;
 }
 
-function decisionCarriesTypedValue(
-  decision: OcrUiDecision & Record<string, unknown>,
-  unsavedTypedValue: string,
-): boolean {
-  for (const key of Object.keys(decision)) {
-    if (TYPED_VALUE_KEYS.has(key)) {
-      return true;
-    }
-  }
-  if (unsavedTypedValue === '') {
-    return false;
-  }
-  if (decision.field === unsavedTypedValue || decision.suggestionId === unsavedTypedValue) {
-    return true;
-  }
-  if (decision.targetEntityId === unsavedTypedValue) {
-    return true;
-  }
-  return false;
+function savedFieldHold<T extends Record<string, string>>(
+  unchanged: ReplaceFieldResult<T>,
+  suggestion: OcrSuggestion,
+  previousValue: string,
+): ReplaceFieldResult<T> {
+  const savedText = typeof suggestion.savedValue === 'string' ? suggestion.savedValue : '';
+  const actual = !isEmpty(savedText) ? savedText : previousValue;
+  return {
+    ...unchanged,
+    blockedMessage: copyText('ocr.field.saved'),
+    offerReplace: replaceSuggestionRow(actual, suggestion.value),
+  };
 }
 
 function clientDecision(
@@ -588,16 +614,6 @@ function clientDecision(
 
 function fieldIsSaved(suggestion: OcrSuggestion): boolean {
   return suggestion.savedValue !== undefined && suggestion.savedValue !== null;
-}
-
-function textFieldFor(field: string): TextField {
-  if (field === 'notes' || field === 'note') {
-    return 'notes';
-  }
-  if (field === 'body') {
-    return 'body';
-  }
-  return 'title';
 }
 
 function isApplyableField(form: Record<string, string>, field: string): boolean {

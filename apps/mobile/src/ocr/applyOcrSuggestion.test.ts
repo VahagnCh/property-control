@@ -2,17 +2,18 @@ import {
   applyOcrSuggestion,
   applyOcrSuggestions,
   confirmOcrSuggestion,
+  confirmOnRegistrar,
   discardUnreviewedSuggestions,
   editOcrField,
   keepTypedField,
   ocrDecisionForServer,
-  prepareOcrDecision,
   rejectOcrField,
   replaceField,
   replaceSuggestionRow,
   serializeConfirmPayload,
   serializeOcrDecision,
   suggestOcrField,
+  tapReemplazar,
   type OcrClientDecision,
 } from './applyOcrSuggestion';
 import { OCR_REPLACE_TOAST, OCR_UNREVIEWED_DISCARD_COPY } from '../copy/userFacing';
@@ -103,7 +104,22 @@ describe('AC-OCR-11 replaceField', () => {
     expect(pending.previousValue).toBe(TYPED);
     expect(form.amount).toBe(TYPED);
 
-    const replaced = replaceField(form, suggestion, 'amount');
+    const offered = replaceField(form, suggestion, 'amount');
+    expect(offered.form).toBe(form);
+    expect(offered.decision).toBeNull();
+    expect(offered.toast).toBeNull();
+    expect(offered.form.amount).toBe(TYPED);
+    expect(offered.offerReplace?.actions.map((action) => action.label)).toEqual([
+      'Mantener lo que escribí',
+      'Reemplazar',
+    ]);
+    expect(offered.offerReplace?.actions.map((action) => action.label)).not.toContain('Aceptar');
+    expect(offered.offerReplace?.actions.map((action) => action.label)).not.toContain('Editar');
+    expect(offered.offerReplace?.actions.every((action) => action.decision === 'kept' || action.decision === 'replaced')).toBe(
+      true,
+    );
+
+    const replaced = tapReemplazar(form, suggestion, 'amount');
     expect(replaced.form).not.toBe(form);
     expect(replaced.form.amount).toBe('1250.00');
     expect(replaced.form.paidDate).toBe('2026-10-21');
@@ -247,8 +263,11 @@ describe('AC-OCR-11 replaceField', () => {
     expect(applyOcrSuggestions(form, suggestions, { acceptAll: true })).toBe(form);
     expect(applyOcrSuggestions(form, suggestions)).toBe(form);
 
-    const one = replaceField(form, suggestions[0]!, 'amount');
+    expect(replaceField(form, suggestions[0]!, 'amount').form).toBe(form);
+    expect(replaceField(form, suggestions[0]!, 'amount').decision).toBeNull();
+    const one = tapReemplazar(form, suggestions[0]!, 'amount');
     expect(one.form.amount).toBe('2.00');
+    expect(one.decision?.ui).toBe('replaced');
     expect(one.form.paidDate).toBe('2026-10-01');
     expect(one.form.note).toBe('nota');
     expect(one.decision?.field).toBe('amount');
@@ -256,7 +275,7 @@ describe('AC-OCR-11 replaceField', () => {
 
   it('serializes a decision with no typed or previous value, including a record that is already saved', () => {
     const form = { amount: TYPED, paidDate: '', note: '' };
-    const replaced = replaceField(form, suggestion, 'amount');
+    const replaced = tapReemplazar(form, suggestion, 'amount');
     const decision = replaced.decision;
     expect(decision).not.toBeNull();
     if (!decision) {
@@ -416,24 +435,79 @@ describe('AC-OCR-11 replaceField', () => {
     expect(allReviewed.notice).toBeNull();
   });
 
-  it('refuses a typed value or clientPriorValue and never puts them on the request', () => {
+  it('sends the latest choice when a suggestion is decided more than once', () => {
+    const target = '11111111-1111-4111-8111-111111111111';
+    const filled = { amount: '1.00', paidDate: '', note: '' };
+    const suggestion = confirmOcrSuggestion(
+      suggestOcrField('amount', '1250.00', 0.99, { suggestionId: 'sug-9', targetEntityId: target }),
+    );
+    const kept = keepTypedField(filled, suggestion, 'amount').decision;
+    const replaced = tapReemplazar(filled, suggestion, 'amount').decision;
+    const edited = editOcrField(filled, suggestion, 'amount', '10.50').decision;
+    const rejected = rejectOcrField(filled, suggestion, 'amount').decision;
+    expect(kept).not.toBeNull();
+    expect(replaced).not.toBeNull();
+    expect(edited).not.toBeNull();
+    expect(rejected).not.toBeNull();
+    if (!kept || !replaced || !edited || !rejected) {
+      return;
+    }
+
+    expect(confirmOnRegistrar(filled, [suggestion, suggestion], [replaced, kept]).request?.decisions).toEqual([
+      { suggestionId: 'sug-9', action: 'reject', targetEntityId: target },
+    ]);
+    expect(confirmOnRegistrar(filled, [suggestion], [kept, replaced]).request?.decisions).toEqual([
+      { suggestionId: 'sug-9', action: 'replace', targetEntityId: target },
+    ]);
+    expect(confirmOnRegistrar(filled, [suggestion], [edited, rejected]).request?.decisions).toEqual([
+      { suggestionId: 'sug-9', action: 'reject', targetEntityId: target },
+    ]);
+
+    const empty = { amount: '', paidDate: '', note: '' };
+    const accepted = replaceField(empty, suggestion, 'amount').decision;
+    const editedAfter = editOcrField(empty, suggestion, 'amount', '9.00').decision;
+    expect(accepted?.ui).toBe('accepted');
+    expect(editedAfter).not.toBeNull();
+    if (!accepted || !editedAfter) {
+      return;
+    }
+    expect(confirmOnRegistrar(empty, [suggestion], [accepted, editedAfter]).request?.decisions).toEqual([
+      { suggestionId: 'sug-9', action: 'edit', editedValue: '9.00', targetEntityId: target },
+    ]);
+  });
+
+  it('names the suggestion row that blocks confirm when the target is missing', () => {
+    const form = { amount: '' };
+    const suggestion = confirmOcrSuggestion(suggestOcrField('amount', '10.00', 0.9, { suggestionId: 'sug-open' }));
+    const accepted = replaceField(form, suggestion, 'amount').decision;
+    expect(accepted?.ui).toBe('accepted');
+    const saved = confirmOnRegistrar(form, [suggestion], accepted ? [accepted] : []);
+    expect(saved.request).toBeNull();
+    expect(saved.payload).toEqual([]);
+    expect(saved.targetErrors).toEqual([
+      {
+        suggestionId: 'sug-open',
+        field: 'amount',
+        key: 'ocr.target.required',
+        message: 'Elige a qué pago aplica esta sugerencia.',
+        scrollIntoView: true,
+        scrollTargetId: 'ocr-suggestion-sug-open',
+      },
+    ]);
+  });
+
+  it('omits typed keys and clientPriorValue from the confirm wire', () => {
     const decision: OcrClientDecision = {
       suggestionId: 'sug-9',
       field: 'amount',
       ui: 'replaced',
       suggestedValue: '1250.00',
     };
-    const prepared = prepareOcrDecision(decision, TYPED);
-    expect(prepared).toEqual({
-      ok: true,
-      payload: {
-        suggestionId: 'sug-9',
-        action: 'replace',
-      },
+    expect(ocrDecisionForServer(decision)).toEqual({
+      suggestionId: 'sug-9',
+      action: 'replace',
     });
-    if (prepared.ok) {
-      expect(Object.keys(prepared.payload)).toEqual(['suggestionId', 'action']);
-    }
+    expect(Object.keys(ocrDecisionForServer(decision))).toEqual(['suggestionId', 'action']);
 
     for (const extra of [
       { previousTypedValue: TYPED },
@@ -443,20 +517,37 @@ describe('AC-OCR-11 replaceField', () => {
       { actual: TYPED },
       { clientPriorValue: TYPED },
     ]) {
-      const refused = prepareOcrDecision({ ...decision, ...extra }, TYPED);
-      expect(refused).toEqual({ ok: false, reason: 'typed_value' });
-      expect(JSON.stringify(refused)).not.toContain(TYPED);
-      expect(JSON.stringify(refused)).not.toContain('clientPriorValue');
+      const wire = ocrDecisionForServer({ ...decision, ...extra });
+      expect(wire).toEqual({ suggestionId: 'sug-9', action: 'replace' });
+      expect(JSON.stringify(wire)).not.toContain(TYPED);
+      expect(JSON.stringify(wire)).not.toContain('clientPriorValue');
+      expect(serializeOcrDecision({ ...decision, ...extra })).not.toContain(TYPED);
     }
 
-    expect(prepareOcrDecision({ ...decision, field: TYPED }, TYPED)).toEqual({
-      ok: false,
-      reason: 'typed_value',
+    const poisoned = {
+      ...decision,
+      field: TYPED,
+      targetEntityId: '11111111-1111-4111-8111-111111111111',
+      clientPriorValue: TYPED,
+    };
+    const withTarget = ocrDecisionForServer(poisoned);
+    expect(withTarget).toEqual({
+      suggestionId: 'sug-9',
+      action: 'replace',
+      targetEntityId: '11111111-1111-4111-8111-111111111111',
     });
-    expect(prepareOcrDecision({ ...decision, targetEntityId: TYPED }, TYPED)).toEqual({
-      ok: false,
-      reason: 'typed_value',
-    });
+    expect(JSON.stringify(withTarget)).not.toContain(TYPED);
+    expect(JSON.stringify(withTarget)).not.toContain('clientPriorValue');
+
+    const body = serializeConfirmPayload([
+      {
+        suggestionId: 'sug-9',
+        action: 'replace',
+        ...({ clientPriorValue: TYPED } as object),
+      },
+    ]);
+    expect(body).not.toContain('clientPriorValue');
+    expect(body).not.toContain(TYPED);
   });
 
   it('covers every suggestion id once and sends targetEntityId only for unbound rows', () => {
@@ -475,7 +566,7 @@ describe('AC-OCR-11 replaceField', () => {
     );
     const quiet = suggestOcrField('note', 'otra', 0.5, { suggestionId: 'sug-quiet' });
     const accepted = replaceField(form, unbound, 'amount').decision;
-    const replaced = replaceField(form, bound, 'paidDate', { targetEntityId: target }).decision;
+    const replaced = tapReemplazar(form, bound, 'paidDate', { targetEntityId: target }).decision;
     expect(accepted).not.toBeNull();
     expect(replaced).not.toBeNull();
 

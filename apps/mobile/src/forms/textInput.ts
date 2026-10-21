@@ -74,11 +74,16 @@ function reject(key: CopyKey): TextInputResult {
  * plus C1, bidi overrides, and zero-width characters (PR #3 REJECTED_TEXT).
  * A multi-line note stores CR and CRLF as LF, then rejects the same set except LF.
  * Title max is 300 characters. Body max is 32 KB. OCR notes max is 2000 characters.
+ * A single-line field that is empty or whitespace uses `form.text.required`.
+ * A blank note stays `ocr.edit.invalid`.
  */
 export function validateTextInput(value: string, field: TextField): TextInputResult {
   const normalized = allowsNewline(field) ? normalizeMultilineNote(value) : value.normalize('NFC');
   if (hasDisallowedTextChars(value, field)) {
     return reject('form.text.invalidChars');
+  }
+  if (!allowsNewline(field) && WHITESPACE_ONLY.test(normalized)) {
+    return reject('form.text.required');
   }
   if ((field === 'note' || field === 'notes') && (normalized.length > NOTES_MAX_CHARS || WHITESPACE_ONLY.test(normalized))) {
     return reject('ocr.edit.invalid');

@@ -11,6 +11,7 @@ import {
   editOcrField,
   readOcrConfirmResult,
   replaceField,
+  tapReemplazar,
   serializeConfirmPayload,
   serializeOcrDecision,
   stripClientPriorValue,
@@ -18,7 +19,8 @@ import {
 } from './applyOcrSuggestion';
 import { OCR_REPLACE_BUTTON_LABEL } from '../copy/userFacing';
 
-const ALREADY_SET = 'Este campo ya estaba guardado. Usa Reemplazar si quieres cambiarlo.';
+const FIELD_SAVED = 'Este campo ya estaba guardado. Usa Reemplazar si quieres cambiarlo.';
+const CONFLICT = 'Este dato cambió. Revisa la sugerencia otra vez.';
 const SAVED = 'BBVA ya capturado';
 const TARGET = '11111111-1111-4111-8111-111111111111';
 
@@ -54,18 +56,39 @@ describe('PR #3 confirm contract at 743ea24', () => {
     const accepted = replaceField(form, suggestion, 'providerName');
     expect(accepted.form).toBe(form);
     expect(accepted.decision).toBeNull();
+    expect(accepted.blockedMessage).toBe(FIELD_SAVED);
     expect(accepted.offerReplace?.prompt).toBe(`Reemplazar «${SAVED}» por «BBVA Hipoteca»`);
-    expect(accepted.offerReplace?.actions.map((action) => action.label)).toContain(OCR_REPLACE_BUTTON_LABEL);
+    expect(accepted.offerReplace?.actions.map((action) => action.label)).toEqual([
+      'Mantener lo que escribí',
+      OCR_REPLACE_BUTTON_LABEL,
+    ]);
+    expect(accepted.offerReplace?.actions.map((action) => action.decision)).toEqual(['kept', 'replaced']);
 
     const edited = editOcrField(form, suggestion, 'providerName', 'Otro banco');
-    expect(edited.decision?.ui).toBe('replaced');
-    expect(JSON.parse(serializeOcrDecision(edited.decision!))).toEqual({
+    expect(edited.form).toBe(form);
+    expect(edited.form.providerName).toBe('');
+    expect(edited.decision).toBeNull();
+    expect(edited.error).toEqual({ key: 'ocr.field.saved', message: FIELD_SAVED });
+    expect(edited.blockedMessage).toBe(FIELD_SAVED);
+    expect(edited.offerReplace?.actions.map((action) => action.label)).toEqual([
+      'Mantener lo que escribí',
+      'Reemplazar',
+    ]);
+    expect(JSON.stringify(edited)).not.toContain('"action":"replace"');
+
+    const tapped = tapReemplazar(form, suggestion, 'providerName');
+    expect(tapped.form).not.toBe(form);
+    expect(tapped.form.providerName).toBe('BBVA Hipoteca');
+    expect(tapped.previousValue).toBe('');
+    expect(tapped.toast).toBe('Valor reemplazado. Puedes editarlo antes de registrar.');
+    expect(tapped.decision?.ui).toBe('replaced');
+    expect(JSON.parse(serializeOcrDecision(tapped.decision!))).toEqual({
       suggestionId: 'sug-provider',
       action: 'replace',
-      editedValue: 'Otro banco',
       targetEntityId: TARGET,
     });
-    expect(serializeOcrDecision(edited.decision!)).not.toContain('"edit"');
+    expect(serializeOcrDecision(tapped.decision!)).not.toContain('editedValue');
+    expect(serializeOcrDecision(tapped.decision!)).not.toContain('Otro banco');
 
     const blocked = confirmOnRegistrar(form, [suggestion], [
       {
@@ -78,6 +101,24 @@ describe('PR #3 confirm contract at 743ea24', () => {
     expect(blocked.blockedSaved.map((item) => item.suggestionId)).toEqual(['sug-provider']);
     expect(blocked.payload).toEqual([]);
 
+    const blockedEdit = confirmOnRegistrar(form, [suggestion], [
+      {
+        suggestionId: 'sug-provider',
+        field: 'providerName',
+        ui: 'edited',
+        editedValue: 'Otro banco',
+      },
+    ]);
+    expect(blockedEdit.request).toBeNull();
+    expect(blockedEdit.payload).toEqual([]);
+    expect(blockedEdit.blockedSaved.map((item) => item.suggestionId)).toEqual(['sug-provider']);
+
+    const sent = confirmOnRegistrar(form, [suggestion], [tapped.decision!]);
+    expect(sent.blockedSaved).toEqual([]);
+    expect(sent.request?.decisions).toEqual([
+      { suggestionId: 'sug-provider', action: 'replace', targetEntityId: TARGET },
+    ]);
+
     expect(
       mapOcrConfirmError({
         statusCode: 409,
@@ -87,8 +128,8 @@ describe('PR #3 confirm contract at 743ea24', () => {
         field: 'providerName',
       }),
     ).toEqual({
-      key: 'ocr.field.alreadySet',
-      message: ALREADY_SET,
+      key: 'ocr.conflict',
+      message: CONFLICT,
       refresh: true,
       status: 409,
       suggestionId: 'sug-provider',

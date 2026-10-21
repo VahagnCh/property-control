@@ -91,6 +91,23 @@ describe('text input', () => {
     }
   });
 
+  it('requires a non-blank single-line value and keeps a blank note invalid', () => {
+    const required = 'Este campo no puede quedar vacío.';
+    expect(validateTextInput('', 'title')).toEqual({ ok: false, key: 'form.text.required', message: required });
+    expect(validateTextInput('   ', 'title')).toEqual({ ok: false, key: 'form.text.required', message: required });
+    expect(validateTextInput('\u00A0', 'title')).toEqual({ ok: false, key: 'form.text.required', message: required });
+    expect(validateTextInput(' \n ', 'title')).toEqual({
+      ok: false,
+      key: 'form.text.invalidChars',
+      message: INVALID,
+    });
+    expect(validateTextInput('   ', 'notes')).toEqual({
+      ok: false,
+      key: 'ocr.edit.invalid',
+      message: 'Este valor no es válido. Revisa el formato e inténtalo de nuevo.',
+    });
+  });
+
   it('allows spaces, accents, ñ, ¿, and ¡ on a single-line field', () => {
     expect(validateTextInput(ACCENTS, 'title')).toEqual({ ok: true, value: ACCENTS });
     expect(validateTextInput('hola mundo', 'title')).toEqual({ ok: true, value: 'hola mundo' });

@@ -118,8 +118,17 @@ describe('copy lint', () => {
 
     const requiredCopy = [
       COPY['ocr.edit.invalid'],
-      COPY['ocr.field.alreadySet'],
+      COPY['ocr.field.saved'],
+      COPY['ocr.conflict'],
+      COPY['ocr.target.locked'],
+      COPY['ocr.target.required'],
+      COPY['ocr.target.voided'],
+      COPY['ocr.target.unchecked'],
+      COPY['ocr.bulk.refused'],
+      COPY['ocr.job.notSuggested'],
+      COPY['ocr.job.expired'],
       COPY['form.text.invalidChars'],
+      COPY['form.text.required'],
       COPY['form.title.tooLong'],
       COPY['form.body.tooLong'],
       COPY['obligation.nextDueDate.invalid'],

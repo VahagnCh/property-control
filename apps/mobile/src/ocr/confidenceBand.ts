@@ -8,12 +8,6 @@ const SERVER_BAND: Record<ServerConfidenceBand, ConfidenceWord> = {
   revisa: 'Revisa',
 };
 
-/** Score fallback when the server omits `band`. Below this, or no score, is Revisa. */
-const REVISA_BELOW = 0.8;
-
-/** Score fallback only. A server band always wins, including when it disagrees with the score. */
-const ALTA_AT = 0.9;
-
 export type ConfidenceInput = {
   band?: string | null;
   confidence?: number | null;
@@ -23,24 +17,16 @@ function isServerBand(band: string): band is ServerConfidenceBand {
   return band === 'alta' || band === 'media' || band === 'revisa';
 }
 
-function wordFromScore(confidence: number | null | undefined): ConfidenceWord {
-  if (confidence == null || !Number.isFinite(confidence) || confidence < REVISA_BELOW) {
-    return 'Revisa';
-  }
-  if (confidence >= ALTA_AT) {
-    return 'Alta';
-  }
-  return 'Media';
-}
-
 /**
- * Prefer the server band (alta / media / revisa).
- * When it is missing, fall back to the score: below 0.80 or no score is Revisa.
+ * The server computes the band before the client sees it.
+ * Use that band when it is exactly `alta`, `media`, or `revisa`.
+ * Anything else — missing, unknown, or a score with no band — is Revisa.
+ * The client does not derive Alta or Media from the score.
  * This does not write the field.
  */
 export function confidenceWord(input: ConfidenceInput): ConfidenceWord {
   if (input.band != null && isServerBand(input.band)) {
     return SERVER_BAND[input.band];
   }
-  return wordFromScore(input.confidence);
+  return 'Revisa';
 }
