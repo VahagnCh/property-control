@@ -4,6 +4,10 @@ This is the Oct 26 staging build, before a custom domain. The service URL is the
 
 `render.yaml` is the blueprint. Every secret is `sync: false` and has no value in git.
 
+Day-one staging follows Trust security brief v1.2 rev f.5 §6.1 (free staging) and §12.1 (health check, HTTPS check, and client retry). §6.1 is Render Free, Neon Free, Cloudflare R2, and Resend, with demo data only. The Nov 5 phone uses Expo Go; TestFlight is required before any other tester.
+
+§12.1: `GET /v1/health` is the only health route. The probe returns `200 {"status":"ok"}` or `503 {"status":"unavailable"}`, with `Cache-Control: no-store`, and the route is rate-limited. The HTTPS check requires the rightmost `X-Forwarded-Proto` to be `https` (case-insensitive). The only exemption is an exact `GET /v1/health` with no `X-Forwarded-Proto` header. A client retries a GET once, only after a timeout or a network error, never on a 4xx, and never for a signed file URL. Writes do not retry on their own; Reintentar sends the same `Idempotency-Key`.
+
 ## Day-one checklist
 
 - [ ] `SERVER_SECRET` is generated with `openssl rand -base64 32` and stored only in Render env vars. The repo never contains a value.
