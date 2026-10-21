@@ -1,14 +1,17 @@
-import { Controller, Get, Module } from '@nestjs/common';
-
-@Controller('health')
-export class HealthController {
-  @Get()
-  getHealth(): { status: 'ok'; service: string } {
-    return { status: 'ok', service: 'property-control-api' };
-  }
-}
+import { Module } from '@nestjs/common';
+import {
+  HEALTH_LIMITER,
+  HEALTH_PROBE,
+  LiveHealthController,
+  PrismaHealthProbe,
+} from './live-health.controller.js';
+import { HealthRateLimiter } from './live-health.js';
 
 @Module({
-  controllers: [HealthController],
+  controllers: [LiveHealthController],
+  providers: [
+    { provide: HEALTH_PROBE, useClass: PrismaHealthProbe },
+    { provide: HEALTH_LIMITER, useClass: HealthRateLimiter },
+  ],
 })
 export class HealthModule {}

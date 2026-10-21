@@ -1,7 +1,7 @@
 import { Inject, Injectable, Optional, UnprocessableEntityException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_PROPERTY_TIMEZONE, isIanaTimeZone } from '../common/property-calendar.js';
 import { isTraversal, isUuid } from '../common/path-safety.js';
+import { readStoredTimezone } from '../properties/property.response.js';
 import { CLOCK, SystemClock, type Clock } from './clock.js';
 import { parseDecisions } from './ocr-decisions.js';
 import { OCR_EXTRACTOR, StubOcrExtractor, type ExtractedField, type OcrExtractor } from './ocr-extractor.js';
@@ -30,9 +30,22 @@ import { OBJECT_STORAGE, PrivateObjectStorage, type ObjectStorage } from './obje
 interface JobRecord {
   job: OcrJob;
   /** Private. Never copied onto a response. */
-  storageKey: string;
+  sourceKey: string;
   suggestions: OcrSuggestion[];
   expiresAt: number;
+}
+
+type SavedSnapshot = { present: false } | { present: true; value: unknown };
+
+interface PlanStep {
+  suggestion: OcrSuggestion;
+  decision: OcrDecision;
+  entityId?: string;
+  value?: unknown;
+  kept?: boolean;
+  write?: boolean;
+  audit?: OcrConfirmAudit;
+  saved?: SavedSnapshot;
 }
 
 const OPEN_STATUSES = new Set(['pending', 'processing', 'suggested']);
@@ -81,7 +94,7 @@ export class OcrService {
       throw ocrCapacity('OCR job capacity is full.');
     }
 
-    const storageKey = this.storage.buildOcrSourceKey(propertyId, documentId);
+    const sourceKey = this.storage.buildOcrSourceKey(propertyId, documentId);
     const now = new Date(this.clock.now()).toISOString();
     const id = randomUUID();
     const record: JobRecord = {
@@ -94,7 +107,7 @@ export class OcrService {
         createdAt: now,
         updatedAt: now,
       },
-      storageKey,
+      sourceKey,
       suggestions: [],
       expiresAt: this.clock.now() + this.runtime.jobTtlMs,
     };
@@ -131,7 +144,7 @@ export class OcrService {
     assertUuidPair(propertyId, ocrJobId);
     const existing = this.jobs.get(ocrJobId);
     if (!existing || existing.job.propertyId !== propertyId) {
-      throw ocrNotFound();
+throw ocrNotFound();
     }
     return this.exclusive(ocrJobId, () =>
       this.confirmExclusive(propertyId, ocrJobId, input, options?.actorUserId ?? null),
@@ -143,19 +156,19 @@ export class OcrService {
     return this.tails.size;
   }
 
-  private confirmExclusive(
+  private async confirmExclusive(
     propertyId: string,
     ocrJobId: string,
     input: unknown,
     actorUserId: string | null,
-  ): OcrConfirmResult {
+  ): Promise<OcrConfirmResult> {
     const record = this.requireFresh(propertyId, ocrJobId);
     if (record.job.status !== 'suggested') {
       throw ocrConflict(OCR_ERROR.jobNotConfirmable, 'Only a job in status suggested can be confirmed.');
     }
     const decisions = parseDecisions(input);
-    const plan = this.plan(record, decisions, actorUserId);
-    const persisted = this.commitWrites(record, plan);
+    const plan = await this.plan(record, decisions, actorUserId);
+    const persisted = await this.commitWrites(record, plan);
 
     const applied: OcrAppliedField[] = [];
     const audits: OcrConfirmAudit[] = [];
@@ -198,82 +211,80 @@ export class OcrService {
   /**
    * Writes run only after plan() has validated every decision.
    * A failed save restores the fields this confirm already wrote.
+   * When the lookup has runInTransaction, writes and audits share that transaction.
    * persisted is true only when those saves commit.
    */
-  private commitWrites(
-    record: JobRecord,
-    plan: Array<{
-      suggestion: OcrSuggestion;
-      decision: OcrDecision;
-      entityId?: string;
-      value?: unknown;
-      write?: boolean;
-    }>,
-  ): boolean {
-    const writes = plan.filter((step) => step.write && step.entityId);
-    if (writes.length === 0 || !this.lookup.saveValue) {
-      return false;
-    }
-    const committed: Array<{
-      query: {
-        propertyId: string;
-        entityType: OcrSuggestion['targetEntityType'];
-        entityId: string;
-        fieldPath: string;
-      };
-      previous: { present: false } | { present: true; value: unknown };
-    }> = [];
-    try {
-      for (const step of writes) {
-        const entityId = step.entityId;
-        if (!entityId) {
-          continue;
-        }
-        const query = {
-          propertyId: record.job.propertyId,
-          entityType: step.suggestion.targetEntityType,
-          entityId,
-          fieldPath: step.suggestion.fieldPath,
+  private async commitWrites(record: JobRecord, plan: PlanStep[]): Promise<boolean> {
+    const run = async (): Promise<boolean> => {
+      const writes = plan.filter((step) => step.write && step.entityId);
+      if (writes.length === 0 || !this.lookup.saveValue) {
+        await this.appendAudits(record, plan);
+        return false;
+      }
+      const committed: Array<{
+        query: {
+          propertyId: string;
+          entityType: OcrSuggestion['targetEntityType'];
+          entityId: string;
+          fieldPath: string;
         };
-        const previous = this.readSaved(record.job.propertyId, step.suggestion, entityId);
-        this.lookup.saveValue(query, step.value);
-        committed.push({ query, previous });
-      }
-    } catch (error) {
-      for (const { query, previous } of committed.reverse()) {
-        try {
-          if (previous.present) {
-            this.lookup.saveValue(query, previous.value);
-          } else {
-            this.lookup.saveValue(query, null);
+        previous: SavedSnapshot;
+      }> = [];
+      try {
+        for (const step of writes) {
+          const entityId = step.entityId;
+          if (!entityId) {
+            continue;
           }
-        } catch {
-          // The original write error is the one confirm reports.
+          const query = {
+            propertyId: record.job.propertyId,
+            entityType: step.suggestion.targetEntityType,
+            entityId,
+            fieldPath: step.suggestion.fieldPath,
+          };
+          const current = await this.readSaved(record.job.propertyId, step.suggestion, entityId);
+          if (step.saved && !sameSaved(current, step.saved)) {
+            throw ocrConflict(
+              OCR_ERROR.savedValueConflict,
+              'The saved value changed before confirm finished.',
+            );
+          }
+          await this.lookup.saveValue(query, step.value);
+          committed.push({ query, previous: current });
         }
+        await this.appendAudits(record, plan);
+      } catch (error) {
+        for (const { query, previous } of committed.reverse()) {
+          try {
+            if (previous.present) {
+              await this.lookup.saveValue?.(query, previous.value);
+            } else {
+              await this.lookup.saveValue?.(query, null);
+            }
+          } catch {
+            // The original write error is the one confirm reports.
+          }
+        }
+        throw error;
       }
-      throw error;
+      return true;
+    };
+    if (this.lookup.runInTransaction) {
+      return this.lookup.runInTransaction(run);
     }
-    return true;
+    return run();
   }
 
-  private plan(
+  private async plan(
     record: JobRecord,
     decisions: OcrDecision[],
     actorUserId: string | null,
-  ): Array<{
-    suggestion: OcrSuggestion;
-    decision: OcrDecision;
-    entityId?: string;
-    value?: unknown;
-    kept?: boolean;
-    write?: boolean;
-    audit?: OcrConfirmAudit;
-  }> {
+  ): Promise<PlanStep[]> {
     const known = new Map(record.suggestions.map((suggestion) => [suggestion.id, suggestion]));
     const seen = new Set<string>();
     for (const decision of decisions) {
       if (!known.has(decision.suggestionId)) {
-        throw ocrNotFound();
+throw ocrNotFound();
       }
       if (seen.has(decision.suggestionId)) {
         throw ocrBadRequest(OCR_ERROR.duplicateDecision, 'A suggestion is listed more than once.');
@@ -290,35 +301,27 @@ export class OcrService {
       );
     }
 
-    const steps: Array<{
-      suggestion: OcrSuggestion;
-      decision: OcrDecision;
-      entityId?: string;
-      value?: unknown;
-      kept?: boolean;
-      write?: boolean;
-      audit?: OcrConfirmAudit;
-    }> = [];
+    const steps: PlanStep[] = [];
     const context = {
       now: new Date(this.clock.now()),
-      timeZone: this.propertyTimeZone(record.job.propertyId),
+      timeZone: await this.propertyTimeZone(record.job.propertyId),
     };
     for (const decision of decisions) {
       const suggestion = known.get(decision.suggestionId);
       if (!suggestion) {
-        throw ocrNotFound();
+throw ocrNotFound();
       }
       if (decision.action === 'reject') {
         steps.push({ suggestion, decision });
         continue;
       }
-      const entityId = this.resolveTarget(record, suggestion, decision);
+      const entityId = await this.resolveTarget(record, suggestion, decision);
       const rawValue =
         decision.action === 'edit' || (decision.action === 'replace' && decision.editedValue !== undefined)
           ? decision.editedValue
           : suggestion.suggestedValue;
       const value = this.canonicalize(suggestion, rawValue, context);
-      const saved = this.readSaved(record.job.propertyId, suggestion, entityId);
+      const saved = await this.readSaved(record.job.propertyId, suggestion, entityId);
       if (saved.present && decision.action !== 'replace') {
         throw ocrConflict(OCR_ERROR.fieldAlreadySet, 'The field already has a saved value.', {
           suggestionId: suggestion.id,
@@ -341,7 +344,7 @@ export class OcrService {
               decision: 'replaced',
               suggestedValue: value,
             };
-        steps.push({ suggestion, decision, entityId, value, write: saved.present, audit });
+        steps.push({ suggestion, decision, entityId, value, write: saved.present, audit, saved });
         continue;
       }
       const appliedAudit: OcrAppliedFieldAudit = {
@@ -355,20 +358,20 @@ export class OcrService {
         previousValue: null,
         newValue: value,
       };
-      steps.push({ suggestion, decision, entityId, value, write: true, audit: appliedAudit });
+      steps.push({ suggestion, decision, entityId, value, write: true, audit: appliedAudit, saved });
     }
     return steps;
   }
 
-  private readSaved(
+  private async readSaved(
     propertyId: string,
     suggestion: OcrSuggestion,
     entityId: string,
-  ): { present: false } | { present: true; value: unknown } {
+  ): Promise<SavedSnapshot> {
     if (!this.lookup.savedValue) {
       return { present: false };
     }
-    const value = this.lookup.savedValue({
+    const value = await this.lookup.savedValue({
       propertyId,
       entityType: suggestion.targetEntityType,
       entityId,
@@ -400,14 +403,14 @@ export class OcrService {
     }
   }
 
-  private resolveTarget(record: JobRecord, suggestion: OcrSuggestion, decision: OcrDecision): string {
+  private async resolveTarget(record: JobRecord, suggestion: OcrSuggestion, decision: OcrDecision): Promise<string> {
     const requested = decision.targetEntityId;
     const bound = suggestion.targetEntityId;
     if (bound && requested !== undefined && requested !== bound) {
       if (!isUuid(requested)) {
         throw ocrBadRequest(OCR_ERROR.targetInvalid, 'targetEntityId must be a UUID.');
       }
-      if (!this.targetBelongs(record, suggestion, requested)) {
+if (!(await this.targetBelongs(record, suggestion, requested))) {
         throw ocrNotFound();
       }
       throw ocrUnprocessable(OCR_ERROR.boundTargetImmutable, 'A bound target cannot be changed.');
@@ -422,23 +425,23 @@ export class OcrService {
     if (!isUuid(entityId)) {
       throw ocrBadRequest(OCR_ERROR.targetInvalid, 'targetEntityId must be a UUID.');
     }
-    if (!this.targetBelongs(record, suggestion, entityId)) {
+if (!(await this.targetBelongs(record, suggestion, entityId))) {
       throw ocrNotFound();
     }
     if (suggestion.targetEntityType === 'payment') {
-      this.assertPaymentRecorded(record.job.propertyId, entityId);
+      await this.assertPaymentRecorded(record.job.propertyId, entityId);
     }
     return entityId;
   }
 
-  private assertPaymentRecorded(propertyId: string, entityId: string): void {
+  private async assertPaymentRecorded(propertyId: string, entityId: string): Promise<void> {
     if (!this.lookup.paymentStatus) {
       throw ocrUnprocessable(
         OCR_ERROR.targetStatusUnknown,
         'A payment target must be checked before confirm.',
       );
     }
-    const status = this.lookup.paymentStatus({ propertyId, entityId });
+    const status = await this.lookup.paymentStatus({ propertyId, entityId });
     if (status === 'recorded') {
       return;
     }
@@ -448,21 +451,32 @@ export class OcrService {
     throw ocrUnprocessable(OCR_ERROR.targetStatusUnknown, 'A payment target must be checked before confirm.');
   }
 
-  private propertyTimeZone(propertyId: string): string {
-    let raw: string | undefined;
-    try {
-      raw = this.lookup.timeZone?.(propertyId);
-    } catch {
-      return DEFAULT_PROPERTY_TIMEZONE;
-    }
-    const trimmed = raw?.trim() ?? '';
-    if (trimmed.length === 0 || !isIanaTimeZone(trimmed)) {
-      return DEFAULT_PROPERTY_TIMEZONE;
-    }
-    return trimmed;
+  private async propertyTimeZone(propertyId: string): Promise<string> {
+    const raw = await this.lookup.timeZone?.(propertyId);
+    return readStoredTimezone(raw);
   }
 
-  private targetBelongs(record: JobRecord, suggestion: OcrSuggestion, entityId: string): boolean {
+  private async appendAudits(record: JobRecord, plan: PlanStep[]): Promise<void> {
+    if (!this.lookup.appendAudit) {
+      return;
+    }
+    for (const step of plan) {
+      if (!step.audit) {
+        continue;
+      }
+      const actorUserId = 'actorUserId' in step.audit ? step.audit.actorUserId : null;
+      await this.lookup.appendAudit({
+        propertyId: record.job.propertyId,
+        actorUserId,
+        action: confirmAuditAction(step.audit),
+        entityType: step.suggestion.targetEntityType,
+        entityId: step.entityId ?? null,
+        metadata: { ...step.audit },
+      });
+    }
+  }
+
+  private async targetBelongs(record: JobRecord, suggestion: OcrSuggestion, entityId: string): Promise<boolean> {
     return this.lookup.belongsToProperty({
       propertyId: record.job.propertyId,
       entityType: suggestion.targetEntityType,
@@ -549,7 +563,7 @@ export class OcrService {
   private requireFresh(propertyId: string, ocrJobId: string): JobRecord {
     const record = this.jobs.get(ocrJobId);
     if (!record || record.job.propertyId !== propertyId) {
-      throw ocrNotFound();
+throw ocrNotFound();
     }
     if (record.expiresAt <= this.clock.now()) {
       throw ocrGone('OCR job has expired.');
@@ -603,7 +617,7 @@ export class OcrService {
     return count;
   }
 
-  private exclusive<T>(key: string, fn: () => T): Promise<T> {
+  private exclusive<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.tails.get(key) ?? Promise.resolve();
     const run = previous.then(() => fn());
     const settled = run.then(
@@ -618,6 +632,23 @@ export class OcrService {
     });
     return run;
   }
+}
+
+function sameSaved(left: SavedSnapshot, right: SavedSnapshot): boolean {
+  if (!left.present && !right.present) {
+    return true;
+  }
+  if (left.present && right.present) {
+    return JSON.stringify(left.value) === JSON.stringify(right.value);
+  }
+  return false;
+}
+
+function confirmAuditAction(audit: OcrConfirmAudit): string {
+  if ('edited' in audit && audit.source === 'ocr') {
+    return audit.edited ? 'ocr.edited' : 'ocr.accepted';
+  }
+  return 'action' in audit ? 'ocr.replace' : 'ocr.replaced';
 }
 
 function namedSuggestion(error: UnprocessableEntityException, suggestion: OcrSuggestion): UnprocessableEntityException {

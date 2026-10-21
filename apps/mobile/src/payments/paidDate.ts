@@ -1,4 +1,9 @@
-import { addCalendarDays, addCalendarYears, calendarDateInTimeZone, parseIsoDate } from '../dates/propertyCalendar';
+import {
+  addCalendarYears,
+  calendarDateInTimeZone,
+  DEFAULT_PROPERTY_TIMEZONE,
+  parseIsoDate,
+} from '../dates/propertyCalendar';
 
 export type PaidDateRejection = 'invalid_date' | 'too_old' | 'too_future';
 
@@ -9,23 +14,30 @@ export type PaidDateWindow = {
 };
 
 /**
- * Paid calendar date in the property time zone.
- * Minimum is one calendar year back (365 or 366 days, Feb 29 clamped).
- * Maximum is tomorrow in that time zone (+1 day). The day after that is refused.
+ * Paid calendar date in the property IANA time zone.
+ * The default zone is America/Mexico_City.
+ *
+ * Minimum is one calendar year back (365 or 366 days; 29 Feb clamps).
+ * Maximum is today in that zone. AC-DATE-01 / EC-7.1: the server accepts
+ * paidAt up to one day ahead only as clock-skew tolerance. The picker and
+ * this validator never offer that extra day. Today is allowed. Today+1 is rejected.
  */
-export function paidDateWindow(now: Date, timeZone: string): PaidDateWindow {
+export function paidDateWindow(
+  now: Date,
+  timeZone: string = DEFAULT_PROPERTY_TIMEZONE,
+): PaidDateWindow {
   const today = calendarDateInTimeZone(now, timeZone);
   return {
     today,
     min: addCalendarYears(today, -1),
-    max: addCalendarDays(today, 1),
+    max: today,
   };
 }
 
 export function validatePaidDate(
   paidDate: string,
   now: Date,
-  timeZone: string,
+  timeZone: string = DEFAULT_PROPERTY_TIMEZONE,
 ): { ok: true; paidDate: string } | { ok: false; reason: PaidDateRejection } {
   try {
     parseIsoDate(paidDate);

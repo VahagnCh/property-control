@@ -1,6 +1,6 @@
 # Data model
 
-Entities and key fields, from [Backend formal v0](https://docs.google.com/document/d/1iekHZp5lOq4qTzLhglFproL2JSeI7Uw1q4I817d40dE/edit) and [EDGE_CASES.md](EDGE_CASES.md). The public product name in that spec is DueRecord. The Prisma version is [`apps/api/prisma/schema.prisma`](../apps/api/prisma/schema.prisma). It is not migrated and no route reads it yet. Where this page and the edge-case spec disagree, the spec wins.
+Entities and key fields, from [Backend formal v0](https://docs.google.com/document/d/1iekHZp5lOq4qTzLhglFproL2JSeI7Uw1q4I817d40dE/edit) and [EDGE_CASES.md](EDGE_CASES.md). The public product name in that spec is DueRecord. The Prisma version is [`apps/api/prisma/schema.prisma`](../apps/api/prisma/schema.prisma), migrated by [`apps/api/prisma/migrations`](../apps/api/prisma/migrations). Nest HTTP still uses Prisma only for `GET /v1/health` (`SELECT 1`). Seed and the Postgres integration tests use the same schema. Where this page and the edge-case spec disagree, the spec wins.
 
 PostgreSQL. UUID primary keys, `timestamptz` timestamps, `snake_case` table and column names, soft delete through `deleted_at` where the table has it.
 
@@ -74,7 +74,7 @@ The rule, not the event. What is owed, how often, and when next.
 | `due_day` | Integer 1–31. Required with `schedule_anchor` for every recurrence except `custom` and `irregular`. |
 | `schedule_anchor` | Calendar date whose year and month are period index 0. The day used for each period is `due_day`, clamped to the month. |
 | `next_due_date` | A date, not a timestamp. Recomputed from the anchor, not from the previous clamped date. API input allows today minus 1 year through today plus 5 years in the property timezone (`America/Mexico_City` when omitted) and returns 422 `next_due_date_out_of_range` outside that window. The column CHECK is the 1990-01-01 through 2100-12-31 sanity bound. |
-| `expected_amount` | Integer centavos in the database, nullable when the bill is variable. The API wire value is a decimal string such as `"1234.50"` plus currency `MXN`, never a float. |
+| `expected_amount` | BIGINT centavos in the database, nullable when the bill is variable, and greater than 0 when set. The API wire value is a decimal string such as `"1234.50"` plus currency `MXN`, never a float and never centavos. |
 | `currency` | `MXN` only |
 | `reminder_offsets` | `integer[]`, defaults to `{7,1}` — days before the due date |
 | `preferred_method` | Descriptive text. Not a stored payment instrument. |
@@ -97,7 +97,7 @@ An event that settles some or all of an obligation period. A record of something
 | :---- | :---- |
 | `obligation_id`, `property_id`, `period_due_date` | Required. The period the payment applies to. |
 | `recorded_by_user_id` | Who entered it |
-| `amount` | Integer centavos in the database, greater than zero. The API wire value is a decimal string such as `"1234.50"` plus currency `MXN`, never a float. A non-positive amount, a JSON number, or a string that is not that decimal form returns 422. |
+| `amount` | BIGINT centavos in the database, greater than zero. The API wire value is a decimal string such as `"1234.50"` plus currency `MXN`, never a float and never centavos. A non-positive amount, a JSON number, or a string that is not that decimal form returns 422. |
 | `currency` | `MXN` only |
 | `paid_at` | When the person says they paid. The client picker caps the day at today in the property timezone. The server allows one calendar day of clock skew after now in that timezone, at the same local time, and returns 422 beyond it. The lower bound is one calendar year earlier in that timezone, with 29 February clamped. |
 | `method` | Free text: "SPEI", "efectivo", "tarjeta". Descriptive only. |
@@ -121,7 +121,7 @@ One row per `(obligation_id, period_due_date)`.
 | `period_due_date` | The period key, with `obligation_id` |
 | `outcome` | `paid` · `partial` · `not_applicable` |
 | `payment_id` | Nullable. When set, the latest non-voided payment for the outcome. The full ledger stays in `payments`. |
-| `overpaid_amount` | Integer centavos in the database, default 0. The API wire value is a decimal string such as `"1234.50"` plus currency `MXN`, never a float. Excess of the non-voided sum over `expected_amount` on this period only. Not a credit for the next period. 0 when the sum does not exceed the expected amount, and 0 when `expected_amount` is null. |
+| `overpaid_amount` | BIGINT centavos in the database, default 0. The API wire value is a decimal string such as `"1234.50"` plus currency `MXN`, never a float. Excess of the non-voided sum over `expected_amount` on this period only. Not a credit for the next period. 0 when the sum does not exceed the expected amount, and 0 when `expected_amount` is null. |
 
 Rules:
 
@@ -137,7 +137,7 @@ One row per pause. `paused_on` and `resumed_on` are property-timezone dates. `re
 
 ## MembershipInvite
 
-Only an owner invites, by email, as `member` or `viewer`. `token_hash` is the lowercase hex SHA-256 of a raw token that the create and resend responses return once. Tokens are single-use. `expires_at` is `sent_at` plus 7 days, and a resend restarts those 7 days. Acceptance requires the invited email. Accept checks run in this order: an unknown token or the wrong account is 404 before any token state is revealed; a used, revoked, superseded-by-resend, or expired token is 410; an invitee who is already a member is 409. A non-owner invite action is 403. A caller with no membership, and an unknown property, is 404.
+Only an owner invites, by email, as `member` or `viewer`. The invited address is stored as `email_hmac`, never in plain text. `token_hash` is the lowercase hex SHA-256 of a raw token that the create and resend responses return once. Tokens are single-use. `expires_at` is at most `created_at` plus 7 days, and a resend restarts those 7 days and sets `superseded_at` on the previous row. Acceptance requires the invited email. Accept checks run in this order: an unknown token or the wrong account is 404 before any token state is revealed; a used, revoked, superseded-by-resend, or expired token is 410; an invitee who is already a member is 409. A non-owner invite action is 403. A caller with no membership, and an unknown property, is 404.
 
 ## Evidence
 
@@ -145,10 +145,10 @@ An optional private file supporting a payment or a maintenance task.
 
 | Field | Notes |
 | :---- | :---- |
-| `storage_key` | Unique. Private object key on the row. The client receives a `fileId` only and never this key. |
+| `source_key` | Unique. Private object key on the row. The client receives a `fileId` only and never this key. |
 | `type` | `photo` · `screenshot` · `pdf` |
 | `content_type` | Allowlist: `image/jpeg`, `image/png`, `application/pdf` |
-| `byte_size` | Greater than zero, at most 15,728,640 (15 MiB) |
+| `size_bytes` | Greater than zero, at most 10,485,760 (10 MiB, `MAX_EVIDENCE_BYTES`) |
 | `payment_id`, `maintenance_task_id` | Exactly one is set |
 | `idempotency_key` | Unique with `property_id` |
 
@@ -167,7 +167,7 @@ A private file on a property: a deed, a mortgage, a policy, a receipt.
 | Field | Notes |
 | :---- | :---- |
 | `title` | Required |
-| `storage_key` | Unique and private |
+| `source_key` | Unique and private |
 | `content_type`, `byte_size` | Same allowlist and cap as evidence |
 
 Key convention: `properties/{propertyId}/documents/{documentId}/{uuid}`.
@@ -220,7 +220,7 @@ One extract run for a document.
 | `document_id` | Required |
 | `evidence_id` | Nullable, reserved for evidence OCR later |
 | `status` | `pending` · `processing` · `suggested` · `confirmed` · `rejected` · `failed` |
-| `storage_key` | The private object the extract read |
+| `source_key` | The private object the extract read. It is not returned on the job. |
 | `vendor` | Opaque pipeline identifier |
 | `error` | Set with status `failed` |
 
@@ -251,7 +251,7 @@ A generic store for mutating POSTs that do not have their own unique key. Paymen
 | :---- | :---- |
 | Soft delete | Set `deleted_at`, exclude from default queries. A membership check treats a soft-deleted property or membership as absent, so the caller sees 404. Payments are voided instead, and a void does not set a delete timestamp. |
 | Retention | A daily job hard-deletes rows with `deleted_at` older than 30 days. |
-| Storage | A hard delete of evidence or a document removes the object at `storage_key`. |
+| Storage | A hard delete of evidence or a document removes the object at `source_key`. |
 | Audit | Both deletes append an audit event. Audit rows are never deleted. |
 
 ## Constraints the migration must add
@@ -265,7 +265,8 @@ The statements are in [`apps/api/prisma/sql/checks.sql`](../apps/api/prisma/sql/
 - `obligations.due_day` is null or 1–31, and it is paired with `schedule_anchor`
 - `overpaid_amount >= 0`
 - `not_applicable` implies `payment_id` is null
-- Evidence and reminder parent XOR, content-type allowlist, and the 15 MiB cap
+- Evidence and reminder parent XOR, content-type allowlist, and the 10 MiB cap (`MAX_EVIDENCE_BYTES`, 10,485,760 bytes)
 - The two reminder partial unique indexes named above
 - Invite `role` is `member` or `viewer`
-- `CREATE EXTENSION IF NOT EXISTS "pgcrypto"`
+- UUID primary keys default to `gen_random_uuid()`, which is core Postgres 13+. No extension is created.
+- `consents`, `audit_events`, and `aviso_versions` reject `UPDATE`, `DELETE`, and `TRUNCATE`. The message is `<table> are append-only`, so consents still say `consents are append-only`. The app role also has no grant for those statements, and it cannot `ALTER TABLE`, disable a trigger, or set `session_replication_role`.

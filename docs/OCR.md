@@ -38,7 +38,7 @@ Suggestion: `pending` → `accepted` | `rejected`.
 | :---- | :---- | :---- |
 | 1 | Client | Uploads the document, multipart or pre-signed PUT then complete |
 | 2 | API | Persists the document row, then enqueues a job or waits for the client to ask |
-| 3 | API | Creates the `OcrJob` (`pending` → `processing`) and passes the private `storage_key` to the extract pipeline |
+| 3 | API | Creates the `OcrJob` (`pending` → `processing`) and passes the private source key to the extract pipeline |
 | 4 | Worker, then API | Extract returns fields. The API inserts `OcrSuggestion` rows and moves the job to `suggested`, or to `failed` with an `error`. |
 | 5 | Client | Reads the job and its suggestions, renders the review sheet |
 | 6 | Client | Posts a decision per suggestion: accept, reject, or edit |
@@ -106,7 +106,7 @@ The response contains the job, the updated suggestions, and `applied`, which lis
 | Expired job | 410. It is not confirmed. |
 | Applied | `persisted` is true only when the confirm's saves commit. A confirm with no `saveValue` writes stays `persisted: false`. `storageKey` is absent. |
 
-The private storage key, when one is built, is assembled server-side from validated UUIDs only. It is not a URL, and it is not a field on any OCR response. Tests walk success and error bodies for `storageKey`, `storage_key`, and a raw `properties/...` bucket path.
+The private source key, when one is built, is assembled server-side from validated UUIDs only. It is not a URL, and it is not a field on any OCR response. Tests walk success and error bodies for `storageKey`, `storage_key`, and a raw `properties/...` bucket path.
 
 ### Tests that hold the rule
 
