@@ -48,11 +48,15 @@ export function retryAccessibilityLabel(context: string): string {
 
 export const COPY = {
   'ocr.edit.invalid': 'Este valor no es válido. Revisa el formato e inténtalo de nuevo.',
+  'ocr.field.alreadySet': 'Este campo ya estaba guardado. Usa Reemplazar si quieres cambiarlo.',
   'form.text.invalidChars': 'Este texto tiene caracteres no permitidos. Bórralos e inténtalo de nuevo.',
   'form.title.tooLong': 'El título admite hasta 300 caracteres.',
   'form.body.tooLong': 'El texto admite hasta 32 KB.',
   'obligation.nextDueDate.invalid':
     'La próxima fecha no es válida. Revisa el valor e inténtalo de nuevo.',
+  'invite.unavailable':
+    'Esta invitación no está disponible. Pide a quien te invitó que te envíe una nueva.',
+  'invite.expired': 'Esta invitación ya no se puede usar. Pide una nueva.',
 } as const;
 
 export type CopyKey = keyof typeof COPY;

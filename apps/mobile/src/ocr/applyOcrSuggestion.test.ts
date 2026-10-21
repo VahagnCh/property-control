@@ -3,13 +3,14 @@ import {
   applyOcrSuggestions,
   confirmOcrSuggestion,
   discardUnreviewedSuggestions,
+  editOcrField,
   keepTypedField,
-  mapOcrDecisionRouteStatus,
   ocrDecisionForServer,
   prepareOcrDecision,
   rejectOcrField,
   replaceField,
   replaceSuggestionRow,
+  serializeConfirmPayload,
   serializeOcrDecision,
   suggestOcrField,
   type OcrClientDecision,
@@ -114,9 +115,15 @@ describe('AC-OCR-11 replaceField', () => {
     expect(replaced.decision).toEqual({
       suggestionId: 'sug-9',
       field: 'amount',
-      decision: 'replaced',
+      ui: 'replaced',
       suggestedValue: '1250.00',
     });
+    const wire = JSON.parse(serializeOcrDecision(replaced.decision!)) as Record<string, unknown>;
+    expect(wire).toEqual({ suggestionId: 'sug-9', action: 'replace' });
+    expect(wire).not.toHaveProperty('decision');
+    expect(wire).not.toHaveProperty('field');
+    expect(wire).not.toHaveProperty('suggestedValue');
+    expect(wire).not.toHaveProperty('editedValue');
   });
 
   it('fills an empty field only after confirm', () => {
@@ -127,7 +134,11 @@ describe('AC-OCR-11 replaceField', () => {
     const filled = replaceField(emptyForm, suggestion, 'amount');
     expect(filled.form.amount).toBe('1250.00');
     expect(filled.previousValue).toBe('');
-    expect(filled.decision?.decision).toBe('replaced');
+    expect(filled.decision?.ui).toBe('accepted');
+    expect(JSON.parse(serializeOcrDecision(filled.decision!))).toEqual({
+      suggestionId: 'sug-9',
+      action: 'accept',
+    });
   });
 
   it('keeps the typed value on Rechazar, on Mantener, and when nothing is chosen', () => {
@@ -141,8 +152,12 @@ describe('AC-OCR-11 replaceField', () => {
     expect(kept.decision).toEqual({
       suggestionId: 'sug-9',
       field: 'amount',
-      decision: 'kept',
+      ui: 'kept',
       suggestedValue: '1250.00',
+    });
+    expect(JSON.parse(serializeOcrDecision(kept.decision!))).toEqual({
+      suggestionId: 'sug-9',
+      action: 'reject',
     });
 
     const rejected = rejectOcrField(form, suggestion, 'amount');
@@ -151,9 +166,55 @@ describe('AC-OCR-11 replaceField', () => {
     expect(rejected.decision).toEqual({
       suggestionId: 'sug-9',
       field: 'amount',
-      decision: 'rejected',
+      ui: 'rejected',
       suggestedValue: '1250.00',
     });
+    expect(JSON.parse(serializeOcrDecision(rejected.decision!))).toEqual({
+      suggestionId: 'sug-9',
+      action: 'reject',
+    });
+  });
+
+  it('sends edit and editedValue when the person corrects the suggestion, after the same text rules', () => {
+    const form = { amount: TYPED, paidDate: '', note: 'nota' };
+    const dirty = '1250\u0000.50';
+    const invalid = editOcrField(form, suggestion, 'amount', dirty);
+    expect(invalid.form).toBe(form);
+    expect(invalid.decision).toBeNull();
+    expect(invalid.error).toEqual({
+      key: 'form.text.invalidChars',
+      message: 'Este texto tiene caracteres no permitidos. Bórralos e inténtalo de nuevo.',
+    });
+    expect(dirty).toBe('1250\u0000.50');
+
+    const lineBreak = editOcrField(form, suggestion, 'amount', '1250\n50');
+    expect(lineBreak.decision).toBeNull();
+    expect(lineBreak.form).toBe(form);
+
+    const edited = editOcrField(form, suggestion, 'amount', '1250.50');
+    expect(edited.error).toBeNull();
+    expect(edited.form).not.toBe(form);
+    expect(edited.form.amount).toBe('1250.50');
+    expect(edited.previousValue).toBe(TYPED);
+    expect(form.amount).toBe(TYPED);
+    expect(edited.decision?.ui).toBe('edited');
+    expect(JSON.parse(serializeOcrDecision(edited.decision!))).toEqual({
+      suggestionId: 'sug-9',
+      action: 'edit',
+      editedValue: '1250.50',
+    });
+    expect(serializeOcrDecision(edited.decision!)).not.toContain(TYPED);
+
+    const note = confirmOcrSuggestion(suggestOcrField('note', 'folio', 0.9, { suggestionId: 'sug-note' }));
+    const withNewline = editOcrField(form, note, 'note', 'línea uno\nlínea dos');
+    expect(withNewline.error).toBeNull();
+    expect(JSON.parse(serializeOcrDecision(withNewline.decision!))).toEqual({
+      suggestionId: 'sug-note',
+      action: 'edit',
+      editedValue: 'línea uno\nlínea dos',
+    });
+    expect(editOcrField(form, note, 'note', 'línea\tuno').decision).toBeNull();
+    expect(editOcrField(form, note, 'note', 'línea\runo').decision).toBeNull();
   });
 
   it('refuses a blank suggestion, a missing id, another field, and prototype keys', () => {
@@ -197,35 +258,45 @@ describe('AC-OCR-11 replaceField', () => {
       return;
     }
 
-    expect(Object.keys(decision)).toEqual(['suggestionId', 'field', 'decision', 'suggestedValue']);
+    expect(Object.keys(decision)).toEqual(['suggestionId', 'field', 'ui', 'suggestedValue']);
     expect(JSON.stringify(replaced)).toContain(TYPED);
     expect(serializeOcrDecision(decision)).not.toContain(TYPED);
-    expect(serializeOcrDecision(decision)).not.toMatch(/previous|typed/i);
+    expect(serializeOcrDecision(decision)).not.toMatch(
+      /previous|typed|clientPriorValue|suggestedValue|"decision"|"field"|"replaced"|"kept"|"rejected"/,
+    );
 
     const poisoned = {
       ...decision,
+      decision: 'replaced',
+      field: 'amount',
+      suggestedValue: '1250.00',
       previousTypedValue: TYPED,
       previousValue: TYPED,
       typedValue: TYPED,
       persistedPreviousValue: TYPED,
+      clientPriorValue: TYPED,
       actual: TYPED,
     };
     const payload = ocrDecisionForServer(poisoned);
     const json = serializeOcrDecision(poisoned);
     expect(payload).toEqual({
       suggestionId: 'sug-9',
-      field: 'amount',
-      decision: 'replaced',
-      suggestedValue: '1250.00',
+      action: 'replace',
     });
     expect(json).toBe(JSON.stringify(payload));
     expect(json).not.toContain(TYPED);
+    expect(json).not.toContain('1250.00');
     for (const key of [
+      'decision',
+      'field',
+      'suggestedValue',
       'previousValue',
       'previousTypedValue',
       'typedValue',
       'persistedPreviousValue',
+      'clientPriorValue',
       'actual',
+      'editedValue',
     ]) {
       expect(payload).not.toHaveProperty(key);
     }
@@ -233,16 +304,53 @@ describe('AC-OCR-11 replaceField', () => {
     const saved: OcrClientDecision = {
       suggestionId: 'sug-saved',
       field: 'note',
-      decision: 'kept',
+      ui: 'kept',
       suggestedValue: 'folio',
     };
-    expect(ocrDecisionForServer(saved)).toEqual(saved);
-    expect(Object.keys(ocrDecisionForServer(saved))).toEqual([
-      'suggestionId',
-      'field',
-      'decision',
-      'suggestedValue',
-    ]);
+    expect(ocrDecisionForServer(saved)).toEqual({
+      suggestionId: 'sug-saved',
+      action: 'reject',
+    });
+    expect(Object.keys(ocrDecisionForServer(saved))).toEqual(['suggestionId', 'action']);
+  });
+
+  it('emits only accept, reject, edit, or replace', () => {
+    const choices = [
+      { ui: 'accepted' as const, action: 'accept' },
+      { ui: 'replaced' as const, action: 'replace' },
+      { ui: 'kept' as const, action: 'reject' },
+      { ui: 'rejected' as const, action: 'reject' },
+      { ui: 'edited' as const, action: 'edit' },
+    ];
+    const emitted = choices.map((choice) =>
+      JSON.parse(
+        serializeOcrDecision({
+          suggestionId: 'sug-1',
+          field: 'amount',
+          ui: choice.ui,
+          suggestedValue: '10.00',
+          editedValue: choice.ui === 'edited' ? '10.50' : undefined,
+        }),
+      ) as { action: string; editedValue?: string },
+    );
+    expect(emitted.map((row) => row.action)).toEqual(['accept', 'replace', 'reject', 'reject', 'edit']);
+    expect(emitted[4]?.editedValue).toBe('10.50');
+    expect(emitted[0]).not.toHaveProperty('editedValue');
+    const json = choices
+      .map((choice) =>
+        serializeOcrDecision({
+          suggestionId: 'sug-1',
+          field: 'amount',
+          ui: choice.ui,
+          suggestedValue: '10.00',
+          editedValue: '10.50',
+        }),
+      )
+      .join('\n');
+    expect(json).not.toMatch(/"replaced"|"kept"|"rejected"|"decision"|"field"|"suggestedValue"|"clientPriorValue"/);
+    for (const row of emitted) {
+      expect(['accept', 'reject', 'edit', 'replace']).toContain(row.action);
+    }
   });
 
   it('builds the suggestion row copy with Mantener as the default highlighted action', () => {
@@ -276,12 +384,26 @@ describe('AC-OCR-11 replaceField', () => {
     const reviewed = keepTypedField(form, suggestion, 'amount').decision;
     expect(reviewed).not.toBeNull();
 
-    const saved = discardUnreviewedSuggestions(form, [...unreviewed, suggestion], reviewed ? [reviewed] : []);
+    const saved = discardUnreviewedSuggestions(form, [...unreviewed, suggestion, suggestion], reviewed ? [reviewed, reviewed] : []);
     expect(saved.form).toBe(form);
     expect(saved.form).toEqual({ amount: '', paidDate: '', note: 'nota' });
     expect(saved.discarded.map((item) => item.suggestionId)).toEqual(['sug-open', 'sug-quiet']);
     expect(saved.notice).toBe(OCR_UNREVIEWED_DISCARD_COPY);
     expect(saved.notice).toBe('Las sugerencias sin revisar se descartarán al registrar.');
+    expect(saved.payload.map((row) => row.suggestionId)).toEqual(['sug-open', 'sug-quiet', 'sug-9']);
+    expect(new Set(saved.payload.map((row) => row.suggestionId)).size).toBe(saved.payload.length);
+    expect(saved.payload.map((row) => row.action)).toEqual(['reject', 'reject', 'reject']);
+    expect(saved.request).toEqual({ decisions: saved.payload });
+    const body = serializeConfirmPayload(saved.payload);
+    expect(JSON.parse(body)).toEqual({
+      decisions: [
+        { suggestionId: 'sug-open', action: 'reject' },
+        { suggestionId: 'sug-quiet', action: 'reject' },
+        { suggestionId: 'sug-9', action: 'reject' },
+      ],
+    });
+    expect(body).not.toContain(TYPED);
+    expect(body).not.toMatch(/"decision"|"field"|"suggestedValue"|"replaced"|"kept"|"rejected"|"clientPriorValue"/);
 
     const allReviewed = discardUnreviewedSuggestions(form, [suggestion], reviewed ? [reviewed] : []);
     expect(allReviewed.form).toBe(form);
@@ -289,17 +411,23 @@ describe('AC-OCR-11 replaceField', () => {
     expect(allReviewed.notice).toBeNull();
   });
 
-  it('B17 keeps the four-field payload and returns 422 for any typed value', () => {
+  it('refuses a typed value or clientPriorValue and never puts them on the request', () => {
     const decision: OcrClientDecision = {
       suggestionId: 'sug-9',
       field: 'amount',
-      decision: 'replaced',
+      ui: 'replaced',
       suggestedValue: '1250.00',
     };
     const prepared = prepareOcrDecision(decision, TYPED);
-    expect(prepared).toEqual({ ok: true, payload: decision });
+    expect(prepared).toEqual({
+      ok: true,
+      payload: {
+        suggestionId: 'sug-9',
+        action: 'replace',
+      },
+    });
     if (prepared.ok) {
-      expect(Object.keys(prepared.payload)).toEqual(['suggestionId', 'field', 'decision', 'suggestedValue']);
+      expect(Object.keys(prepared.payload)).toEqual(['suggestionId', 'action']);
     }
 
     for (const extra of [
@@ -308,19 +436,69 @@ describe('AC-OCR-11 replaceField', () => {
       { previousValue: TYPED },
       { persistedPreviousValue: TYPED },
       { actual: TYPED },
+      { clientPriorValue: TYPED },
     ]) {
       const refused = prepareOcrDecision({ ...decision, ...extra }, TYPED);
-      expect(refused).toEqual({ ok: false, status: 422, reason: 'typed_value' });
-      expect(JSON.stringify(refused)).not.toContain('1250.00');
+      expect(refused).toEqual({ ok: false, reason: 'typed_value' });
+      expect(JSON.stringify(refused)).not.toContain(TYPED);
+      expect(JSON.stringify(refused)).not.toContain('clientPriorValue');
     }
 
     expect(prepareOcrDecision({ ...decision, field: TYPED }, TYPED)).toEqual({
       ok: false,
-      status: 422,
       reason: 'typed_value',
     });
-    expect(mapOcrDecisionRouteStatus(422)).toEqual({ status: 422, reason: 'typed_value' });
-    expect(mapOcrDecisionRouteStatus(200)).toBeNull();
-    expect(mapOcrDecisionRouteStatus(400)).toBeNull();
+    expect(prepareOcrDecision({ ...decision, targetEntityId: TYPED }, TYPED)).toEqual({
+      ok: false,
+      reason: 'typed_value',
+    });
+  });
+
+  it('covers every suggestion id once and sends targetEntityId only for unbound rows', () => {
+    const target = '11111111-1111-4111-8111-111111111111';
+    const boundId = '22222222-2222-4222-8222-222222222222';
+    const form = { amount: '', paidDate: TYPED, note: 'nota' };
+    const unbound = confirmOcrSuggestion(
+      suggestOcrField('amount', '10.00', 0.99, { suggestionId: 'sug-open', targetEntityId: target }),
+    );
+    const bound = confirmOcrSuggestion(
+      suggestOcrField('paidDate', '2026-10-20', 0.99, {
+        suggestionId: 'sug-bound',
+        targetEntityId: boundId,
+        bound: true,
+      }),
+    );
+    const quiet = suggestOcrField('note', 'otra', 0.5, { suggestionId: 'sug-quiet' });
+    const accepted = replaceField(form, unbound, 'amount').decision;
+    const replaced = replaceField(form, bound, 'paidDate', { targetEntityId: target }).decision;
+    expect(accepted).not.toBeNull();
+    expect(replaced).not.toBeNull();
+
+    const saved = discardUnreviewedSuggestions(
+      form,
+      [unbound, bound, quiet, unbound],
+      accepted && replaced ? [accepted, replaced, accepted] : [],
+    );
+    expect(saved.form).toBe(form);
+    expect(saved.payload.map((row) => row.suggestionId)).toEqual(['sug-open', 'sug-bound', 'sug-quiet']);
+    expect(new Set(saved.payload.map((row) => row.suggestionId)).size).toBe(3);
+    expect(saved.payload).toEqual([
+      { suggestionId: 'sug-open', action: 'accept', targetEntityId: target },
+      { suggestionId: 'sug-bound', action: 'replace' },
+      { suggestionId: 'sug-quiet', action: 'reject' },
+    ]);
+    expect(saved.discarded.map((item) => item.suggestionId)).toEqual(['sug-quiet']);
+    const body = JSON.parse(serializeConfirmPayload(saved.payload)) as {
+      decisions: Array<Record<string, unknown>>;
+    };
+    expect(Object.keys(body)).toEqual(['decisions']);
+    for (const row of body.decisions) {
+      expect(Object.keys(row).every((key) => ['suggestionId', 'action', 'editedValue', 'targetEntityId'].includes(key))).toBe(
+        true,
+      );
+    }
+    expect(JSON.stringify(body)).not.toContain(TYPED);
+    expect(JSON.stringify(body)).not.toContain(boundId);
+    expect(JSON.stringify(body)).not.toContain('clientPriorValue');
   });
 });

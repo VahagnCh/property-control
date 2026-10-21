@@ -4,7 +4,7 @@ const INVALID = 'Este texto tiene caracteres no permitidos. Bórralos e inténta
 const ACCENTS = '¿El año en Mérida trae la obligación? ¡Revisa el folio: á é í ó ú ñ ü!';
 
 describe('text input', () => {
-  it('rejects C1 controls, C0 controls other than whitespace, bidi overrides, and zero-width characters', () => {
+  it('rejects C1 controls, bidi overrides, and zero-width characters on every field', () => {
     const samples = [
       `México\u0080`,
       `México\u009F`,
@@ -33,11 +33,46 @@ describe('text input', () => {
       `folio\u2060`,
     ];
 
-    for (const value of samples) {
-      const result = validateTextInput(value, 'title');
-      expect(result).toEqual({ ok: false, key: 'form.text.invalidChars', message: INVALID });
-      expect(result).not.toHaveProperty('value');
-      expect(value).not.toBe(ACCENTS);
+    for (const field of ['title', 'body', 'note'] as const) {
+      for (const value of samples) {
+        const result = validateTextInput(value, field);
+        expect(result).toEqual({ ok: false, key: 'form.text.invalidChars', message: INVALID });
+        expect(result).not.toHaveProperty('value');
+        expect(value).not.toBe(ACCENTS);
+      }
+    }
+  });
+
+  it('rejects every C0 character on a single-line field, including tab, LF, and CR', () => {
+    for (const char of ['\t', '\n', '\r', '\u0000', '\u000B', '\u007F']) {
+      const value = `año${char}folio`;
+      expect(validateTextInput(value, 'title')).toEqual({
+        ok: false,
+        key: 'form.text.invalidChars',
+        message: INVALID,
+      });
+      expect(value).toContain(char);
+    }
+  });
+
+  it('allows a newline only on a multi-line note, and still rejects tab and CR', () => {
+    const note = `${ACCENTS}\nsegunda línea`;
+    expect(validateTextInput(note, 'note')).toEqual({ ok: true, value: note });
+    expect(validateTextInput(note, 'body')).toEqual({ ok: true, value: note });
+    expect(validateTextInput(`año\nfolio`, 'title').ok).toBe(false);
+
+    for (const field of ['note', 'body'] as const) {
+      expect(validateTextInput('año\tfólio', field)).toEqual({
+        ok: false,
+        key: 'form.text.invalidChars',
+        message: INVALID,
+      });
+      expect(validateTextInput('año\rfólio', field)).toEqual({
+        ok: false,
+        key: 'form.text.invalidChars',
+        message: INVALID,
+      });
+      expect(validateTextInput('año\r\nfólio', field).ok).toBe(false);
     }
   });
 
@@ -52,11 +87,13 @@ describe('text input', () => {
     }
   });
 
-  it('allows normal whitespace, accents, ñ, ¿, and ¡', () => {
-    const value = `${ACCENTS}\nsegunda línea\trevista\rfin`;
-    expect(validateTextInput(value, 'title')).toEqual({ ok: true, value });
-    expect(validateTextInput(value, 'body')).toEqual({ ok: true, value });
-    expect(validateTextInput('hola mundo', 'title').ok).toBe(true);
+  it('allows spaces, accents, ñ, ¿, and ¡ on a single-line field', () => {
+    expect(validateTextInput(ACCENTS, 'title')).toEqual({ ok: true, value: ACCENTS });
+    expect(validateTextInput('hola mundo', 'title')).toEqual({ ok: true, value: 'hola mundo' });
+    expect(validateTextInput(`${ACCENTS}\nsegunda línea`, 'note')).toEqual({
+      ok: true,
+      value: `${ACCENTS}\nsegunda línea`,
+    });
   });
 
   it('mirrors the API limits: title max 300 characters and body max 32 KB', () => {

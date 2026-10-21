@@ -118,10 +118,13 @@ describe('copy lint', () => {
 
     const requiredCopy = [
       COPY['ocr.edit.invalid'],
+      COPY['ocr.field.alreadySet'],
       COPY['form.text.invalidChars'],
       COPY['form.title.tooLong'],
       COPY['form.body.tooLong'],
       COPY['obligation.nextDueDate.invalid'],
+      COPY['invite.unavailable'],
+      COPY['invite.expired'],
       OCR_REPLACE_KEEP_LABEL,
       OCR_REPLACE_BUTTON_LABEL,
       OCR_REPLACE_TOAST,
