@@ -1,10 +1,5 @@
-import {
-  CanActivate,
-  ExecutionContext,
-  Inject,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { CanActivate, ExecutionContext, Inject, Injectable } from '@nestjs/common';
+import { ocrUnauthorized } from '../ocr/ocr-errors.js';
 import { ACCESS_TOKEN_VERIFIER, verifyBearer, type AccessTokenVerifier } from './access-token.verifier.js';
 
 interface RequestWithAuth {
@@ -25,7 +20,7 @@ export class AccessTokenGuard implements CanActivate {
     const header = request.headers.authorization ?? request.headers.Authorization;
     const verdict = verifyBearer(this.verifier, header);
     if (!verdict.ok) {
-      throw new UnauthorizedException(verdict.message);
+      throw ocrUnauthorized(verdict.error, verdict.message);
     }
     request.accessToken = { sub: verdict.sub };
     return true;

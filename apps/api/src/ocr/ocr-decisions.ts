@@ -1,5 +1,5 @@
-import { BadRequestException, UnprocessableEntityException } from '@nestjs/common';
 import { isUuid } from '../common/path-safety.js';
+import { OCR_ERROR, ocrBadRequest, ocrUnprocessable } from './ocr-errors.js';
 import type { OcrDecision } from './ocr.types.js';
 
 const DECISION_KEYS = new Set(['suggestionId', 'action', 'editedValue', 'targetEntityId']);
@@ -9,64 +9,64 @@ export function parseDecisions(input: unknown): OcrDecision[] {
   assertNoDangerousKeys(input);
   const raw = Array.isArray(input) ? input : decisionsFromBody(input);
   if (raw.length === 0 || raw.length > 50) {
-    throw new BadRequestException('decisions must be a non-empty array.');
+    throw ocrBadRequest(OCR_ERROR.decisionsInvalid, 'decisions must be a non-empty array.');
   }
   return raw.map((entry) => parseDecision(entry));
 }
 
 function decisionsFromBody(body: unknown): unknown[] {
   if (!isPlainObject(body)) {
-    throw new BadRequestException('Body must be an object.');
+    throw ocrBadRequest(OCR_ERROR.decisionsInvalid, 'Body must be an object.');
   }
   if (isAcceptAll(body)) {
     throw bulkAcceptAll();
   }
   if ('clientPriorValue' in body) {
-    throw new UnprocessableEntityException('clientPriorValue is not accepted.');
+    throw ocrUnprocessable(OCR_ERROR.clientPriorValueRejected, 'clientPriorValue is not accepted.');
   }
   for (const key of Object.keys(body)) {
     if (key !== 'decisions') {
-      throw new BadRequestException('Unknown field.');
+      throw ocrBadRequest(OCR_ERROR.unknownField, 'Unknown field.');
     }
   }
   if (!Array.isArray(body.decisions)) {
-    throw new BadRequestException('decisions must be a non-empty array.');
+    throw ocrBadRequest(OCR_ERROR.decisionsInvalid, 'decisions must be a non-empty array.');
   }
   return body.decisions;
 }
 
 function parseDecision(value: unknown): OcrDecision {
   if (!isPlainObject(value)) {
-    throw new BadRequestException('Each decision needs a suggestionId.');
+    throw ocrBadRequest(OCR_ERROR.suggestionInvalid, 'Each decision needs a suggestionId.');
   }
   if ('clientPriorValue' in value) {
-    throw new UnprocessableEntityException('clientPriorValue is not accepted.');
+    throw ocrUnprocessable(OCR_ERROR.clientPriorValueRejected, 'clientPriorValue is not accepted.');
   }
   if (isAcceptAll(value)) {
     throw bulkAcceptAll();
   }
   for (const key of Object.keys(value)) {
     if (!DECISION_KEYS.has(key)) {
-      throw new BadRequestException('Unknown field.');
+      throw ocrBadRequest(OCR_ERROR.unknownField, 'Unknown field.');
     }
   }
   const suggestionId = value.suggestionId;
   if (typeof suggestionId !== 'string' || !isUuid(suggestionId)) {
-    throw new BadRequestException('Each decision needs a suggestionId.');
+    throw ocrBadRequest(OCR_ERROR.suggestionInvalid, 'Each decision needs a suggestionId.');
   }
   const action = value.action;
   if (action !== 'accept' && action !== 'reject' && action !== 'edit' && action !== 'replace') {
-    throw new BadRequestException('action must be accept, reject, edit, or replace.');
+    throw ocrBadRequest(OCR_ERROR.actionInvalid, 'action must be accept, reject, edit, or replace.');
   }
   let targetEntityId: string | undefined;
   if ('targetEntityId' in value && value.targetEntityId !== undefined) {
     if (typeof value.targetEntityId !== 'string' || !isUuid(value.targetEntityId)) {
-      throw new BadRequestException('targetEntityId must be a UUID.');
+      throw ocrBadRequest(OCR_ERROR.targetInvalid, 'targetEntityId must be a UUID.');
     }
     targetEntityId = value.targetEntityId;
   }
   if (action === 'edit' && (!('editedValue' in value) || value.editedValue === undefined)) {
-    throw new BadRequestException('Edit needs editedValue.');
+    throw ocrBadRequest(OCR_ERROR.editedValueRequired, 'Edit needs editedValue.');
   }
   return {
     suggestionId,
@@ -85,13 +85,13 @@ function isAcceptAll(value: Record<string, unknown>): boolean {
   );
 }
 
-function bulkAcceptAll(): UnprocessableEntityException {
-  return new UnprocessableEntityException('Bulk accept-all is not accepted.');
+function bulkAcceptAll() {
+  return ocrUnprocessable(OCR_ERROR.bulkAcceptRejected, 'Bulk accept-all is not accepted.');
 }
 
 function assertNoDangerousKeys(value: unknown, depth = 0): void {
   if (depth > 20) {
-    throw new BadRequestException('Invalid payload.');
+    throw ocrBadRequest(OCR_ERROR.decisionsInvalid, 'Invalid payload.');
   }
   if (!value || typeof value !== 'object') {
     return;
@@ -104,7 +104,7 @@ function assertNoDangerousKeys(value: unknown, depth = 0): void {
   }
   for (const key of Object.keys(value)) {
     if (DANGEROUS_KEYS.has(key)) {
-      throw new BadRequestException('Unknown field.');
+      throw ocrBadRequest(OCR_ERROR.unknownField, 'Unknown field.');
     }
     assertNoDangerousKeys((value as Record<string, unknown>)[key], depth + 1);
   }

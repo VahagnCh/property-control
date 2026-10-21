@@ -1,15 +1,4 @@
-import {
-  BadRequestException,
-  ConflictException,
-  GoneException,
-  HttpException,
-  HttpStatus,
-  Inject,
-  Injectable,
-  NotFoundException,
-  Optional,
-  UnprocessableEntityException,
-} from '@nestjs/common';
+import { Inject, Injectable, Optional, UnprocessableEntityException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_PROPERTY_TIMEZONE, isIanaTimeZone } from '../common/property-calendar.js';
 import { isTraversal, isUuid } from '../common/path-safety.js';
@@ -17,6 +6,7 @@ import { CLOCK, SystemClock, type Clock } from './clock.js';
 import { parseDecisions } from './ocr-decisions.js';
 import { OCR_EXTRACTOR, StubOcrExtractor, type ExtractedField, type OcrExtractor } from './ocr-extractor.js';
 import { canonicalizeFieldValue, confidenceBand } from './ocr-fields.js';
+import { OCR_ERROR, ocrBadRequest, ocrCapacity, ocrConflict, ocrGone, ocrNotFound, ocrUnprocessable } from './ocr-errors.js';
 import { parseMxAmount, parseMxDate } from './ocr-locale.js';
 import {
   OCR_RUNTIME,
@@ -86,10 +76,7 @@ export class OcrService {
     this.dropExpired();
     const globalMax = this.runtime.jobsGlobalMax ?? this.runtime.jobsMax * 20;
     if (this.capCount(propertyId) >= this.runtime.jobsMax || this.capCount() >= globalMax) {
-      throw new HttpException(
-        { statusCode: HttpStatus.TOO_MANY_REQUESTS, message: 'OCR job capacity is full.' },
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
+      throw ocrCapacity('OCR job capacity is full.');
     }
 
     const storageKey = this.storage.buildOcrSourceKey(propertyId, documentId);
@@ -142,7 +129,7 @@ export class OcrService {
     assertUuidPair(propertyId, ocrJobId);
     const existing = this.jobs.get(ocrJobId);
     if (!existing || existing.job.propertyId !== propertyId) {
-      throw new NotFoundException('Not found.');
+      throw ocrNotFound();
     }
     return this.exclusive(ocrJobId, () =>
       this.confirmExclusive(propertyId, ocrJobId, input, options?.actorUserId ?? null),
@@ -162,7 +149,7 @@ export class OcrService {
   ): OcrConfirmResult {
     const record = this.requireFresh(propertyId, ocrJobId);
     if (record.job.status !== 'suggested') {
-      throw new ConflictException('Only a job in status suggested can be confirmed.');
+      throw ocrConflict(OCR_ERROR.jobNotConfirmable, 'Only a job in status suggested can be confirmed.');
     }
     const decisions = parseDecisions(input);
     const plan = this.plan(record, decisions, actorUserId);
@@ -284,21 +271,21 @@ export class OcrService {
     const seen = new Set<string>();
     for (const decision of decisions) {
       if (!known.has(decision.suggestionId)) {
-        throw new NotFoundException('Not found.');
+        throw ocrNotFound();
       }
       if (seen.has(decision.suggestionId)) {
-        throw new BadRequestException('A suggestion is listed more than once.');
+        throw ocrBadRequest(OCR_ERROR.duplicateDecision, 'A suggestion is listed more than once.');
       }
       seen.add(decision.suggestionId);
     }
     const missing = record.suggestions.filter((suggestion) => !seen.has(suggestion.id));
     if (missing.length > 0) {
       const suggestionId = missing[0]?.id;
-      throw new UnprocessableEntityException({
-        statusCode: 422,
-        message: 'Every suggestion needs an explicit accept, replace, reject, or edit.',
-        suggestionId,
-      });
+      throw ocrUnprocessable(
+        OCR_ERROR.missingDecision,
+        'Every suggestion needs an explicit accept, replace, reject, or edit.',
+        { suggestionId },
+      );
     }
 
     const steps: Array<{
@@ -317,7 +304,7 @@ export class OcrService {
     for (const decision of decisions) {
       const suggestion = known.get(decision.suggestionId);
       if (!suggestion) {
-        throw new NotFoundException('Not found.');
+        throw ocrNotFound();
       }
       if (decision.action === 'reject') {
         steps.push({ suggestion, decision });
@@ -331,10 +318,7 @@ export class OcrService {
       const value = this.canonicalize(suggestion, rawValue, context);
       const saved = this.readSaved(record.job.propertyId, suggestion, entityId);
       if (saved.present && decision.action !== 'replace') {
-        throw new ConflictException({
-          statusCode: 409,
-          message: 'The field already has a saved value.',
-          error: 'field_already_set',
+        throw ocrConflict(OCR_ERROR.fieldAlreadySet, 'The field already has a saved value.', {
           suggestionId: suggestion.id,
           field: suggestion.fieldPath,
         });
@@ -408,24 +392,25 @@ export class OcrService {
     const bound = suggestion.targetEntityId;
     if (bound && requested !== undefined && requested !== bound) {
       if (!isUuid(requested)) {
-        throw new BadRequestException('targetEntityId must be a UUID.');
+        throw ocrBadRequest(OCR_ERROR.targetInvalid, 'targetEntityId must be a UUID.');
       }
       if (!this.targetBelongs(record, suggestion, requested)) {
-        throw new NotFoundException('Not found.');
+        throw ocrNotFound();
       }
-      throw new UnprocessableEntityException('A bound target cannot be changed.');
+      throw ocrUnprocessable(OCR_ERROR.boundTargetImmutable, 'A bound target cannot be changed.');
     }
     const entityId = requested ?? bound;
     if (!entityId) {
-      throw new UnprocessableEntityException(
+      throw ocrUnprocessable(
+        OCR_ERROR.targetRequired,
         'A suggestion needs targetEntityId before it can be accepted.',
       );
     }
     if (!isUuid(entityId)) {
-      throw new BadRequestException('targetEntityId must be a UUID.');
+      throw ocrBadRequest(OCR_ERROR.targetInvalid, 'targetEntityId must be a UUID.');
     }
     if (!this.targetBelongs(record, suggestion, entityId)) {
-      throw new NotFoundException('Not found.');
+      throw ocrNotFound();
     }
     if (suggestion.targetEntityType === 'payment') {
       this.assertPaymentRecorded(record.job.propertyId, entityId);
@@ -435,17 +420,19 @@ export class OcrService {
 
   private assertPaymentRecorded(propertyId: string, entityId: string): void {
     if (!this.lookup.paymentStatus) {
-      throw new UnprocessableEntityException('A payment target must be checked before confirm.');
+      throw ocrUnprocessable(
+        OCR_ERROR.targetStatusUnknown,
+        'A payment target must be checked before confirm.',
+      );
     }
     const status = this.lookup.paymentStatus({ propertyId, entityId });
     if (status === 'recorded') {
       return;
     }
-    throw new UnprocessableEntityException(
-      status === 'voided'
-        ? 'A voided payment cannot be a confirm target.'
-        : 'A payment target must be checked before confirm.',
-    );
+    if (status === 'voided') {
+      throw ocrUnprocessable(OCR_ERROR.targetVoided, 'A voided payment cannot be a confirm target.');
+    }
+    throw ocrUnprocessable(OCR_ERROR.targetStatusUnknown, 'A payment target must be checked before confirm.');
   }
 
   private propertyTimeZone(propertyId: string): string {
@@ -549,10 +536,10 @@ export class OcrService {
   private requireFresh(propertyId: string, ocrJobId: string): JobRecord {
     const record = this.jobs.get(ocrJobId);
     if (!record || record.job.propertyId !== propertyId) {
-      throw new NotFoundException('Not found.');
+      throw ocrNotFound();
     }
     if (record.expiresAt <= this.clock.now()) {
-      throw new GoneException('OCR job has expired.');
+      throw ocrGone('OCR job has expired.');
     }
     return record;
   }
@@ -635,7 +622,7 @@ function namedSuggestion(error: UnprocessableEntityException, suggestion: OcrSug
 
 function assertUuidPair(left: string, right: string): void {
   if (!isUuid(left) || !isUuid(right) || isTraversal(left) || isTraversal(right)) {
-    throw new BadRequestException('Invalid path parameter.');
+    throw ocrBadRequest(OCR_ERROR.invalidPath, 'Invalid path parameter.');
   }
 }
 

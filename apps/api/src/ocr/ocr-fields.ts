@@ -1,4 +1,5 @@
-import { BadRequestException, UnprocessableEntityException } from '@nestjs/common';
+import { UnprocessableEntityException } from '@nestjs/common';
+import { OCR_ERROR, ocrBadRequest, ocrUnprocessable } from './ocr-errors.js';
 import {
   NEXT_DUE_DATE_MAX_YEAR,
   NEXT_DUE_DATE_MIN_YEAR,
@@ -83,11 +84,11 @@ export function canonicalizeFieldValue(
   context?: FieldValueContext,
 ): unknown {
   if (FORBIDDEN_PATHS.has(fieldPath) || !FIELDS.has(fieldPath)) {
-    throw new BadRequestException('Unknown fieldPath.');
+    throw ocrBadRequest(OCR_ERROR.fieldPathUnknown, 'Unknown fieldPath.');
   }
   const field = FIELDS.get(fieldPath);
   if (!field || !field.entities.includes(entityType)) {
-    throw new BadRequestException('Unknown fieldPath.');
+    throw ocrBadRequest(OCR_ERROR.fieldPathUnknown, 'Unknown fieldPath.');
   }
   if (field.kind === 'amount') {
     return assertCanonicalAmount(value);
@@ -163,5 +164,5 @@ function assertCanonicalText(value: unknown, maxLength: number, multiline: boole
 }
 
 function badValue(): UnprocessableEntityException {
-  return new UnprocessableEntityException('editedValue does not match fieldPath.');
+  return ocrUnprocessable(OCR_ERROR.editedValueInvalid, 'editedValue does not match fieldPath.');
 }

@@ -84,11 +84,13 @@ export function loadOcrRuntime(env: NodeJS.ProcessEnv = process.env): OcrRuntime
 
 export function ocrDisabledBody(): {
   statusCode: 501;
+  error: 'ocr_disabled';
   module: 'ocr';
   message: string;
 } {
   return {
     statusCode: 501,
+    error: 'ocr_disabled',
     module: 'ocr',
     message:
       'Scaffold placeholder. OCR is disabled until OCR_STUB_ENABLED is set to 1, true, yes, or on.',

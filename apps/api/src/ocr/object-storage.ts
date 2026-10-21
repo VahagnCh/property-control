@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { isTraversal, isUuid } from '../common/path-safety.js';
+import { OCR_ERROR, ocrBadRequest } from './ocr-errors.js';
 
 export const OBJECT_STORAGE = Symbol('OBJECT_STORAGE');
 
@@ -22,7 +23,7 @@ export class PrivateObjectStorage implements ObjectStorage {
       isTraversal(propertyId) ||
       isTraversal(documentId)
     ) {
-      throw new BadRequestException('Invalid storage key input.');
+      throw ocrBadRequest(OCR_ERROR.invalidStorageKey, 'Invalid storage key input.');
     }
     const key = `properties/${propertyId}/documents/${documentId}/ocr-stub`;
     this.calls.push(key);
