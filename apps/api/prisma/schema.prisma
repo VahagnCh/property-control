@@ -5,6 +5,8 @@
 // reminders, and OCR suggestions. It does not store balances, bank links,
 // payout instructions, payment instruments, or a credit carried into the
 // next period. overpaidAmount is the excess on one period, not a balance.
+// Money columns are integer centavos. The API wire format is a decimal
+// string such as "1234.50" plus currency MXN, never a JSON float.
 //
 // Partial unique indexes that Prisma cannot express live in
 // prisma/sql/checks.sql. The first migration must run that file.
@@ -197,7 +199,9 @@ model Property {
   state           String?
   country         String            @default("MX")
   postalCode      String?           @map("postal_code")
-  /// IANA name from the tz database, never a fixed offset.
+  /// IANA name from the tz database, never a fixed offset. Every Property
+  /// response includes this field. Default America/Mexico_City.
+  /// The one-year paidAt back-date limit uses this timezone, not UTC.
   timezone        String            @default("America/Mexico_City")
   deletedAt       DateTime?         @map("deleted_at") @db.Timestamptz(6)
   createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -252,7 +256,9 @@ model Obligation {
   /// Year-month of period index 0. The stored day is the clamped due date.
   scheduleAnchor   DateTime?           @map("schedule_anchor") @db.Date
   nextDueDate      DateTime?           @map("next_due_date") @db.Date
-  /// Integer centavos. Null means a variable amount with no expected total.
+  /// Integer centavos in the database. Null means a variable amount with no
+  /// expected total. The API wire value is a decimal string such as "1234.50"
+  /// plus currency MXN, never a JSON float.
   expectedAmount   Int?                @map("expected_amount")
   currency         String              @default("MXN") @db.VarChar(3)
   reminderOffsets  Int[]               @default([7, 1]) @map("reminder_offsets")
@@ -282,9 +288,12 @@ model Payment {
   obligationId     String        @map("obligation_id") @db.Uuid
   periodDueDate    DateTime      @map("period_due_date") @db.Date
   recordedByUserId String        @map("recorded_by_user_id") @db.Uuid
-  /// Integer centavos. Must be greater than 0. MVP currency is MXN only.
+  /// Integer centavos in the database. Must be greater than 0. MVP currency
+  /// is MXN only. The API wire value is a decimal string such as "1234.50"
+  /// plus that currency code, never a JSON float.
   amount           Int
   currency         String        @default("MXN") @db.VarChar(3)
+  /// The one-year back-date limit is checked in the property timezone, not UTC.
   paidAt           DateTime      @map("paid_at") @db.Timestamptz(6)
   method           String?
   reference        String?
@@ -314,8 +323,9 @@ model Payment {
 /// not_applicable must not reference a Payment. Pause is Obligation.isActive
 /// plus ObligationPauseInterval. Archive is Obligation.deletedAt.
 /// Those three mechanisms stay separate. Archive also pauses.
-/// overpaidAmount is excess centavos on this period only. It is not a credit
-/// and it does not reduce the next period.
+/// overpaidAmount is excess integer centavos on this period only. The API
+/// wire value is a decimal string such as "1234.50" plus currency MXN, never
+/// a JSON float. It is not a credit and it does not reduce the next period.
 model ObligationPeriodOutcome {
   id             String        @id @default(uuid()) @db.Uuid
   obligationId   String        @map("obligation_id") @db.Uuid
@@ -468,8 +478,14 @@ model NotificationDelivery {
   @@map("notification_deliveries")
 }
 
-/// Email invite. The raw token is returned once. tokenHash is hex SHA-256.
-/// expiresAt is sentAt plus 7 days. Single use.
+/// Email invite. Only an owner invites, by email, as member or viewer.
+/// The raw token is returned once. tokenHash is lowercase hex SHA-256.
+/// Tokens are single-use. expiresAt is sentAt plus 7 days. A resend
+/// restarts those 7 days. Accept checks, in order: an unknown token or
+/// the wrong account is 404 before any token state is revealed; a used,
+/// revoked, superseded, or expired token is 410; an invitee who is already
+/// a member is 409. A non-owner invite action is 403. Acceptance requires
+/// the invited email.
 model MembershipInvite {
   id              String         @id @default(uuid()) @db.Uuid
   propertyId      String         @map("property_id") @db.Uuid

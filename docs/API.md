@@ -8,7 +8,7 @@ The Nest stub maps **57** routes, counting each method and path Nest registers, 
 
 - Routes are under `/v1`. `GET /health` is the one route outside the prefix.
 - Property-scoped routes will require `Authorization: Bearer <access_jwt>`. Trust mints that token; this API only validates it.
-- JSON in, JSON out. Money amounts (`amount`, `expectedAmount`, `overpaidAmount`) are JSON integers in centavos. `1845000` means 18,450.00 MXN.
+- JSON in, JSON out. Money amounts (`amount`, `expectedAmount`, `overpaidAmount`) are decimal strings such as `"1234.50"` plus a currency code. They are never JSON numbers and never floats. The database stores the same amounts as integer centavos. `"18450.00"` with currency `MXN` is stored as `1845000` centavos.
 - Currency is `MXN` only. Any other currency returns 422.
 
 ## What the stub does
@@ -56,9 +56,17 @@ POST   /v1/invites/accept
          → 200 Membership
 ```
 
-Adding a person is an email invite, not an immediate membership. The raw `token` is returned once. The row stores `tokenHash` (lowercase hex SHA-256) and `expiresAt = sentAt + 7 days`. Accepting requires a signed-in user whose email matches the invite. Expired, revoked, and already-used tokens return 410. An email that already has an active membership returns 409. Role `owner` returns 422. See [EDGE_CASES.md](EDGE_CASES.md) section 8.
+Adding a person is an email invite, not an immediate membership. Only an owner can invite, by email, as `member` or `viewer`. The raw `token` is returned once. The row stores `tokenHash` (lowercase hex SHA-256) and does not store the raw token. Tokens are single-use. `expiresAt = sentAt + 7 days`, and a resend restarts those 7 days by revoking the previous token and issuing a new one. Acceptance requires the invited email.
 
-`timezone` on a property is an IANA name. Omitted, it is `America/Mexico_City`. A name that is not in the tz database returns 422. Overdue and Home ranking use each property's timezone for "today".
+Accept checks run in this order, and the first match is the response. An earlier check does not reveal token state:
+
+1. An unknown token, or acceptance from the wrong account, returns 404.
+2. A used, revoked, superseded-by-resend, or expired token returns 410.
+3. An invitee who is already a member returns 409.
+
+A non-owner invite action (create, resend, or revoke) returns 403. A caller with no membership, and an unknown property, returns 404. Role `owner`, a blank email, or a missing role returns 422. See [EDGE_CASES.md](EDGE_CASES.md) section 8.
+
+Every Property response includes `timezone`, an IANA string. The response type is `PropertyResponse` and the write body is `PropertyWriteDto` in `apps/api/src/properties/property.response.ts`. Omitted on create, `timezone` is `America/Mexico_City`. A name that is not in the tz database returns 422. The field is present on `POST` 201, `GET` one, `PATCH`, and each item of `GET /v1/properties`. Overdue and Home ranking use each property's timezone for "today". The one-year `paidAt` back-date limit is checked in that timezone, not in UTC.
 
 `GET /v1/home/action-items` sorts overdue first (oldest due date), then due today, then due within 7 days. "Today" is evaluated per property timezone. `missingEvidence: true` means a recorded, non-voided payment in the last 30 days has no evidence; the client renders that as "Sin comprobante". Paused and archived obligations are not listed as overdue.
 
@@ -72,7 +80,7 @@ POST   /v1/properties/:propertyId/obligations
                  nextDueDate?, expectedAmount?, reminderOffsets?, preferredMethod?,
                  notes?, isActive? }
          → 201 Obligation                   // reminderOffsets defaults to [7, 1]
-                                              // expectedAmount is integer centavos
+                                              // expectedAmount is a decimal string such as "1234.50"
 GET    /v1/properties/:propertyId/obligations/:obligationId    → 200 | 404
 PATCH  /v1/properties/:propertyId/obligations/:obligationId    → 200 Obligation
          Body: { isActive: false, ... }             // pause. isActive true is 422
@@ -118,7 +126,7 @@ There is no `DELETE` for a payment. A correction is the void route. It sets `voi
 
 This records a payment the person already made somewhere else. The API does not charge a card, debit an account, or hold a balance. `method` and `reference` are descriptive text — "SPEI", a folio — not instructions to a payment processor.
 
-`amount` is integer centavos and must be greater than 0. `paidAt` later than now plus 24 hours, or earlier than now minus one calendar year, returns 422. A non-voided payment with the same obligation, the same amount, and a property-timezone date within 3 days adds a `possible_duplicate` warning and still returns 201. Voided payments, different amounts, and idempotency replays do not run that check again.
+`amount` is a decimal string such as `"1234.50"` plus currency `MXN`. It is never a float. The database stores integer centavos, and the stored amount must be greater than 0. The wire type is `WireMoney` in `apps/api/src/payments/wire-money.ts`. `paidAt` later than now plus 24 hours returns 422. `paidAt` earlier than one calendar year before now returns 422, and that bound is the server instant with the year reduced by one in the property timezone, not in UTC. A non-voided payment with the same obligation, the same amount, and a property-timezone date within 3 days adds a `possible_duplicate` warning and still returns 201. Voided payments, different amounts, and idempotency replays do not run that check again. A viewer write, such as void, returns 403. A non-member, and an unknown payment, returns 404.
 
 Creating or voiding a payment recomputes the period from recorded, non-voided payments. A sum below the expected amount is `partial` and does not move `nextDueDate`. A sum that reaches the expected amount is `paid` and moves `nextDueDate` forward exactly one period. A larger sum stores the excess as `overpaidAmount` on that period and still moves forward only one period. A void can move `nextDueDate` back to the earliest candidate that is not settled. The rules are in [EDGE_CASES.md](EDGE_CASES.md) sections 1, 2, and 7.
 
@@ -297,7 +305,8 @@ Reminder channels: `email`, `push`, `in_app`. The unique key is (parent, `schedu
 | Missing, invalid, or expired JWT | 401 |
 | Non-UUID path id, path traversal, unknown `fieldPath`, or an `editedValue` that does not match its field | 400 |
 | Valid JWT, no active membership for `:propertyId`, or the property is unknown or soft-deleted | 404 |
-| OCR enqueue or confirm by a viewer | 403 |
+| Viewer write, such as void, OCR enqueue, or OCR confirm | 403 |
+| Unknown invite token, or accept from the wrong account | 404 |
 | OCR target that is not in the property | 404 |
 | OCR job past its TTL | 410 |
 | OCR job map is full of unexpired jobs | 429 |
@@ -308,7 +317,7 @@ Reminder channels: `email`, `push`, `in_app`. The unique key is (parent, `schedu
 | Same idempotency key, different body | 409 |
 | Replay with the same key and body | 200 |
 | Void of an already-voided payment, N/A conflict, archive read-only, or invite of an active member | 409 |
-| Expired, revoked, or used invite token | 410 |
+| Used, revoked, superseded-by-resend, or expired invite token | 410 |
 | Amount, currency, `paidAt`, `dueDay`, or `voidReason` rejected | 422 |
 
 ## Idempotency
@@ -320,14 +329,14 @@ Required on `POST .../payments`, `POST .../payments/:paymentId/void`, `POST .../
 | Action | owner | member | viewer |
 | :---- | :---- | :---- | :---- |
 | Read the property and its lists | yes | yes | yes |
-| Create or update an obligation, payment, task, or document | yes | yes | no |
+| Create or update an obligation, payment, task, or document | yes | yes | 403 |
 | Void a payment | yes | yes | 403 |
-| Pause, resume, archive, unarchive, or mark N/A | yes | yes | no |
-| Invite, resend, or revoke an invite | yes | no | no |
-| Upload evidence | yes | yes | no |
+| Pause, resume, archive, unarchive, or mark N/A | yes | yes | 403 |
+| Invite, resend, or revoke an invite | yes | 403 | 403 |
+| Upload evidence | yes | yes | 403 |
 | Trigger OCR, confirm suggestions | yes | yes | 403 |
 | Read OCR jobs and suggestions | yes | yes | yes |
-| Manage memberships | yes | no | no |
-| Soft-delete the property | yes | no | no |
+| Manage memberships | yes | 403 | 403 |
+| Soft-delete the property | yes | 403 | 403 |
 
 Product may cut `member`, leaving owner and viewer. If that happens, every write maps to owner.

@@ -11,6 +11,10 @@ import {
   scaffoldNotReady,
 } from '../common/scaffold.response.js';
 
+/**
+ * Property JSON uses PropertyResponse. timezone is an IANA string on every
+ * response and defaults to America/Mexico_City when the write body omits it.
+ */
 @Controller('properties')
 export class PropertiesController {
   @Get()

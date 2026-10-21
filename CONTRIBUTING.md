@@ -44,4 +44,4 @@ The API test suite covers health, the 501 payment placeholder, and the OCR rule 
 - Default reminder offsets stay `[7, 1]` when the client omits them.
 - `not_applicable`, pause (`isActive = false` plus a pause interval), and archive (`deletedAt`, which also pauses) stay three different operations.
 - Payments are voided with `POST .../payments/:id/void`. Do not add a payment DELETE or a `deletedAt` on Payment.
-- Amounts are integer centavos, MXN only. `overpaidAmount` is excess on one period, not a balance or a credit.
+- Amounts are integer centavos in the database. The API wire format is a decimal string such as `"1234.50"` plus currency MXN, never a float. `overpaidAmount` is excess on one period, not a balance or a credit.

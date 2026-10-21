@@ -129,11 +129,13 @@ The obligation changes at the confirm step and nowhere earlier. See [OCR.md](OCR
 
 - Routes live under `/v1`. `GET /health` is the one exception.
 - Soft delete sets `deletedAt`. A retention job hard-deletes after 30 days and removes the object.
-- A missing membership returns **404**, not 403, so the API does not leak which properties exist. A valid membership with the wrong role returns **403**.
+- A missing membership returns **404**, not 403, so the API does not leak which properties exist. A valid membership with the wrong role returns **403**. A viewer write, such as void, returns 403. A non-member and an unknown resource return 404.
 - `Idempotency-Key` scopes to `(property_id, idempotency_key)`.
 - Reminder rows are unique on (parent, `scheduled_for`, `channel`) via two partial indexes. Delivery idempotency is `(reminder_id, scheduled_for, user_id, channel)`.
 - Audit events are append-only. A payment void is an audit event. Payments are not soft-deleted.
-- Email invites are `MembershipInvite` rows. Trust still mints the session used to accept.
+- Money columns are integer centavos. The API wire format is a decimal string such as `"1234.50"` plus currency MXN, never a float.
+- Every Property response includes `timezone`, an IANA string defaulting to `America/Mexico_City`. The one-year `paidAt` back-date limit uses that timezone, not UTC.
+- Email invites are `MembershipInvite` rows. Only an owner invites, by email, as member or viewer. Accept checks an unknown token or the wrong account as 404 before revealing token state. Trust still mints the session used to accept.
 
 ## Why this shape
 

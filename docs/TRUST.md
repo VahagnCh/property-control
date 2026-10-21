@@ -30,7 +30,7 @@ Resolution order:
 
 1. Verify the access JWT against Trust's JWKS. Failure is **401**.
 2. Resolve the local `User` by `trust_sub = jwt.sub`. Upsert on first sight is fine.
-3. If the route is not property-scoped (`GET /v1/me`, `POST /v1/properties`, `POST /v1/invites/accept`), stop here. Accept then checks that the signed-in email matches the invite.
+3. If the route is not property-scoped (`GET /v1/me`, `POST /v1/properties`, `POST /v1/invites/accept`), stop here. Accept then checks the token in the order in [EDGE_CASES.md](EDGE_CASES.md) section 8. An unknown token, or acceptance from the wrong account, is 404 and runs before any used, revoked, superseded, or expired state is revealed.
 4. Otherwise load the membership where `property_id = :propertyId AND user_id = :userId AND status = 'active' AND deleted_at IS NULL`, and the property is not soft-deleted.
 5. No membership, or a missing or soft-deleted property, is **404** — not 403. The API does not reveal which properties exist.
 6. A membership whose role is not in `requiredRoles` is **403**. A viewer who voids a payment receives **403**. A caller with no membership receives **404**, including when the payment id is unknown.
@@ -153,7 +153,7 @@ Quiet hours are 21:00–08:00 in the recipient device timezone: a device-local t
 
 ## Invites
 
-Owners invite by email with role `member` or `viewer`. The API stores a single-use token hash that expires 7 days after `sentAt`. Accepting requires a signed-in user with that email. This API owns the invite row and the accept route. Trust still mints the session the invitee uses to sign in. The behavior is [EDGE_CASES.md](EDGE_CASES.md) section 8.
+Only an owner invites, by email, as `member` or `viewer`. The API stores a single-use token hash that expires 7 days after `sentAt`. A resend restarts those 7 days. Accepting requires the invited email. An unknown token or the wrong account is 404 first; a used, revoked, superseded, or expired token is 410; an invitee who is already a member is 409; a non-owner invite action is 403. This API owns the invite row and the accept route. Trust still mints the session the invitee uses to sign in. The behavior is [EDGE_CASES.md](EDGE_CASES.md) section 8.
 
 ## Open questions
 

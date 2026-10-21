@@ -13,6 +13,10 @@ import {
 /**
  * Payment routes record a payment the member already made.
  * A correction is POST :paymentId/void. There is no DELETE.
+ * amount on the wire is WireMoney: a decimal string such as "1234.50"
+ * plus currency MXN, never a float. The database stores integer centavos.
+ * The one-year paidAt back-date limit uses the property timezone, not UTC.
+ * A viewer write, such as void, is 403. A non-member or unknown payment is 404.
  * Evidence is optional and is a different resource.
  */
 @Controller('properties/:propertyId/payments')
