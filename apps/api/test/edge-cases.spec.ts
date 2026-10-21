@@ -124,4 +124,55 @@ describe("DueRecord edge-case rules", () => {
   it.todo("EC-9.1 When a saved field already has a persisted value, replace writes an audit with the server-side previous value, the new value, action replace, the suggestionId, and the actor. accept or edit returns 409 with error field_already_set and does not mark the suggestion accepted. reject leaves the value unchanged.");
 
   it.todo("EC-9.2 Before a record is saved, a replace audit stores only the suggestionId, the field, decision replaced, and the suggested value. It does not store a client-typed previous value. On save, the payment create audit records source ocr_replace and the suggestionId. A request that contains clientPriorValue returns 422. A bulk accept-all returns 422.");
+
+  it.todo("EC-10.1 The consent screen appears only on first sign-in, after the code is verified and before Inicio, and it appears again whenever the aviso version changes. The checkbox starts unchecked, and Continuar stays disabled until it is checked.");
+
+  it.todo("EC-10.2 Ahora no shows Sin tu consentimiento no podemos guardar pagos ni comprobantes. It then signs the user out and saves nothing.");
+
+  it.todo("EC-10.3 POST /v1/me/consent takes avisoVersion. appVersion comes from the client header or body. The current version returns 201 and appends one record of the user, the aviso version, the server acceptedAt, and the app version, in the same transaction as its audit entry. Posting that same version again returns 200 with the existing record and no new record. It does not change acceptedAt or appVersion, and it writes no second audit entry. Posting a version that is not current, including an older published version, returns 422 with error aviso_version_mismatch. Records are never overwritten.");
+
+  it.todo("EC-10.4 A property, obligation, payment, or evidence write made before the current consent returns 403 with error consent_required only after the earlier gates. A route that is still a stub returns 501 before the token is read. A missing, invalid, or expired token returns 401. A bad request returns 400 and a payload that is too large returns 413, and both beat membership and consent. A non-member, or an unknown resource, returns 404, including when that caller also lacks consent. A viewer write returns 403 with error viewer, not consent_required. The consent check is next. POST /v1/properties has no membership check, so after the token check and the 400 or 413 checks a user who has not consented receives 403 consent_required and cannot create a property.");
+
+  it.todo("EC-10.5 Reads do not require consent, and they skip the viewer check. GET /v1/me is one of those reads. With a valid token and no current consent it returns the profile, including consent.required, avisoVersion, and avisoUrl, and it does not return consent_required. consent.required is true when the caller has no row for the configured AVISO_VERSION. A non-member read of a property resource is still 404.");
+
+  it.todo("EC-10.6 A new aviso version sets consent.required back to true. Writes then return 403 consent_required again until the user accepts that version. The earlier consent row stays and is not overwritten.");
+
+  it.todo("EC-10.7 In the app, a 403 consent_required goes straight back to the consent screen and shows no toast.");
+
+  it.todo("EC-10.8 On a new account, Continuar stays blocked until the box is checked. After the user signs out and signs back in, the consent screen does not appear again while that aviso version is unchanged.");
+
+  it.todo("EC-10.9 Retirar consentimiento, which leads into account deletion, is in the MVP backlog. It must land before public launch and it is not in the Nov 5 build.");
+
+  it.todo("EC-11.1 GET /v1/health runs a database query, so one call wakes both the API and the database. Success returns 200 and a JSON object whose only field is status set to ok. A failed query returns 503 and a JSON object whose only field is status set to unavailable. Those two bodies include no version, no host, and no error detail. The route is rate-limited, and a request past the limit returns 429 with a Retry-After header instead of either of those bodies. Responses are never cached and send Cache-Control no-store.");
+
+  it.todo("EC-11.2 The app calls GET /v1/health at launch, when it returns to the foreground, and before any write when more than 10 minutes have passed since the last API response. The client timeout is 90 seconds. The UI shows Conectando… at 3 seconds, the slow line at 8 seconds, and common.connecting.failed with Reintentar at 90 seconds.");
+
+  it.todo("EC-11.3 Enviar código and Guardar stay in the Conectando state until the health check passes. A write is never sent while the API is still in a cold start.");
+
+  it.todo("EC-11.4 On the free test build, a first open that reaches a healthy response in about a minute or less passes acceptance. Reaching the 90 second failure fails acceptance.");
+
+  it.todo("EC-11.5 POST /v1/auth/code never retries on its own and it honors Idempotency-Key. Reintentar sends the same key. The same key for the same email within 10 minutes returns the original 202, creates no new code, sends no second email, and does not consume another rate-limit hit. A new key returns a fresh code, invalidates the earlier code, and counts toward the rate limit. The key is stored against an HMAC of the email and the plain email is not stored. The same key with a different email is a new request: it returns 202, and the response reveals nothing about whether the key was already used or whether either account exists. A 429 response includes Retry-After. The success response is 202 whether or not the account exists.");
+
+  it.todo("EC-11.6 The line auth.code.latest (Si pediste más de un código, usa el del correo más reciente.) is shown under auth.code.body only after Enviar otro código, which is auth.code.resend. It is not shown on the first visit and it is not shown after Reintentar. An older code is rejected with auth.code.wrong.");
+
+  it.todo("EC-11.7 A safe read retries once on its own. Any other write retries only when the user taps Reintentar, and that retry reuses the same Idempotency-Key.");
+
+  it.todo("EC-12.1 Reemplazar saves the field's current value as the undo, keyed by suggestion id and field. It saves that value again only when the field does not already hold the OCR value, so tapping Reemplazar two or three times keeps the value from before the first tap.");
+
+  it.todo("EC-12.2 Mantener restores the saved undo value, or the saved value when the field was already saved, sends reject, and then clears the undo.");
+
+  it.todo("EC-12.3 Typing 5.00, then Reemplazar, then Mantener, then typing 6.00, then Reemplazar, then Mantener ends on 6.00. Typing a new value between two Reemplazar taps saves that newly typed value as the undo.");
+
+  it.todo("EC-12.4 Reemplazar, then editing the same field, then Mantener restores the value from before the Reemplazar tap and sends reject.");
+
+  it.todo("EC-12.5 Copying the form or editing another field does not change the undo value.");
+
+  it.todo("EC-12.6 On the record-payment screen the undo survives a remount because it is stored with the decisions for that suggestion id and field, and a remount test covers that restore. The stored undo is not sent on the request.");
+
+  it.todo("EC-12.7 Request bodies never carry typed text, previousValue, or clientPriorValue.");
+
+  it.todo("EC-13.1 The server fails at boot when the configured AVISO_VERSION has no published row, and it does not start listening. At runtime a missing current aviso returns 503 with error aviso_unavailable and logs an alert. That missing-aviso response is never 422.");
+
+  it.todo("EC-13.2 On the phone, when the aviso cannot be loaded, the consent screen shows consent.unavailable (No pudimos cargar el Aviso de privacidad. Inténtalo de nuevo en unos minutos.) in place of the checkbox and Continuar, with Reintentar and Ahora no. Ahora no signs the user out. The screen does not loop and it does not uncheck the box over and over.");
+
 });
