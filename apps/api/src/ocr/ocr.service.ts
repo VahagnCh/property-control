@@ -279,12 +279,7 @@ export class OcrService {
         decision.action === 'edit' || (decision.action === 'replace' && decision.editedValue !== undefined)
           ? decision.editedValue
           : suggestion.suggestedValue;
-      const value = canonicalizeFieldValue(
-        suggestion.fieldPath,
-        suggestion.targetEntityType,
-        rawValue,
-        context,
-      );
+      const value = this.canonicalize(suggestion, rawValue, context);
       const saved = this.readSaved(record.job.propertyId, suggestion, entityId);
       if (saved.present && decision.action !== 'replace') {
         steps.push({ suggestion, decision, entityId, value, kept: true });
@@ -334,8 +329,39 @@ export class OcrService {
     return { present: true, value };
   }
 
+  private canonicalize(
+    suggestion: OcrSuggestion,
+    rawValue: unknown,
+    context: { now: Date; timeZone: string },
+  ): unknown {
+    try {
+      return canonicalizeFieldValue(
+        suggestion.fieldPath,
+        suggestion.targetEntityType,
+        rawValue,
+        context,
+      );
+    } catch (error) {
+      if (error instanceof UnprocessableEntityException) {
+        throw namedSuggestion(error, suggestion);
+      }
+      throw error;
+    }
+  }
+
   private resolveTarget(record: JobRecord, suggestion: OcrSuggestion, decision: OcrDecision): string {
-    const entityId = decision.targetEntityId ?? suggestion.targetEntityId;
+    const requested = decision.targetEntityId;
+    const bound = suggestion.targetEntityId;
+    if (bound && requested !== undefined && requested !== bound) {
+      if (!isUuid(requested)) {
+        throw new BadRequestException('targetEntityId must be a UUID.');
+      }
+      if (!this.targetBelongs(record, suggestion, requested)) {
+        throw new NotFoundException('Not found.');
+      }
+      throw new UnprocessableEntityException('A bound target cannot be changed.');
+    }
+    const entityId = requested ?? bound;
     if (!entityId) {
       throw new UnprocessableEntityException(
         'A suggestion needs targetEntityId before it can be accepted.',
@@ -344,29 +370,24 @@ export class OcrService {
     if (!isUuid(entityId)) {
       throw new BadRequestException('targetEntityId must be a UUID.');
     }
-    if (suggestion.targetEntityType === 'document_meta') {
-      if (entityId !== record.job.documentId) {
-        const sameProperty = this.lookup.belongsToProperty({
-          propertyId: record.job.propertyId,
-          entityType: 'document_meta',
-          entityId,
-        });
-        if (!sameProperty) {
-          throw new NotFoundException('Not found.');
-        }
-        throw new UnprocessableEntityException('document_meta cannot be retargeted.');
-      }
-      return entityId;
+    if (!this.targetBelongs(record, suggestion, entityId)) {
+      throw new NotFoundException('Not found.');
     }
-    const belongs = this.lookup.belongsToProperty({
+    if (
+      suggestion.targetEntityType === 'payment' &&
+      this.lookup.paymentStatus?.({ propertyId: record.job.propertyId, entityId }) === 'voided'
+    ) {
+      throw new UnprocessableEntityException('A voided payment cannot be a confirm target.');
+    }
+    return entityId;
+  }
+
+  private targetBelongs(record: JobRecord, suggestion: OcrSuggestion, entityId: string): boolean {
+    return this.lookup.belongsToProperty({
       propertyId: record.job.propertyId,
       entityType: suggestion.targetEntityType,
       entityId,
     });
-    if (!belongs) {
-      throw new NotFoundException('Not found.');
-    }
-    return entityId;
   }
 
   /**
@@ -515,6 +536,19 @@ export class OcrService {
     });
     return run;
   }
+}
+
+function namedSuggestion(error: UnprocessableEntityException, suggestion: OcrSuggestion): UnprocessableEntityException {
+  const response = error.getResponse();
+  const body =
+    typeof response === 'string'
+      ? { statusCode: error.getStatus(), message: response }
+      : { ...(response as Record<string, unknown>) };
+  return new UnprocessableEntityException({
+    ...body,
+    suggestionId: suggestion.id,
+    field: suggestion.fieldPath,
+  });
 }
 
 function assertUuidPair(left: string, right: string): void {

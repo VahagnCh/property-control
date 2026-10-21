@@ -305,6 +305,236 @@ describe('OcrService', () => {
     ).toBe(true);
   });
 
+  it('names the suggestion and field when editedValue is invalid', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    const amount = suggestions.find((row) => row.fieldPath === 'expectedAmount');
+    expect(amount).toBeDefined();
+    const body = suggestions.map((row) =>
+      row.id === amount?.id
+        ? { suggestionId: row.id, action: 'edit' as const, editedValue: '0.00', targetEntityId: OBLIGATION }
+        : { suggestionId: row.id, action: 'reject' as const },
+    );
+    await expect(service.confirm(PROPERTY, job.id, body)).rejects.toBeInstanceOf(UnprocessableEntityException);
+    try {
+      await service.confirm(PROPERTY, job.id, body);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(UnprocessableEntityException);
+      expect((error as UnprocessableEntityException).getStatus()).toBe(422);
+      expect((error as UnprocessableEntityException).getResponse()).toMatchObject({
+        message: 'editedValue does not match fieldPath.',
+        suggestionId: amount?.id,
+        field: 'expectedAmount',
+      });
+    }
+    expect(
+      suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
+    ).toBe(true);
+  });
+
+  it('names the suggestion when an accepted suggested value is invalid', async () => {
+    const service = serviceWith({
+      extractor: {
+        extract: () => ({
+          outcome: 'suggested',
+          suggestions: [
+            {
+              targetEntityType: 'obligation',
+              fieldPath: 'expectedAmount',
+              suggestedValue: '1,234',
+              confidence: 0.95,
+            },
+          ],
+        }),
+      },
+    });
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const [amount] = suggestionMap(service, PROPERTY, job.id);
+    expect(amount).toBeDefined();
+    try {
+      await service.confirm(PROPERTY, job.id, [
+        { suggestionId: amount?.id ?? '', action: 'accept', targetEntityId: OBLIGATION },
+      ]);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(UnprocessableEntityException);
+      expect((error as UnprocessableEntityException).getResponse()).toMatchObject({
+        suggestionId: amount?.id,
+        field: 'expectedAmount',
+      });
+    }
+  });
+
+  it('rejects a retarget of a bound suggestion', async () => {
+    const service = serviceWith({
+      lookup: {
+        belongsToProperty({ entityType, entityId }) {
+          if (entityType === 'obligation') {
+            return entityId === OBLIGATION || entityId === OTHER_OBLIGATION;
+          }
+          if (entityType === 'document_meta') {
+            return entityId === DOCUMENT;
+          }
+          return false;
+        },
+      },
+      extractor: {
+        extract: () => ({
+          outcome: 'suggested',
+          suggestions: [
+            {
+              targetEntityType: 'obligation',
+              targetEntityId: OBLIGATION,
+              fieldPath: 'providerName',
+              suggestedValue: 'BBVA Hipoteca',
+              confidence: 0.95,
+            },
+          ],
+        }),
+      },
+    });
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const [row] = suggestionMap(service, PROPERTY, job.id);
+    expect(row?.targetEntityId).toBe(OBLIGATION);
+    await expect(
+      service.confirm(PROPERTY, job.id, [
+        { suggestionId: row?.id ?? '', action: 'accept', targetEntityId: OTHER_OBLIGATION },
+      ]),
+    ).rejects.toMatchObject({
+      response: { message: 'A bound target cannot be changed.', statusCode: 422 },
+    });
+    await expect(
+      service.confirm(PROPERTY, job.id, [
+        { suggestionId: row?.id ?? '', action: 'accept', targetEntityId: FORGED },
+      ]),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    const kept = await service.confirm(PROPERTY, job.id, [
+      { suggestionId: row?.id ?? '', action: 'accept', targetEntityId: OBLIGATION },
+    ]);
+    expect(kept.applied).toEqual([
+      {
+        suggestionId: row?.id,
+        entityType: 'obligation',
+        entityId: OBLIGATION,
+        fieldPath: 'providerName',
+      },
+    ]);
+    expect(kept.persisted).toBe(false);
+  });
+
+  it('requires a UUID target on an unbound accept or edit', async () => {
+    const service = serviceWith({
+      extractor: {
+        extract: () => ({
+          outcome: 'suggested',
+          suggestions: [
+            {
+              targetEntityType: 'obligation',
+              fieldPath: 'providerName',
+              suggestedValue: 'BBVA Hipoteca',
+              confidence: 0.95,
+            },
+          ],
+        }),
+      },
+    });
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const [row] = suggestionMap(service, PROPERTY, job.id);
+    const id = row?.id ?? '';
+    await expect(
+      service.confirm(PROPERTY, job.id, [{ suggestionId: id, action: 'accept' }]),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(
+      service.confirm(PROPERTY, job.id, [
+        { suggestionId: id, action: 'edit', editedValue: 'Otro banco' },
+      ]),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(
+      service.confirm(PROPERTY, job.id, [
+        { suggestionId: id, action: 'accept', targetEntityId: 'obligation-9' },
+      ]),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.confirm(PROPERTY, job.id, [
+        { suggestionId: id, action: 'edit', editedValue: 'Otro banco', targetEntityId: 'obligation-9' },
+      ]),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(suggestionMap(service, PROPERTY, job.id)[0]?.applyStatus).toBe('pending');
+  });
+
+  it('returns 404 for a soft-deleted target and 422 for a voided payment', async () => {
+    const softDeleted = '33333333-3333-4333-8333-666666666666';
+    const voided = '44444444-4444-4444-8444-555555555555';
+    const knownPayments = new Set<string>([PAYMENT]);
+    const service = serviceWith({
+      lookup: {
+        belongsToProperty({ entityType, entityId }) {
+          if (entityType === 'obligation') {
+            return entityId === OBLIGATION;
+          }
+          if (entityType === 'payment') {
+            return entityId === PAYMENT || entityId === voided;
+          }
+          if (entityType === 'document_meta') {
+            return entityId === DOCUMENT;
+          }
+          return false;
+        },
+        paymentStatus({ entityId }) {
+          return entityId === voided ? 'voided' : 'recorded';
+        },
+      },
+      extractor: {
+        extract: () => ({
+          outcome: 'suggested',
+          suggestions: [
+            {
+              targetEntityType: 'obligation',
+              fieldPath: 'providerName',
+              suggestedValue: 'BBVA Hipoteca',
+              confidence: 0.95,
+            },
+            {
+              targetEntityType: 'payment',
+              fieldPath: 'expectedAmount',
+              suggestedValue: '100.00',
+              confidence: 0.95,
+            },
+          ],
+        }),
+      },
+    });
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    const provider = suggestions.find((row) => row.fieldPath === 'providerName');
+    const amount = suggestions.find((row) => row.targetEntityType === 'payment');
+    const decisionsFor = (providerTarget: string, paymentTarget: string) => [
+      { suggestionId: provider?.id ?? '', action: 'accept' as const, targetEntityId: providerTarget },
+      { suggestionId: amount?.id ?? '', action: 'accept' as const, targetEntityId: paymentTarget },
+    ];
+
+    await expect(
+      service.confirm(PROPERTY, job.id, decisionsFor(softDeleted, PAYMENT)),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(
+      service.confirm(PROPERTY, job.id, decisionsFor(OBLIGATION, voided)),
+    ).rejects.toMatchObject({
+      response: { message: 'A voided payment cannot be a confirm target.', statusCode: 422 },
+    });
+    expect(knownPayments).toEqual(new Set([PAYMENT]));
+    expect(
+      suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
+    ).toBe(true);
+
+    const result = await service.confirm(PROPERTY, job.id, decisionsFor(OBLIGATION, PAYMENT));
+    expect(result.persisted).toBe(false);
+    expect(result.applied.map((row) => row.entityId).sort()).toEqual([OBLIGATION, PAYMENT].sort());
+    expect(knownPayments).toEqual(new Set([PAYMENT]));
+    expect(Object.getOwnPropertyNames(OcrService.prototype)).not.toContain('createPayment');
+  });
+
   it('rejects document_meta retargets in the same property and hides foreign documents', async () => {
     const service = serviceWith({ lookup: lookup([DOCUMENT, DOCUMENT_2]) });
     const { job } = service.enqueue(PROPERTY, DOCUMENT);
@@ -762,8 +992,11 @@ describe('OcrService', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(UnprocessableEntityException);
       expect((error as UnprocessableEntityException).getStatus()).toBe(422);
+      const due = suggestions.find((row) => row.fieldPath === 'nextDueDate');
       expect((error as UnprocessableEntityException).getResponse()).toMatchObject({
         error: NEXT_DUE_DATE_ERROR,
+        suggestionId: due?.id,
+        field: 'nextDueDate',
       });
     }
   });

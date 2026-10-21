@@ -227,7 +227,7 @@ When the flag is on, the gates run in this order:
 1. A missing, invalid, or expired access token is **401**, before path checks and before the JSON body is read. A non-UUID path or an oversized body with no token is still **401**. The default verifier rejects every token. This API never mints one.
 2. Path ids that are not UUIDs, and traversal in the path, are **400**. Malformed JSON is **400**. A body over 32kb is **413**.
 3. An unknown property, an unknown document, a missing membership, or another account is **404**. A viewer may read a job and receives **403** on enqueue and confirm.
-4. `targetEntityId` must be a UUID for the suggestion's entity type in the same property. A forged or foreign target is **404**. Retargeting `document_meta` off the job's own document, when that other document is in the same property, is **422**. `editedValue` is checked against `fieldPath`. Amounts are canonical peso strings (`19000.00` or `1234`), dates are ISO `YYYY-MM-DD`, and text is NFC. A bad `editedValue` is **422**. An unknown `fieldPath` or a prototype key is **400**. Text rejects C0 and C1 controls, bidi overrides, and zero-width characters instead of stripping them. A title longer than 300 characters is **422**. The JSON body limit is 32 KB.
+4. `targetEntityId` must be a UUID for the suggestion's entity type in the same property. An unbound accept, replace, or edit with no target is **422**. A non-UUID target is **400**. A missing, wrong-type, foreign, forged, or soft-deleted target is **404**. A voided payment target is **422**. Confirm does not create an entity. An already-bound target is immutable: retargeting it is **422** when the new id is in the same property, and **404** when that id is foreign or forged. `editedValue`, and an accepted suggested value, are checked against `fieldPath`. Amounts are canonical peso strings (`19000.00` or `1234`), dates are ISO `YYYY-MM-DD`, and text is NFC. A bad value is **422**, and that body includes `suggestionId` and `field`. An unknown `fieldPath` or a prototype key is **400**. Text rejects C0 and C1 controls, bidi overrides, and zero-width characters instead of stripping them. A title longer than 300 characters is **422**. The JSON body limit is 32 KB.
 
 `OCR_JOBS_MAX` (default 50) is the cap for one property. `OCR_JOBS_GLOBAL_MAX` (default 1000) is the ceiling across properties. Either limit returns **429** and does not evict an unexpired suggested job. A suggested job with no suggestions does not take a slot.
 
@@ -311,7 +311,7 @@ Reminder channels: `email`, `push`, `in_app`. The unique key is (parent, `schedu
 | :---- | :---- |
 | Missing, invalid, or expired JWT | 401 |
 | Non-UUID path id, path traversal, or unknown `fieldPath` | 400 |
-| Bad `editedValue`, same-property retarget, `clientPriorValue`, or bulk accept-all | 422 |
+| Bad `editedValue` (body includes `suggestionId` and `field`), same-property retarget of a bound target, voided payment target, `clientPriorValue`, or bulk accept-all | 422 |
 | Valid JWT, no active membership for `:propertyId`, or the property is unknown or soft-deleted | 404 |
 | Viewer write, such as void, OCR enqueue, or OCR confirm | 403 |
 | Unknown invite token, or accept from the wrong account | 404 |
