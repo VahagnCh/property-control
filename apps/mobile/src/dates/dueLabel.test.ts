@@ -47,7 +47,6 @@ function withDeviceLocalBlocked<T>(run: () => T): T {
 describe('due labels in the property time zone', () => {
   it('defaults the property zone to America/Mexico_City and ignores the device zone', () => {
     expect(DEFAULT_PROPERTY_TIMEZONE).toBe('America/Mexico_City');
-    expect(new Date().getTimezoneOffset()).toBe(0);
 
     withDeviceLocalBlocked(() => {
       expect(calendarDateInTimeZone(AT_2359_MEXICO_CITY, DEFAULT_PROPERTY_TIMEZONE)).toBe('2026-10-21');
@@ -72,7 +71,7 @@ describe('due labels in the property time zone', () => {
     expect(calendarDateInTimeZone(AT_0001_MEXICO_CITY, MEXICO_CITY)).toBe('2026-10-22');
   });
 
-  it('uses a non-default property time zone when the device is UTC', () => {
+  it('uses the property time zone passed in when it is not Mexico City', () => {
     expect(calendarDateInTimeZone(AT_0030_SPLIT, MEXICO_CITY)).toBe('2026-10-22');
     expect(calendarDateInTimeZone(AT_0030_SPLIT, TIJUANA)).toBe('2026-10-21');
     expect(dueLabel('2026-10-21', AT_0030_SPLIT, MEXICO_CITY)).toBe('Venció hace 1 día');

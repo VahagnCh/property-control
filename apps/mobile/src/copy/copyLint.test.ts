@@ -82,7 +82,7 @@ describe('copy lint', () => {
 
     expect(app.expo.name).toBe('DueRecord');
     expect(app.expo.slug).toBe('property-control');
-    expect(app.expo.scheme).toBe('property-control');
+    expect(app.expo.scheme).toBe('duerecord');
     expect(app.expo.ios?.bundleIdentifier).toBeUndefined();
     expect(app.expo.android?.package).toBeUndefined();
 

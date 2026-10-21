@@ -1,6 +1,6 @@
 # @property-control/mobile
 
-Expo React Native + TypeScript client for DueRecord. This is the navigation shell: the five locked tabs with placeholder Spanish copy. There is no data fetching, no auth, and no real screen yet. The Expo display name is DueRecord. The package name stays `@property-control/mobile`, and the slug and scheme stay `property-control`.
+Expo React Native + TypeScript client for DueRecord. This is the navigation shell: the five locked tabs with placeholder Spanish copy. There is no data fetching, no auth storage, and no real screen yet. The Expo display name is DueRecord. The package name stays `@property-control/mobile`, and the slug stays `property-control`. The URL scheme is `duerecord`.
 
 ## Run
 
@@ -35,8 +35,10 @@ A first `expo start` downloads native dependencies, so it needs network. The wor
 Five tabs, Spanish labels, locked by Product: **Inicio · Propiedades · Pagos · Mantenimiento · Documentos**. Settings reach in from the profile avatar later, not a sixth tab.
 
 ```text
-App.tsx                           SafeAreaProvider → NavigationContainer → AppTabs
+App.tsx                           SafeAreaProvider → AppShell
 index.ts                          registerRootComponent
+src/navigation/AppShell.tsx       duerecord://notificaciones/<nid>, or Inicio
+src/navigation/linking.ts         NavigationContainer prefixes: duerecord://
 src/navigation/tabs.tsx           the five-tab bottom navigator
 src/screens/PlaceholderScreen.tsx shared placeholder
 src/components/ScreenState.tsx    empty, loading, and error

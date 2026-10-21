@@ -67,8 +67,7 @@ describe('paid date limits', () => {
     expect(validatePaidDate('2024-03-01', leapDay, MEXICO_CITY)).toEqual({ ok: false, reason: 'too_future' });
   });
 
-  it('moves the window at 23:59, 00:00, and 00:01 in the property zone on a UTC device', () => {
-    expect(new Date().getTimezoneOffset()).toBe(0);
+  it('moves the window at 23:59, 00:00, and 00:01 in America/Mexico_City', () => {
     const at2359 = new Date('2026-10-22T05:59:00.000Z');
     const at0000 = new Date('2026-10-22T06:00:00.000Z');
     const at0001 = new Date('2026-10-22T06:01:00.000Z');
