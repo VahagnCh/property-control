@@ -1,4 +1,10 @@
-import { OCR_REPLACE_BUTTON_LABEL, OCR_REPLACE_KEEP_LABEL, OCR_REPLACE_TOAST, ocrReplacePrompt } from '../copy/userFacing';
+import {
+  OCR_REPLACE_BUTTON_LABEL,
+  OCR_REPLACE_KEEP_LABEL,
+  OCR_REPLACE_TOAST,
+  OCR_UNREVIEWED_DISCARD_COPY,
+  ocrReplacePrompt,
+} from '../copy/userFacing';
 
 export type OcrSuggestion = {
   suggestionId?: string;
@@ -11,16 +17,15 @@ export type OcrSuggestion = {
 };
 
 /**
- * Decision the client can send before Registrar, once Backend settles B17.
- * There is no API call in this module.
+ * Decision the client can send before Registrar. There is no API call here.
  *
- * AC-OCR-11. The audit covers saved state only. Before Registrar the client
- * sends this shape and nothing else:
+ * B17 is confirmed. The payload is only
  * { suggestionId, field, decision: 'replaced' | 'kept' | 'rejected', suggestedValue }.
- * It never includes the unsaved typed value. For a record that is already
- * saved, the server logs the persisted previous value itself, so the client
- * sends nothing extra. `previousValue` on the local replace result is for
- * undo in the UI only and must not be copied onto this payload.
+ * The audit covers saved state only. This payload never includes the unsaved
+ * typed value. The API returns 422 for any typed value. For a record that is
+ * already saved, the server logs the persisted previous value itself, so the
+ * client sends nothing extra. `previousValue` on the local replace result is
+ * for undo in the UI only and must not be copied onto this payload.
  */
 export type OcrClientDecision = {
   suggestionId: string;
@@ -197,6 +202,8 @@ export function replaceSuggestionRow(actual: string, suggested: string): OcrRepl
   };
 }
 
+const DECISION_KEYS = ['suggestionId', 'field', 'decision', 'suggestedValue'] as const;
+
 /** Drops every key that is not part of the before-Registrar decision. */
 export function ocrDecisionForServer(decision: OcrClientDecision): OcrClientDecision {
   return {
@@ -205,6 +212,81 @@ export function ocrDecisionForServer(decision: OcrClientDecision): OcrClientDeci
     decision: decision.decision,
     suggestedValue: decision.suggestedValue,
   };
+}
+
+export type OcrDecisionWire =
+  | { ok: true; payload: OcrClientDecision }
+  | { ok: false; status: 422; reason: 'typed_value' };
+
+/**
+ * B17. A body that carries a typed value is the 422 the API returns.
+ * The success payload is only the four confirmed fields.
+ */
+export function prepareOcrDecision(
+  decision: OcrClientDecision & Record<string, unknown>,
+  unsavedTypedValue: string,
+): OcrDecisionWire {
+  if (decisionCarriesTypedValue(decision, unsavedTypedValue)) {
+    return { ok: false, status: 422, reason: 'typed_value' };
+  }
+  return { ok: true, payload: ocrDecisionForServer(decision) };
+}
+
+/** B17 decision route. A 422 means the body included a typed value. */
+export function mapOcrDecisionRouteStatus(status: number): { status: 422; reason: 'typed_value' } | null {
+  if (status !== 422) {
+    return null;
+  }
+  return { status: 422, reason: 'typed_value' };
+}
+
+export type DiscardUnreviewedResult<T extends Record<string, string>> = {
+  form: T;
+  discarded: OcrSuggestion[];
+  notice: string | null;
+};
+
+/**
+ * On Registrar, a suggestion with no per-field decision is discarded.
+ * Discarding never writes the form, including when the suggestion is confirmed.
+ */
+export function discardUnreviewedSuggestions<T extends Record<string, string>>(
+  form: T,
+  suggestions: readonly OcrSuggestion[],
+  decisions: readonly OcrClientDecision[],
+): DiscardUnreviewedResult<T> {
+  const reviewed = new Set(decisions.map((decision) => decision.suggestionId));
+  const discarded = suggestions.filter(
+    (suggestion) => suggestion.suggestionId == null || !reviewed.has(suggestion.suggestionId),
+  );
+  return {
+    form,
+    discarded,
+    notice: discarded.length > 0 ? OCR_UNREVIEWED_DISCARD_COPY : null,
+  };
+}
+
+function decisionCarriesTypedValue(
+  decision: OcrClientDecision & Record<string, unknown>,
+  unsavedTypedValue: string,
+): boolean {
+  for (const key of Object.keys(decision)) {
+    if (!DECISION_KEYS.includes(key as (typeof DECISION_KEYS)[number])) {
+      return true;
+    }
+  }
+  if (unsavedTypedValue === '') {
+    return false;
+  }
+  for (const key of DECISION_KEYS) {
+    if (key === 'suggestedValue') {
+      continue;
+    }
+    if (decision[key] === unsavedTypedValue) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function serializeOcrDecision(decision: OcrClientDecision): string {

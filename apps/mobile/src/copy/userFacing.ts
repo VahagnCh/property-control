@@ -64,6 +64,7 @@ export function copyText(key: CopyKey): string {
 export const OCR_REPLACE_KEEP_LABEL = 'Mantener lo que escribí';
 export const OCR_REPLACE_BUTTON_LABEL = 'Reemplazar';
 export const OCR_REPLACE_TOAST = 'Valor reemplazado. Puedes editarlo antes de registrar.';
+export const OCR_UNREVIEWED_DISCARD_COPY = 'Las sugerencias sin revisar se descartarán al registrar.';
 
 /** Shown when the field already has a typed value. Placeholders are the current and suggested text. */
 export function ocrReplacePrompt(actual: string, suggested: string): string {

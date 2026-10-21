@@ -2,8 +2,11 @@ import {
   applyOcrSuggestion,
   applyOcrSuggestions,
   confirmOcrSuggestion,
+  discardUnreviewedSuggestions,
   keepTypedField,
+  mapOcrDecisionRouteStatus,
   ocrDecisionForServer,
+  prepareOcrDecision,
   rejectOcrField,
   replaceField,
   replaceSuggestionRow,
@@ -11,7 +14,7 @@ import {
   suggestOcrField,
   type OcrClientDecision,
 } from './applyOcrSuggestion';
-import { OCR_REPLACE_TOAST } from '../copy/userFacing';
+import { OCR_REPLACE_TOAST, OCR_UNREVIEWED_DISCARD_COPY } from '../copy/userFacing';
 
 const emptyForm = { amount: '', paidDate: '', note: '' };
 const TYPED = 'UNSAVED-TYPED-9f3c';
@@ -262,5 +265,62 @@ describe('AC-OCR-11 replaceField', () => {
       ],
       toast: 'Valor reemplazado. Puedes editarlo antes de registrar.',
     });
+  });
+
+  it('discards unreviewed suggestions on save and never changes the form', () => {
+    const form = { amount: '', paidDate: '', note: 'nota' };
+    const unreviewed = [
+      confirmOcrSuggestion(suggestOcrField('amount', '1250.00', 0.99, { suggestionId: 'sug-open', band: 'alta' })),
+      suggestOcrField('paidDate', '2026-10-20', 1, { suggestionId: 'sug-quiet', band: 'media' }),
+    ];
+    const reviewed = keepTypedField(form, suggestion, 'amount').decision;
+    expect(reviewed).not.toBeNull();
+
+    const saved = discardUnreviewedSuggestions(form, [...unreviewed, suggestion], reviewed ? [reviewed] : []);
+    expect(saved.form).toBe(form);
+    expect(saved.form).toEqual({ amount: '', paidDate: '', note: 'nota' });
+    expect(saved.discarded.map((item) => item.suggestionId)).toEqual(['sug-open', 'sug-quiet']);
+    expect(saved.notice).toBe(OCR_UNREVIEWED_DISCARD_COPY);
+    expect(saved.notice).toBe('Las sugerencias sin revisar se descartarán al registrar.');
+
+    const allReviewed = discardUnreviewedSuggestions(form, [suggestion], reviewed ? [reviewed] : []);
+    expect(allReviewed.form).toBe(form);
+    expect(allReviewed.discarded).toEqual([]);
+    expect(allReviewed.notice).toBeNull();
+  });
+
+  it('B17 keeps the four-field payload and returns 422 for any typed value', () => {
+    const decision: OcrClientDecision = {
+      suggestionId: 'sug-9',
+      field: 'amount',
+      decision: 'replaced',
+      suggestedValue: '1250.00',
+    };
+    const prepared = prepareOcrDecision(decision, TYPED);
+    expect(prepared).toEqual({ ok: true, payload: decision });
+    if (prepared.ok) {
+      expect(Object.keys(prepared.payload)).toEqual(['suggestionId', 'field', 'decision', 'suggestedValue']);
+    }
+
+    for (const extra of [
+      { previousTypedValue: TYPED },
+      { typedValue: TYPED },
+      { previousValue: TYPED },
+      { persistedPreviousValue: TYPED },
+      { actual: TYPED },
+    ]) {
+      const refused = prepareOcrDecision({ ...decision, ...extra }, TYPED);
+      expect(refused).toEqual({ ok: false, status: 422, reason: 'typed_value' });
+      expect(JSON.stringify(refused)).not.toContain('1250.00');
+    }
+
+    expect(prepareOcrDecision({ ...decision, field: TYPED }, TYPED)).toEqual({
+      ok: false,
+      status: 422,
+      reason: 'typed_value',
+    });
+    expect(mapOcrDecisionRouteStatus(422)).toEqual({ status: 422, reason: 'typed_value' });
+    expect(mapOcrDecisionRouteStatus(200)).toBeNull();
+    expect(mapOcrDecisionRouteStatus(400)).toBeNull();
   });
 });

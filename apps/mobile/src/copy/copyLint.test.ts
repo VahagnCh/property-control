@@ -5,6 +5,7 @@ import {
   OCR_REPLACE_BUTTON_LABEL,
   OCR_REPLACE_KEEP_LABEL,
   OCR_REPLACE_TOAST,
+  OCR_UNREVIEWED_DISCARD_COPY,
   TAB_BODIES,
   TAB_LABELS,
   ocrReplacePrompt,
@@ -124,6 +125,7 @@ describe('copy lint', () => {
       OCR_REPLACE_KEEP_LABEL,
       OCR_REPLACE_BUTTON_LABEL,
       OCR_REPLACE_TOAST,
+      OCR_UNREVIEWED_DISCARD_COPY,
       ocrReplacePrompt('1,200.00', '1,250.00'),
     ];
     for (const value of requiredCopy) {
