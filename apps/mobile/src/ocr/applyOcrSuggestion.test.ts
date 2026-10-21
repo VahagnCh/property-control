@@ -561,10 +561,17 @@ describe('AC-OCR-11 replaceField', () => {
     );
 
     const once = tapReemplazar(typed, suggestion, 'amount');
-    const twice = tapReemplazar(once.form, suggestion, 'amount');
+    const twice = tapReemplazar(once.form, suggestion, 'amount', { previousValue: once.previousValue });
     expect(twice.form.amount).toBe('1250.00');
     expect(twice.previousValue).toBe('1.00');
     expect(typed.amount).toBe('1.00');
+
+    const copied = { ...once.form, note: 'folio' };
+    expect(tapReemplazar(copied, suggestion, 'amount').previousValue).toBe('1250.00');
+    const fromCopy = tapReemplazar(copied, suggestion, 'amount', { previousValue: once.previousValue });
+    expect(fromCopy.previousValue).toBe('1.00');
+    expect(fromCopy.form.amount).toBe('1250.00');
+    expect(fromCopy.form.note).toBe('folio');
 
     const kept = keepTypedField(twice.form, suggestion, 'amount', { previousValue: twice.previousValue });
     expect(kept.form.amount).toBe('1.00');
@@ -580,7 +587,7 @@ describe('AC-OCR-11 replaceField', () => {
     expect(keptBody).not.toContain('previousValue');
     expect(keptBody).not.toContain('clientPriorValue');
 
-    const thrice = tapReemplazar(twice.form, suggestion, 'amount');
+    const thrice = tapReemplazar(twice.form, suggestion, 'amount', { previousValue: once.previousValue });
     expect(thrice.previousValue).toBe('1.00');
     expect(thrice.form.amount).toBe('1250.00');
     const keptAfterThird = keepTypedField(thrice.form, suggestion, 'amount', {
@@ -588,7 +595,7 @@ describe('AC-OCR-11 replaceField', () => {
     });
     expect(keptAfterThird.form.amount).toBe('1.00');
 
-    const afterSecond = tapReemplazar(once.form, suggestion, 'amount');
+    const afterSecond = tapReemplazar(once.form, suggestion, 'amount', { previousValue: once.previousValue });
     const keptSecond = keepTypedField(afterSecond.form, suggestion, 'amount', {
       previousValue: afterSecond.previousValue,
     });
@@ -621,8 +628,12 @@ describe('AC-OCR-11 replaceField', () => {
       }),
     );
     const savedOnce = tapReemplazar(savedForm, savedSuggestion, 'amount');
-    const savedTwice = tapReemplazar(savedOnce.form, savedSuggestion, 'amount');
-    const savedThrice = tapReemplazar(savedTwice.form, savedSuggestion, 'amount');
+    const savedTwice = tapReemplazar(savedOnce.form, savedSuggestion, 'amount', {
+      previousValue: savedOnce.previousValue,
+    });
+    const savedThrice = tapReemplazar(savedTwice.form, savedSuggestion, 'amount', {
+      previousValue: savedOnce.previousValue,
+    });
     expect(savedTwice.previousValue).toBe('9.00');
     expect(savedThrice.previousValue).toBe('9.00');
     expect(savedThrice.form.amount).toBe('1250.00');

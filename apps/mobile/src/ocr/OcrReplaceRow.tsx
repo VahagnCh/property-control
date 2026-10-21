@@ -1,16 +1,26 @@
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import {
+  keepTypedField,
   replaceSuggestionRow,
   tapReemplazar,
   type OcrSuggestion,
+  type OcrUiDecision,
   type ReplaceFieldResult,
 } from './applyOcrSuggestion';
+
+export type OcrReviewForm = Record<string, string>;
+
+/** Undo map key. Suggestion id and field path, so two rows do not share one value. */
+export function ocrReplaceUndoKey(suggestionId: string, field: string): string {
+  return `${suggestionId}\0${field}`;
+}
 
 /**
  * AC-OCR-12. A suggestion row whose field already has a value offers only
  * "Mantener lo que escribí" (default, highlighted) and "Reemplazar".
- * Reemplazar is the tap that produces action `replace`. This does not call the API.
+ * The first Reemplazar undo lives in this row's state, keyed by suggestion id
+ * and field path, and is passed into `tapReemplazar`. This does not call the API.
  */
 export function OcrReplaceRow({
   actual,
@@ -23,17 +33,25 @@ export function OcrReplaceRow({
 }: {
   actual: string;
   suggested: string;
-  onKeep?: () => void;
-  onReplace?: (result?: ReplaceFieldResult<Record<string, string>>) => void;
-  form?: Record<string, string>;
+  onKeep?: (result?: { form: OcrReviewForm; decision: OcrUiDecision | null }) => void;
+  onReplace?: (result?: ReplaceFieldResult<OcrReviewForm>) => void;
+  form?: OcrReviewForm;
   suggestion?: OcrSuggestion;
   field?: string;
 }) {
   const [toast, setToast] = useState(false);
+  const [undo, setUndo] = useState<Record<string, string>>({});
   const row = replaceSuggestionRow(actual, suggested);
   if (!row) {
     return null;
   }
+  const suggestionId = suggestion?.suggestionId ?? '';
+  const undoKey = field ? ocrReplaceUndoKey(suggestionId, field) : '';
+  const storedUndo =
+    undoKey !== '' && suggestionId !== '' && Object.prototype.hasOwnProperty.call(undo, undoKey)
+      ? undo[undoKey]
+      : undefined;
+  const undoOptions = storedUndo !== undefined ? { previousValue: storedUndo } : undefined;
   const actions = row.actions.filter((action) => action.decision === 'kept' || action.decision === 'replaced');
   return (
     <View>
@@ -46,11 +64,24 @@ export function OcrReplaceRow({
           accessibilityState={{ selected: action.highlighted }}
           onPress={() => {
             if (action.decision === 'kept') {
+              if (form && suggestion && field) {
+                onKeep?.(keepTypedField(form, suggestion, field, undoOptions));
+                return;
+              }
               onKeep?.();
               return;
             }
             if (form && suggestion && field) {
-              const result = tapReemplazar(form, suggestion, field);
+              const result = tapReemplazar(form, suggestion, field, undoOptions);
+              if (result.decision && storedUndo === undefined && suggestionId !== '') {
+                const captured = result.previousValue;
+                setUndo((current) => {
+                  if (Object.prototype.hasOwnProperty.call(current, undoKey)) {
+                    return current;
+                  }
+                  return { ...current, [undoKey]: captured };
+                });
+              }
               onReplace?.(result);
               if (result.decision) {
                 setToast(true);

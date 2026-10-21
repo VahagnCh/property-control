@@ -115,7 +115,8 @@ type FieldOptions = {
   now?: Date;
   timeZone?: string;
   /**
-   * Local undo only. Mantener after Reemplazar writes this back.
+   * Local undo only. The screen stores the value from before the first
+   * Reemplazar tap and passes it back on a later tap, and into Mantener.
    * A saved field uses `savedValue` instead. Never sent on the confirm request.
    */
   previousValue?: string;
@@ -250,21 +251,13 @@ export function replaceField<T extends Record<string, string>>(
   };
 }
 
-type PendingReplace = {
-  suggestionId: string;
-  field: string;
-  previousValue: string;
-};
-
-/** Undo text for a form this tap just wrote. A repeated tap on that form keeps the first capture. */
-const pendingReplaceUndo = new WeakMap<object, PendingReplace>();
-
 /**
  * The Reemplazar tap. This is the only path that sets action `replace`.
  * It writes the suggested value and returns the previous value for a local undo.
- * A second tap, while the field already holds that suggestion, keeps the
- * previousValue from before the first tap. The wire does not include
- * `editedValue` or the unsaved typed text. A saved field can be replaced from this tap.
+ * Pure: a repeated tap keeps the first undo only when the caller passes that
+ * `previousValue` and the field already shows this suggestion. No module state.
+ * The wire does not include `editedValue` or the unsaved typed text.
+ * A saved field can be replaced from this tap.
  */
 export function tapReemplazar<T extends Record<string, string>>(
   form: T,
@@ -273,7 +266,7 @@ export function tapReemplazar<T extends Record<string, string>>(
   options?: FieldOptions,
 ): ReplaceFieldResult<T> {
   const current = isApplyableField(form, field) ? (form[field] ?? '') : '';
-  const previousValue = previousValueForReplace(form, suggestion, field, current);
+  const previousValue = previousValueForReplace(suggestion, field, current, options?.previousValue);
   const unchanged: ReplaceFieldResult<T> = { form, previousValue, decision: null, toast: null };
   if (!suggestion.confirmed || suggestion.field !== field || !isApplyableField(form, field) || isEmpty(suggestion.value)) {
     return unchanged;
@@ -282,14 +275,8 @@ export function tapReemplazar<T extends Record<string, string>>(
   if (!decision) {
     return unchanged;
   }
-  const nextForm = { ...form, [field]: suggestion.value };
-  pendingReplaceUndo.set(nextForm, {
-    suggestionId: decision.suggestionId,
-    field,
-    previousValue,
-  });
   return {
-    form: nextForm,
+    form: { ...form, [field]: suggestion.value },
     previousValue,
     decision,
     toast: OCR_REPLACE_TOAST,
@@ -297,19 +284,13 @@ export function tapReemplazar<T extends Record<string, string>>(
 }
 
 function previousValueForReplace(
-  form: object,
   suggestion: OcrSuggestion,
   field: string,
   current: string,
+  passed?: string,
 ): string {
-  const pending = pendingReplaceUndo.get(form);
-  if (
-    pending &&
-    pending.suggestionId === suggestion.suggestionId &&
-    pending.field === field &&
-    current === suggestion.value
-  ) {
-    return pending.previousValue;
+  if (suggestion.field === field && current === suggestion.value && typeof passed === 'string') {
+    return passed;
   }
   return current;
 }
