@@ -1,13 +1,15 @@
 # API
 
-The v0 HTTP contract, and what the scaffold in `apps/api` actually does today. Source: [Backend formal v0](https://docs.google.com/document/d/1iekHZp5lOq4qTzLhglFproL2JSeI7Uw1q4I817d40dE/edit).
+The v0 HTTP contract, and what the scaffold in `apps/api` actually does today. Source: [Backend formal v0](https://docs.google.com/document/d/1iekHZp5lOq4qTzLhglFproL2JSeI7Uw1q4I817d40dE/edit). Payment, period, reminder, timezone, and invite behavior for the public product, [DueRecord](EDGE_CASES.md), overrides this contract where they disagree.
+
+The Nest stub maps **57** routes, counting each method and path Nest registers, including `GET /health`.
 
 ## Base
 
 - Routes are under `/v1`. `GET /health` is the one route outside the prefix.
 - Property-scoped routes will require `Authorization: Bearer <access_jwt>`. Trust mints that token; this API only validates it.
-- JSON in, JSON out. Decimals cross the wire as strings (`"18450.00"`).
-- Default currency is `MXN`.
+- JSON in, JSON out. Money amounts (`amount`, `expectedAmount`, `overpaidAmount`) are JSON integers in centavos. `1845000` means 18,450.00 MXN.
+- Currency is `MXN` only. Any other currency returns 422.
 
 ## What the stub does
 
@@ -41,13 +43,24 @@ GET    /v1/home/action-items
          → 200 ActionItem[]                 // across memberships, capped at 50
 
 GET    /v1/properties/:propertyId/memberships          → 200 { items: Membership[] }
-POST   /v1/properties/:propertyId/memberships          → 201 Membership   // owner only
-         Body: { email | trustSub, role }
 PATCH  /v1/properties/:propertyId/memberships/:id      → 200 Membership
-DELETE /v1/properties/:propertyId/memberships/:id      → 204
+DELETE /v1/properties/:propertyId/memberships/:id      → 204   // revoke an active membership
+
+GET    /v1/properties/:propertyId/invites              → 200 { items: Invite[] }
+POST   /v1/properties/:propertyId/invites              → 201 { invite, token }   // owner only
+         Body: { email, role: "member" | "viewer" }
+POST   /v1/properties/:propertyId/invites/:inviteId/resend   → 200 { invite, token }
+DELETE /v1/properties/:propertyId/invites/:inviteId    → 204   // revoke the token
+POST   /v1/invites/accept
+         Body: { token }
+         → 200 Membership
 ```
 
-`GET /v1/home/action-items` sorts overdue first (oldest due date), then due today, then due within 7 days. `missingEvidence: true` means a recorded, non-voided payment in the last 30 days has no evidence; the client renders that as "Sin comprobante".
+Adding a person is an email invite, not an immediate membership. The raw `token` is returned once. The row stores `tokenHash` (lowercase hex SHA-256) and `expiresAt = sentAt + 7 days`. Accepting requires a signed-in user whose email matches the invite. Expired, revoked, and already-used tokens return 410. An email that already has an active membership returns 409. Role `owner` returns 422. See [EDGE_CASES.md](EDGE_CASES.md) section 8.
+
+`timezone` on a property is an IANA name. Omitted, it is `America/Mexico_City`. A name that is not in the tz database returns 422. Overdue and Home ranking use each property's timezone for "today".
+
+`GET /v1/home/action-items` sorts overdue first (oldest due date), then due today, then due within 7 days. "Today" is evaluated per property timezone. `missingEvidence: true` means a recorded, non-voided payment in the last 30 days has no evidence; the client renders that as "Sin comprobante". Paused and archived obligations are not listed as overdue.
 
 ## Obligations
 
@@ -55,41 +68,59 @@ DELETE /v1/properties/:propertyId/memberships/:id      → 204
 GET    /v1/properties/:propertyId/obligations?category=&isActive=
          → 200 { items: Obligation[] }
 POST   /v1/properties/:propertyId/obligations
-         Body: { category, title, providerName?, recurrence?, nextDueDate?,
-                 expectedAmount?, reminderOffsets?, preferredMethod?, notes?, isActive? }
+         Body: { category, title, providerName?, recurrence?, dueDay?, scheduleAnchor?,
+                 nextDueDate?, expectedAmount?, reminderOffsets?, preferredMethod?,
+                 notes?, isActive? }
          → 201 Obligation                   // reminderOffsets defaults to [7, 1]
+                                              // expectedAmount is integer centavos
 GET    /v1/properties/:propertyId/obligations/:obligationId    → 200 | 404
 PATCH  /v1/properties/:propertyId/obligations/:obligationId    → 200 Obligation
-DELETE /v1/properties/:propertyId/obligations/:obligationId    → 204   // archive
+         Body: { isActive: false, ... }             // pause. isActive true is 422
+DELETE /v1/properties/:propertyId/obligations/:obligationId    → 204   // archive, also pauses
+POST   /v1/properties/:propertyId/obligations/:obligationId/resume      → 200 Obligation
+POST   /v1/properties/:propertyId/obligations/:obligationId/unarchive   → 200 Obligation
 
 GET    /v1/properties/:propertyId/obligations/:obligationId/period-outcomes?from=&to=
          → 200 { items: PeriodOutcome[] }
 POST   /v1/properties/:propertyId/obligations/:obligationId/period-outcomes
          Body: { periodDueDate, outcome: "not_applicable" }
-         → 201 PeriodOutcome
+         → 201 PeriodOutcome | 409
 ```
 
-A client may only create a `not_applicable` outcome. `paid` and `partial` are reconciled from payments; a client never posts them. Creating `not_applicable` advances `nextDueDate` and leaves `isActive` true. Pausing is `PATCH { isActive: false }`. Archiving is `DELETE`. Those are three different calls.
+A client may only create a `not_applicable` outcome. `paid` and `partial` are reconciled from payments; a client never posts them. Creating `not_applicable` advances `nextDueDate` one period and leaves `isActive` true. It returns 409 when the period has a non-voided payment, or when the outcome is already `paid` or `not_applicable`.
+
+Pausing is `PATCH { isActive: false }`. It does not set `deletedAt` and it does not write `not_applicable`. Resume is `POST .../resume`: `nextDueDate` becomes the first scheduled due date on or after today in the property timezone, and dates inside the pause are not created. `PATCH { isActive: true }` returns 422 so resume cannot skip that rule.
+
+Archiving is `DELETE`. It sets `deletedAt` and also pauses. Payments and N/A then return 409. Unarchive clears `deletedAt` and leaves `isActive` false until resume. Those are three mechanisms. Archive is the one that also pauses. The schedule rules are in [EDGE_CASES.md](EDGE_CASES.md) sections 3 and 6.
+
+`dueDay` (1–31) and `scheduleAnchor` are required for monthly, bimonthly, quarterly, semiannual, and annual. The due date clamps to the month's last day and the anchor does not drift.
 
 ## Payments
 
 ```text
 GET    /v1/properties/:propertyId/payments?obligationId=&from=&to=
-         → 200 { items: Payment[] }
+         → 200 { items: Payment[] }          // includes voided payments
 POST   /v1/properties/:propertyId/payments
          Headers: Idempotency-Key: <string>          // required
-         Body: { obligationId, propertyId, amount, currency?, paidAt,
-                 method?, reference?, notes? }
-         → 201 Payment | 200 Payment on replay
+         Body: { obligationId, amount, currency?, paidAt, periodDueDate?,
+                 markPartial?, method?, reference?, notes? }
+         → 201 { payment, warnings } | 200 same body on replay
 GET    /v1/properties/:propertyId/payments/:paymentId          → 200 | 404
 PATCH  /v1/properties/:propertyId/payments/:paymentId          → 200 Payment
-         Body: { notes?, method?, reference?, status? }         // status → voided
-DELETE /v1/properties/:propertyId/payments/:paymentId          → 204   // soft delete
+         Body: { notes?, method?, reference? }       // cannot void or unvoid
+POST   /v1/properties/:propertyId/payments/:paymentId/void
+         Headers: Idempotency-Key: <string>          // required
+         Body: { voidReason }                        // trimmed length 1–500
+         → 200 Payment
 ```
+
+There is no `DELETE` for a payment. A correction is the void route. It sets `voidedAt`, `voidedBy`, and `voidReason`. A second void returns 409 and changes nothing. A void cannot be undone. The same Idempotency-Key returns the original void response. A caller without write access, including a viewer, receives 404 and never 403.
 
 This records a payment the person already made somewhere else. The API does not charge a card, debit an account, or hold a balance. `method` and `reference` are descriptive text — "SPEI", a folio — not instructions to a payment processor.
 
-Creating a payment recomputes the current period outcome from recorded, non-voided payments. A fully settled period advances `nextDueDate`. A partial one does not.
+`amount` is integer centavos and must be greater than 0. `paidAt` later than now plus 24 hours, or earlier than now minus one calendar year, returns 422. A non-voided payment with the same obligation, the same amount, and a property-timezone date within 3 days adds a `possible_duplicate` warning and still returns 201. Voided payments, different amounts, and idempotency replays do not run that check again.
+
+Creating or voiding a payment recomputes the period from recorded, non-voided payments. A sum below the expected amount is `partial` and does not move `nextDueDate`. A sum that reaches the expected amount is `paid` and moves `nextDueDate` forward exactly one period. A larger sum stores the excess as `overpaidAmount` on that period and still moves forward only one period. A void can move `nextDueDate` back to the earliest candidate that is not settled. The rules are in [EDGE_CASES.md](EDGE_CASES.md) sections 1, 2, and 7.
 
 ## Evidence
 
@@ -101,10 +132,9 @@ POST   /v1/properties/:propertyId/evidence
          → 201 Evidence
 
 POST   /v1/properties/:propertyId/evidence/upload-url
-         Headers: Idempotency-Key                     // required
-         Body: { paymentId? | maintenanceTaskId?, type, notes?,
-                 contentType, byteSize, originalFilename? }
-         → 201 { evidence, uploadUrl, expiresAt }     // short-lived PUT
+         Headers and body: the upload-url shape below. Exactly one of
+         paymentId and maintenanceTaskId is set.
+         → 201, the upload-url shape below
 POST   /v1/properties/:propertyId/evidence/:evidenceId/complete   → 200 Evidence
 
 GET    /v1/properties/:propertyId/evidence?paymentId=&maintenanceTaskId=
@@ -116,6 +146,46 @@ DELETE /v1/properties/:propertyId/evidence/:evidenceId            → 204
 ```
 
 Evidence is optional on a payment. Content types allowed: `image/jpeg`, `image/png`, `application/pdf`. Maximum size about 15 MB (15,728,640 bytes). Exactly one parent: a payment or a maintenance task.
+
+This is the only upload-url request and response shape. `docs/TRUST.md` uses this same JSON.
+
+```json
+{
+  "request": {
+    "headers": {
+      "Idempotency-Key": "<string, required>"
+    },
+    "body": {
+      "paymentId": "<uuid or null>",
+      "maintenanceTaskId": "<uuid or null>",
+      "type": "photo | screenshot | pdf",
+      "notes": "<string or null>",
+      "contentType": "image/jpeg | image/png | application/pdf",
+      "byteSize": 1048576,
+      "originalFilename": "<string or null>"
+    }
+  },
+  "response": {
+    "status": 201,
+    "body": {
+      "evidence": {
+        "id": "<uuid>",
+        "propertyId": "<uuid>",
+        "paymentId": "<uuid or null>",
+        "maintenanceTaskId": "<uuid or null>",
+        "storageKey": "properties/<propertyId>/evidence/<evidenceId>/<uuid>",
+        "type": "photo | screenshot | pdf",
+        "contentType": "image/jpeg | image/png | application/pdf",
+        "byteSize": 1048576,
+        "originalFilename": "<string or null>",
+        "notes": "<string or null>"
+      },
+      "uploadUrl": "<absolute https URL, short-lived PUT>",
+      "expiresAt": "<ISO-8601>"
+    }
+  }
+}
+```
 
 ## Maintenance and documents
 
@@ -196,7 +266,7 @@ GET    /v1/properties/:propertyId/audit-events?entityType=&entityId=&from=&to=&c
          → 200 { items: AuditEvent[], nextCursor? }
 ```
 
-Reminder channels: `email`, `push`, `in_app`. Worker idempotency is the database pair `(reminder_id, scheduled_for)`, separate from the HTTP `Idempotency-Key`. Audit events are append-only and owner-readable; clients never post them.
+Reminder channels: `email`, `push`, `in_app`. The unique key is (parent, `scheduledFor`, `channel`), implemented as two partial unique indexes: `(obligation_id, scheduled_for, channel) WHERE obligation_id IS NOT NULL` and `(maintenance_task_id, scheduled_for, channel) WHERE maintenance_task_id IS NOT NULL`. Delivery idempotency is `(reminder_id, scheduled_for, user_id, channel)` on `notification_deliveries`. Default offsets are `[7, 1]`, plus an in-app-only offset 0 ("Vence hoy") with no push. Generation is an upsert. The fire time is 09:00 in the property timezone, stored as a UTC instant. See [EDGE_CASES.md](EDGE_CASES.md) sections 4 and 5. Audit events are append-only and owner-readable; clients never post them.
 
 ## Status codes
 
@@ -206,14 +276,17 @@ Reminder channels: `email`, `push`, `in_app`. Worker idempotency is the database
 | Valid JWT, no active membership for `:propertyId`, or the property is unknown or soft-deleted | 404 |
 | Active membership, role too low | 403 |
 | Soft-deleted child resource under a property the caller belongs to | 404 |
-| Missing `Idempotency-Key` on a payment or evidence create | 400 |
+| Missing `Idempotency-Key` on a payment create, a payment void, or an evidence create | 400 |
 | Same idempotency key, different body | 409 |
 | Replay with the same key and body | 200 |
+| Void of an already-voided payment, N/A conflict, archive read-only, or invite of an active member | 409 |
+| Expired, revoked, or used invite token | 410 |
+| Amount, currency, `paidAt`, `dueDay`, or `voidReason` rejected | 422 |
 | Scaffold placeholder | 501 |
 
 ## Idempotency
 
-Required on `POST .../payments`, `POST .../evidence`, and `POST .../evidence/upload-url`. Uniqueness is `(property_id, idempotency_key)`. First call creates and returns 201. A replay with the same body returns 200 and the original resource. The same key with a different body is a 409. Use a UUID or another high-entropy string.
+Required on `POST .../payments`, `POST .../payments/:paymentId/void`, `POST .../evidence`, and `POST .../evidence/upload-url`. Create uniqueness for a payment or an evidence row is `(property_id, idempotency_key)` on that table. Void uniqueness is `(property_id, route_key, idempotency_key)` on `idempotency_records`, with route key `POST /payments/:id/void`. First call creates and returns 201 for a create, or 200 for a void. A replay with the same body returns 200 and the original response, including the original `warnings` array, and does not run the duplicate check again. The same key with a different body is a 409. Use a UUID or another high-entropy string.
 
 ## Role matrix
 
@@ -221,6 +294,9 @@ Required on `POST .../payments`, `POST .../evidence`, and `POST .../evidence/upl
 | :---- | :---- | :---- | :---- |
 | Read the property and its lists | yes | yes | yes |
 | Create or update an obligation, payment, task, or document | yes | yes | no |
+| Void a payment | yes | yes | 404, never 403 |
+| Pause, resume, archive, unarchive, or mark N/A | yes | yes | no |
+| Invite, resend, or revoke an invite | yes | no | no |
 | Upload evidence | yes | yes | no |
 | Trigger OCR, confirm suggestions | yes | yes | no |
 | Read OCR jobs and suggestions | yes | yes | yes |

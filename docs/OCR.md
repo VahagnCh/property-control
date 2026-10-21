@@ -4,6 +4,8 @@ OCR is in the MVP as of the 30 Sep 2026 amendment to the product brief. It reads
 
 The one rule that governs this whole feature: **reaching `suggested` writes nothing.** An obligation, a payment, a property, or a document row changes only inside the handler for `POST .../ocr-jobs/:ocrJobId/confirm`. There is no code path that applies a suggestion on job completion, on a vendor callback, on a timer, or on a high confidence score. See [ADR 0002](adr/0002-ocr-suggest-then-confirm.md).
 
+When confirm eventually persists a money field, it stores integer centavos. A suggestion may still carry a decimal peso string such as `"18450.00"` until that conversion. The stub does not write the field.
+
 ## Trigger
 
 After a document finishes uploading to private storage. Priority is mortgages, deeds, and related property documents, which carry the amounts and dates worth extracting. Evidence OCR may opt in later through the nullable `evidence_id` on the job.

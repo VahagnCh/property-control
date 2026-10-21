@@ -38,6 +38,16 @@ export class ObligationsController {
     return scaffoldNotReady('obligations');
   }
 
+  @Post(':obligationId/resume')
+  resume(): never {
+    return scaffoldNotReady('obligations');
+  }
+
+  @Post(':obligationId/unarchive')
+  unarchive(): never {
+    return scaffoldNotReady('obligations');
+  }
+
   @Get(':obligationId/period-outcomes')
   listPeriodOutcomes() {
     return scaffoldList('obligation-period-outcomes');

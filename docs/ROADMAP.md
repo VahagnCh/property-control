@@ -20,7 +20,7 @@ In the product's priority order:
 1. **Home feed.** `GET /v1/home/action-items` against real data, then H1 and H2. This is the remind-to-record launcher, so it is the first screen worth building.
 2. **Property detail and obligations.** P3 and P4, with the three distinct controls for no aplica, pausar, and archivar.
 3. **Record payment and evidence.** Pay3 and Pay4, with the optional-comprobante behavior and `Idempotency-Key` on the create.
-4. **Reminder affordances.** Reminder rows from `reminder_offsets`, a worker idempotent on `(reminder_id, scheduled_for)`, and the snooze control.
+4. **Reminder affordances.** Reminder rows from `reminder_offsets`, unique on (parent, scheduled time, channel), delivery idempotency on `(reminder_id, scheduled_for, user_id, channel)`, and the snooze control.
 5. **Document upload and the OCR confirm sheet.** D2 and D-OCR, mortgages first.
 6. **Maintenance.** Lighter than the rest, on purpose.
 
@@ -32,7 +32,7 @@ In the product's priority order:
 | Access token validation | JWKS from Trust, then attach the guard that currently fails closed |
 | Membership enforcement | The 404-not-403 policy on every property-scoped route |
 | Persistence per module | Replace the 501 placeholders, module by module |
-| Period outcome engine | Reconcile paid and partial from payments, advance `next_due_date`, keep partial from advancing |
+| Period outcome engine | Reconcile paid, partial, and overpaidAmount from non-voided payments. Advance one period from the dueDay anchor, move nextDueDate back on void, and skip dates inside a pause. Rules: [EDGE_CASES.md](EDGE_CASES.md). |
 | Idempotency | `(property_id, idempotency_key)` on payment and evidence creates, with replay returning 200 |
 | Storage module | Signed PUT and GET after authorization, and object deletion on hard delete |
 | Retention module | The daily 30-day soft-to-hard delete job |
@@ -50,6 +50,6 @@ Also later: calendar, reports, settings as a tab, condo administration, accounti
 
 From the product brief: owner-only or owner plus tenant on day one; how many properties a person has in their first week; which three obligation categories must ship if scope is cut again.
 
-From Backend formal v0: the role set (`owner | member | viewer` or just owner and viewer); who signs object URLs; who owns the OCR extract worker; whether reminders are in-app only for the MVP; and how membership invites work.
+From Backend formal v0: the role set (`owner | member | viewer` or just owner and viewer); who signs object URLs; who owns the OCR extract worker; and who delivers push and email. Membership invites are decided: email, single-use, 7 days, specified in [EDGE_CASES.md](EDGE_CASES.md). Offset 0 is in-app only.
 
 Monetization shape is direction only and does not block the build. The one decision already made: saving a payment without evidence is never gated.

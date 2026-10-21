@@ -4,7 +4,6 @@ import {
   Get,
   Module,
   Patch,
-  Post,
 } from '@nestjs/common';
 import {
   scaffoldList,
@@ -16,11 +15,6 @@ export class MembershipsController {
   @Get()
   list() {
     return scaffoldList('memberships');
-  }
-
-  @Post()
-  create(): never {
-    return scaffoldNotReady('memberships');
   }
 
   @Patch(':membershipId')

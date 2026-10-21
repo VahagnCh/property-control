@@ -89,15 +89,21 @@ Recurrence in Spanish: Mensual · Bimestral · Trimestral · Semestral · Anual 
 
 Pay3 records something the person already paid. The screen never offers to pay a bill, link an account, or charge a card. **Guardar** works without a comprobante; the UI encourages one through the Sin comprobante affordance and warns once per session. Pay4 attaches evidence afterward.
 
-A partial amount sets the period to Pago parcial and leaves the due date where it is.
+A partial amount sets the period to Pago parcial and leaves the due date where it is. When the recorded amounts reach the expected amount, the period becomes Pagado and the next due date moves forward one period. An amount above the expected amount shows Pagado de más and stores the excess on that period only. The next period is not reduced.
+
+The date picker cannot select a day after today in the property's timezone. The server still accepts a `paidAt` up to 24 hours ahead, for clock skew, and rejects anything older than one year.
+
+If the same obligation already has a non-voided payment for the same amount within three days, Guardar still works. The screen asks "Ya registraste un pago de $X el D. ¿Registrar otro?" and the person can confirm. A voided payment does not raise that question.
+
+A recorded payment is corrected with Anulado, not by deleting it. Anulado keeps the row and the comprobante. There is no undo. The way to fix a mistake is to record another payment.
 
 ## No aplica, Pausar, Archivar
 
 | Action | Effect |
 | :---- | :---- |
-| **Marcar no aplica** | Skips this period only. The obligation stays active and the next due date is recalculated. No undo in the MVP. |
-| **Pausar** | No new periods or reminders until Reanudar. |
-| **Archivar** | Hidden from the active portfolio. History stays. |
+| **Marcar no aplica** | Skips this period only. The obligation stays active and the next due date moves one period. No undo in the MVP. If the period has a non-voided payment, or it is already paid or not applicable, the action is refused. |
+| **Pausar** | No new periods or reminders, and nothing shows as overdue, until Reanudar. Reanudar jumps to the first due date on or after today in the property's timezone. Dates that fell during the pause are not created. Payments for periods that already existed stay available. |
+| **Archivar** | Hidden from the active portfolio, and paused. History stays and is read-only: new payments and no aplica are refused. Desarchivar leaves the obligation paused until Reanudar. |
 
 Confirmation copy for no aplica: "Se omite solo este periodo. La obligación sigue activa y el próximo vencimiento se recalcula."
 

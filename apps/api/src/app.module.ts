@@ -5,6 +5,7 @@ import { DocumentsModule } from './documents/documents.module.js';
 import { EvidenceModule } from './evidence/evidence.module.js';
 import { HealthModule } from './health/health.module.js';
 import { HomeModule } from './home/home.module.js';
+import { InvitesModule } from './invites/invites.module.js';
 import { MaintenanceModule } from './maintenance/maintenance.module.js';
 import { MembershipsModule } from './memberships/memberships.module.js';
 import { ObligationsModule } from './obligations/obligations.module.js';
@@ -22,6 +23,7 @@ import { UsersModule } from './users/users.module.js';
     HomeModule,
     PropertiesModule,
     MembershipsModule,
+    InvitesModule,
     ObligationsModule,
     PaymentsModule,
     EvidenceModule,

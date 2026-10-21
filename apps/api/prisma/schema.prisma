@@ -1,16 +1,20 @@
-// PropControl data model — aligned to Backend formal v0 (1 Oct 2026).
+// PropControl data model — aligned to Backend formal v0 (1 Oct 2026)
+// and to docs/EDGE_CASES.md (DueRecord edge-case spec).
 //
 // This database records obligations, payments the user already made, files,
 // reminders, and OCR suggestions. It does not store balances, bank links,
-// payout instructions, or payment instruments.
+// payout instructions, payment instruments, or a credit carried into the
+// next period. overpaidAmount is the excess on one period, not a balance.
+//
+// Partial unique indexes that Prisma cannot express live in
+// prisma/sql/checks.sql. The first migration must run that file.
 //
 // OcrSuggestion is a review row. Creating or finishing an OcrJob does not
 // write Obligation or Payment columns. Those columns change only when
 // application code handles POST .../ocr-jobs/:id/confirm.
 //
-// SQL checks from the formal DDL (positive amount, evidence parent XOR,
-// content-type allowlist, 15 MiB cap, not_applicable ⇒ payment_id is null)
-// belong in the first migration. Prisma cannot express all of them here.
+// SQL checks Prisma cannot express, including the reminder partial unique
+// indexes, are in prisma/sql/checks.sql. The first migration must run that file.
 
 generator client {
   provider = "prisma-client-js"
@@ -170,12 +174,15 @@ model User {
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  memberships        PropertyMembership[]
-  recordedPayments   Payment[]            @relation("PaymentRecordedBy")
-  uploadedEvidence   Evidence[]           @relation("EvidenceUploadedBy")
-  uploadedDocuments  Document[]           @relation("DocumentUploadedBy")
-  auditEvents        AuditEvent[]         @relation("AuditActor")
-  idempotencyRecords IdempotencyRecord[]
+  memberships            PropertyMembership[]
+  recordedPayments       Payment[]                @relation("PaymentRecordedBy")
+  voidedPayments         Payment[]                @relation("PaymentVoidedBy")
+  uploadedEvidence       Evidence[]               @relation("EvidenceUploadedBy")
+  uploadedDocuments      Document[]               @relation("DocumentUploadedBy")
+  auditEvents            AuditEvent[]             @relation("AuditActor")
+  idempotencyRecords     IdempotencyRecord[]
+  sentInvites            MembershipInvite[]       @relation("InviteSentBy")
+  notificationDeliveries NotificationDelivery[]
 
   @@map("users")
 }
@@ -190,6 +197,7 @@ model Property {
   state           String?
   country         String            @default("MX")
   postalCode      String?           @map("postal_code")
+  /// IANA name from the tz database, never a fixed offset.
   timezone        String            @default("America/Mexico_City")
   deletedAt       DateTime?         @map("deleted_at") @db.Timestamptz(6)
   createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -199,6 +207,7 @@ model Property {
   obligations    Obligation[]
   payments       Payment[]
   periodOutcomes ObligationPeriodOutcome[]
+  pauseIntervals ObligationPauseInterval[]
   evidence       Evidence[]
   maintenance    MaintenanceTask[]
   documents      Document[]
@@ -206,6 +215,7 @@ model Property {
   auditEvents    AuditEvent[]
   ocrJobs        OcrJob[]
   idempotency    IdempotencyRecord[]
+  invites        MembershipInvite[]
 
   @@map("properties")
 }
@@ -229,7 +239,7 @@ model PropertyMembership {
   @@map("property_memberships")
 }
 
-/// Recurring or one-shot rule. A Payment is a separate settlement event.
+/// Recurring or one-shot rule. A Payment is a separate recorded event.
 model Obligation {
   id               String              @id @default(uuid()) @db.Uuid
   propertyId       String              @map("property_id") @db.Uuid
@@ -237,9 +247,14 @@ model Obligation {
   title            String
   providerName     String?             @map("provider_name")
   recurrence       ObligationCadence   @default(monthly)
+  /// Anchor day 1–31. The calendar day is clamped to the month. See EDGE_CASES §6.
+  dueDay           Int?                @map("due_day")
+  /// Year-month of period index 0. The stored day is the clamped due date.
+  scheduleAnchor   DateTime?           @map("schedule_anchor") @db.Date
   nextDueDate      DateTime?           @map("next_due_date") @db.Date
-  expectedAmount   Decimal?            @map("expected_amount") @db.Decimal(14, 2)
-  currency         String              @default("MXN")
+  /// Integer centavos. Null means a variable amount with no expected total.
+  expectedAmount   Int?                @map("expected_amount")
+  currency         String              @default("MXN") @db.VarChar(3)
   reminderOffsets  Int[]               @default([7, 1]) @map("reminder_offsets")
   preferredMethod  String?             @map("preferred_method")
   notes            String?
@@ -251,6 +266,7 @@ model Obligation {
   property       Property                  @relation(fields: [propertyId], references: [id])
   payments       Payment[]
   periodOutcomes ObligationPeriodOutcome[]
+  pauseIntervals ObligationPauseInterval[]
   reminders      Reminder[]
 
   @@index([propertyId])
@@ -259,46 +275,56 @@ model Obligation {
 }
 
 /// A payment the user already made. Evidence is optional.
+/// Corrections are voids. There is no deletedAt and no delete route.
 model Payment {
   id               String        @id @default(uuid()) @db.Uuid
   propertyId       String        @map("property_id") @db.Uuid
   obligationId     String        @map("obligation_id") @db.Uuid
+  periodDueDate    DateTime      @map("period_due_date") @db.Date
   recordedByUserId String        @map("recorded_by_user_id") @db.Uuid
-  amount           Decimal       @db.Decimal(14, 2)
-  currency         String        @default("MXN")
+  /// Integer centavos. Must be greater than 0. MVP currency is MXN only.
+  amount           Int
+  currency         String        @default("MXN") @db.VarChar(3)
   paidAt           DateTime      @map("paid_at") @db.Timestamptz(6)
   method           String?
   reference        String?
   notes            String?
   status           PaymentStatus @default(recorded)
   idempotencyKey   String        @map("idempotency_key")
-  deletedAt        DateTime?     @map("deleted_at") @db.Timestamptz(6)
+  voidedAt         DateTime?     @map("voided_at") @db.Timestamptz(6)
+  voidedByUserId   String?       @map("voided_by") @db.Uuid
+  voidReason       String?       @map("void_reason") @db.VarChar(500)
   createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   property       Property                  @relation(fields: [propertyId], references: [id])
   obligation     Obligation                @relation(fields: [obligationId], references: [id])
   recordedBy     User                      @relation("PaymentRecordedBy", fields: [recordedByUserId], references: [id])
+  voidedBy       User?                     @relation("PaymentVoidedBy", fields: [voidedByUserId], references: [id])
   evidence       Evidence[]
   periodOutcomes ObligationPeriodOutcome[]
 
   @@unique([propertyId, idempotencyKey])
-  @@index([obligationId])
+  @@index([obligationId, periodDueDate])
   @@index([propertyId, paidAt])
   @@map("payments")
 }
 
 /// One row per (obligation, period due date).
-/// not_applicable must not reference a Payment. Pause is Obligation.isActive.
-/// Archive is Obligation.deletedAt. Those three states are different columns.
+/// not_applicable must not reference a Payment. Pause is Obligation.isActive
+/// plus ObligationPauseInterval. Archive is Obligation.deletedAt.
+/// Those three mechanisms stay separate. Archive also pauses.
+/// overpaidAmount is excess centavos on this period only. It is not a credit
+/// and it does not reduce the next period.
 model ObligationPeriodOutcome {
-  id            String        @id @default(uuid()) @db.Uuid
-  obligationId  String        @map("obligation_id") @db.Uuid
-  propertyId    String        @map("property_id") @db.Uuid
-  periodDueDate DateTime      @map("period_due_date") @db.Date
-  outcome       PeriodOutcome
-  paymentId     String?       @map("payment_id") @db.Uuid
-  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  id             String        @id @default(uuid()) @db.Uuid
+  obligationId   String        @map("obligation_id") @db.Uuid
+  propertyId     String        @map("property_id") @db.Uuid
+  periodDueDate  DateTime      @map("period_due_date") @db.Date
+  outcome        PeriodOutcome
+  paymentId      String?       @map("payment_id") @db.Uuid
+  overpaidAmount Int           @default(0) @map("overpaid_amount")
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
 
   obligation Obligation @relation(fields: [obligationId], references: [id])
   property   Property   @relation(fields: [propertyId], references: [id])
@@ -307,6 +333,24 @@ model ObligationPeriodOutcome {
   @@unique([obligationId, periodDueDate])
   @@index([propertyId, periodDueDate])
   @@map("obligation_period_outcomes")
+}
+
+/// One closed or open pause. Dates after lastScheduledDueDate and inside the
+/// interval are never created. resumedOn null means the pause is still open.
+model ObligationPauseInterval {
+  id                    String    @id @default(uuid()) @db.Uuid
+  obligationId          String    @map("obligation_id") @db.Uuid
+  propertyId            String    @map("property_id") @db.Uuid
+  pausedOn              DateTime  @map("paused_on") @db.Date
+  resumedOn             DateTime? @map("resumed_on") @db.Date
+  lastScheduledDueDate  DateTime  @map("last_scheduled_due_date") @db.Date
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  obligation Obligation @relation(fields: [obligationId], references: [id])
+  property   Property   @relation(fields: [propertyId], references: [id])
+
+  @@index([obligationId])
+  @@map("obligation_pause_intervals")
 }
 
 /// Exactly one of paymentId or maintenanceTaskId in the application layer.
@@ -381,11 +425,16 @@ model Document {
   @@map("documents")
 }
 
+/// Parent is exactly one of obligation or maintenance task.
+/// Uniqueness is the two partial indexes in prisma/sql/checks.sql:
+/// (obligation_id, scheduled_for, channel) WHERE obligation_id IS NOT NULL
+/// (maintenance_task_id, scheduled_for, channel) WHERE maintenance_task_id IS NOT NULL
 model Reminder {
   id                String          @id @default(uuid()) @db.Uuid
   propertyId        String          @map("property_id") @db.Uuid
   obligationId      String?         @map("obligation_id") @db.Uuid
   maintenanceTaskId String?         @map("maintenance_task_id") @db.Uuid
+  periodDueDate     DateTime?       @map("period_due_date") @db.Date
   scheduledFor      DateTime        @map("scheduled_for") @db.Timestamptz(6)
   channel           ReminderChannel @default(in_app)
   status            ReminderStatus  @default(pending)
@@ -393,13 +442,52 @@ model Reminder {
   createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  property        Property         @relation(fields: [propertyId], references: [id])
-  obligation      Obligation?      @relation(fields: [obligationId], references: [id])
-  maintenanceTask MaintenanceTask? @relation(fields: [maintenanceTaskId], references: [id])
+  property        Property               @relation(fields: [propertyId], references: [id])
+  obligation      Obligation?            @relation(fields: [obligationId], references: [id])
+  maintenanceTask MaintenanceTask?       @relation(fields: [maintenanceTaskId], references: [id])
+  deliveries      NotificationDelivery[]
 
   @@index([scheduledFor])
   @@index([propertyId])
   @@map("reminders")
+}
+
+/// Delivery idempotency from Trust: one row per recipient, fire time, and channel.
+model NotificationDelivery {
+  id           String          @id @default(uuid()) @db.Uuid
+  reminderId   String          @map("reminder_id") @db.Uuid
+  userId       String          @map("user_id") @db.Uuid
+  scheduledFor DateTime        @map("scheduled_for") @db.Timestamptz(6)
+  channel      ReminderChannel
+  createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  reminder Reminder @relation(fields: [reminderId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+
+  @@unique([reminderId, scheduledFor, userId, channel], map: "notification_deliveries_idempotency_key")
+  @@map("notification_deliveries")
+}
+
+/// Email invite. The raw token is returned once. tokenHash is hex SHA-256.
+/// expiresAt is sentAt plus 7 days. Single use.
+model MembershipInvite {
+  id              String         @id @default(uuid()) @db.Uuid
+  propertyId      String         @map("property_id") @db.Uuid
+  email           String
+  role            MembershipRole
+  tokenHash       String         @unique @map("token_hash")
+  invitedByUserId String         @map("invited_by_user_id") @db.Uuid
+  sentAt          DateTime       @default(now()) @map("sent_at") @db.Timestamptz(6)
+  expiresAt       DateTime       @map("expires_at") @db.Timestamptz(6)
+  usedAt          DateTime?      @map("used_at") @db.Timestamptz(6)
+  revokedAt       DateTime?      @map("revoked_at") @db.Timestamptz(6)
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  property  Property @relation(fields: [propertyId], references: [id])
+  invitedBy User     @relation("InviteSentBy", fields: [invitedByUserId], references: [id])
+
+  @@index([propertyId, email])
+  @@map("membership_invites")
 }
 
 /// Append-only. No updatedAt and no deletedAt.

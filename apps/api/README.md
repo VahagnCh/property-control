@@ -34,7 +34,9 @@ curl -s http://localhost:3000/health
 | :---- | :---- |
 | Real | `GET /health`, and every OCR route against an in-memory store |
 | `{ items: [], stub: true, module }` | Collection reads |
-| **501** | Creates, updates, deletes, single-resource reads, and both `content-url` routes |
+| **501** | Creates, updates, voids, deletes of other resources, single-resource reads, and both `content-url` routes |
+
+The stub maps **57** routes. There is no payment DELETE. `POST .../payments/:paymentId/void` is one of the 501s. Email invites live under `/v1/properties/:propertyId/invites` and `POST /v1/invites/accept`.
 
 `501` is on purpose: a route that cannot yet enforce a membership check should not look like it succeeded. The `content-url` routes stay unimplemented so this scaffold cannot hand out an object URL.
 
@@ -93,7 +95,7 @@ docker run --rm -d --name pc-db -p 5432:5432 \
   -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=property_control postgres:16
 ```
 
-Before the first migration, add the SQL checks Prisma cannot express — positive amounts, the evidence parent XOR, the content-type allowlist, the 15 MiB cap, and `not_applicable` implying a null payment. They are listed at the end of [docs/DATA-MODEL.md](../../docs/DATA-MODEL.md).
+Before the first migration, run [`prisma/sql/checks.sql`](prisma/sql/checks.sql). Prisma cannot express those checks, including the two partial unique indexes on reminders. They are also listed at the end of [docs/DATA-MODEL.md](../../docs/DATA-MODEL.md). Edge-case behavior is [docs/EDGE_CASES.md](../../docs/EDGE_CASES.md).
 
 ## Tests
 

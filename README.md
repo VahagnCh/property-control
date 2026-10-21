@@ -10,7 +10,7 @@ This repository is the greenfield monorepo: a NestJS API stub, an Expo React Nat
 
 ## Source of truth
 
-Product and design decisions live in these Drive documents. This repo follows them. If a doc and the code disagree, the doc wins until Product changes it.
+Product and design decisions live in these Drive documents. This repo follows them. If a doc and the code disagree, the doc wins until Product changes it. Edge cases for the public product, DueRecord, are locked in [docs/EDGE_CASES.md](docs/EDGE_CASES.md). Where that spec and another doc disagree, the spec wins.
 
 | Doc | Link |
 | :---- | :---- |
@@ -41,7 +41,7 @@ Out of the MVP, and out of this scaffold:
 - Bank aggregation or Open Banking
 - Condo administration, full accounting, tax filing, municipal portal integrations
 - Listings, tenant screening, and legal lease workflows
-- Deleting a payment (unless Product reopens it)
+- Deleting a payment. A correction is a void, specified in [docs/EDGE_CASES.md](docs/EDGE_CASES.md)
 - Writing OCR suggestions onto Obligation or Payment without an explicit confirm request
 - Public or permanent URLs for receipts and documents
 
@@ -55,7 +55,7 @@ See [ADR 0001](docs/adr/0001-tracking-not-money-movement.md) and [ADR 0002](docs
 | PropertyMembership | Who can access a property, and as which role. |
 | Property | One unit in the portfolio. |
 | Obligation | The rule: category, amount, recurrence, next due date, reminder offsets. |
-| Payment | An event that settles some or all of an obligation. Status is `recorded` or `voided`. |
+| Payment | An event that covers some or all of an obligation period. Status is `recorded` or `voided`. There is no delete. |
 | Evidence | Optional private file for a payment (or a maintenance task). |
 | MaintenanceTask | Light maintenance tracking. |
 | Document | Private file on a property (deed, mortgage, policy, and so on). |
@@ -69,11 +69,11 @@ Three obligation states stay distinct:
 
 | Action | What changes |
 | :---- | :---- |
-| Marcar no aplica | This period only. Outcome `not_applicable`. `nextDueDate` advances. `isActive` stays true. No undo in the MVP. |
-| Pausar | `isActive = false`. The schedule does not advance. |
-| Archivar | Soft-hide (`deletedAt`). History stays. |
+| Marcar no aplica | This period only. Outcome `not_applicable`. `nextDueDate` advances one period. `isActive` stays true. No undo in the MVP. Blocked with 409 when the period has a non-voided payment or is already paid or not applicable. |
+| Pausar | `isActive = false`, plus a pause interval. Nothing shows as overdue, and skipped dates are not created. |
+| Archivar | Soft-hide (`deletedAt`) and pause. History is read-only: new payments and N/A return 409. Unarchive leaves the obligation paused. |
 
-A **partial** payment does not advance `nextDueDate`. A fully paid period does.
+A **partial** payment does not advance `nextDueDate`. A period whose non-voided sum reaches the expected amount advances exactly one period. An overpayment stores `overpaidAmount` on that period and does not carry credit forward. Details: [docs/EDGE_CASES.md](docs/EDGE_CASES.md).
 
 List statuses such as `overdue` and `due_soon` are computed for the current cycle. They are not the stored payment status.
 
@@ -100,7 +100,7 @@ pnpm workspaces. Node 20.19 or newer (22 is what `.nvmrc` pins).
 
 | Path | What it is today |
 | :---- | :---- |
-| `apps/api` | Boots without a database. `GET /health` is live. Collection reads return an empty stub list. Mutations return **501** except the OCR routes, which keep jobs in memory for the life of the process. |
+| `apps/api` | Boots without a database. `GET /health` is live. Collection reads return an empty stub list. Mutations return **501** except the OCR routes, which keep jobs in memory for the life of the process. The stub maps **57** routes. |
 | `apps/api/prisma/schema.prisma` | PostgreSQL schema for the locked entities. Not migrated and not used by the Nest process yet. |
 | `apps/mobile` | Bottom tabs and placeholder copy. No data fetching. |
 | `docs/` | The written contract for this repo, summarized from the Drive sources. |
@@ -182,6 +182,7 @@ Then open the project in Expo Go, an emulator, or a simulator (`pnpm mobile:andr
 
 | Doc | Contents |
 | :---- | :---- |
+| [docs/EDGE_CASES.md](docs/EDGE_CASES.md) | DueRecord edge-case behavior |
 | [docs/PRODUCT.md](docs/PRODUCT.md) | MVP scope and locks |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Apps, boundaries, data flow |
 | [docs/API.md](docs/API.md) | v0 HTTP contract and what the stub actually does |

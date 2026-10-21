@@ -53,7 +53,7 @@ One Nest module per entity group, matching the module table in the formal v0 doc
 - The OCR routes work end to end against an in-memory store.
 - `GET /health` is outside the `/v1` prefix and returns `{ status: "ok", service: "property-control-api" }`.
 
-The modules present: `health`, `auth`, `users`, `home`, `properties`, `memberships`, `obligations`, `payments`, `evidence`, `maintenance`, `documents`, `reminders`, `audit`, `ocr`.
+The modules present: `health`, `auth`, `users`, `home`, `properties`, `memberships`, `invites`, `obligations`, `payments`, `evidence`, `maintenance`, `documents`, `reminders`, `audit`, `ocr`. The stub maps **57** routes.
 
 Not present yet, and named in formal v0: `StorageModule` (signed PUT and GET, delete on hard delete) and `RetentionModule` (the 30-day soft-to-hard delete job).
 
@@ -89,7 +89,7 @@ sequenceDiagram
   A->>A: Validate JWT, check membership and write role
   A->>D: Insert payment (status recorded)
   A->>D: Recompute the period outcome from recorded payments
-  Note over A,D: Fully paid advances next_due_date.<br/>Partial does not.
+  Note over A,D: A sum that covers the period advances one period.<br/>Partial does not. A void can move the date back.<br/>Excess is overpaid_amount on that period only.
   A->>D: Append an audit event
   A-->>M: 201 Payment (200 on replay)
   U->>M: Adjuntar comprobante (optional, later)
@@ -131,11 +131,12 @@ The obligation changes at the confirm step and nowhere earlier. See [OCR.md](OCR
 - Soft delete sets `deletedAt`. A retention job hard-deletes after 30 days and removes the object.
 - A missing membership returns **404**, not 403, so the API does not leak which properties exist. A valid membership with the wrong role returns **403**.
 - `Idempotency-Key` scopes to `(property_id, idempotency_key)`.
-- Reminder worker idempotency is `(reminder_id, scheduled_for)`.
-- Audit events are append-only.
+- Reminder rows are unique on (parent, `scheduled_for`, `channel`) via two partial indexes. Delivery idempotency is `(reminder_id, scheduled_for, user_id, channel)`.
+- Audit events are append-only. A payment void is an audit event. Payments are not soft-deleted.
+- Email invites are `MembershipInvite` rows. Trust still mints the session used to accept.
 
 ## Why this shape
 
 A single API serving one client keeps the membership check in one place. OCR lives in its own module because its write path is the one place a vendor's output could leak into user data, and a separate module makes that boundary easy to review. Prisma is checked in ahead of any query so the entity contract is reviewable before persistence lands.
 
-Open platform questions from formal v0: whether the API or Trust signs object URLs, who owns the OCR worker, whether reminders are in-app only for the MVP, and how membership invitations work.
+Open platform questions from formal v0: whether the API or Trust signs object URLs, and who owns the OCR worker. Invite behavior and the reminder key are locked in [EDGE_CASES.md](EDGE_CASES.md). The public product name there is DueRecord.

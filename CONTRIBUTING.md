@@ -20,7 +20,7 @@ pnpm mobile:typecheck
 1. Branch from `main`. Use a short, lowercase name, for example `api/ocr-confirm-persist`.
 2. Keep the change focused. A PR that adds a screen should not also redesign the schema.
 3. Open the PR against `main`. Describe what changed, how you checked it, and which Drive doc it follows if behavior changed.
-4. Update the matching file under `docs/` when the contract changes. The Drive documents stay the source of truth until Product amends them.
+4. Update the matching file under `docs/` when the contract changes. The Drive documents stay the source of truth until Product amends them. [docs/EDGE_CASES.md](docs/EDGE_CASES.md) is the DueRecord edge-case spec and wins over the other docs in this repo when they disagree.
 
 Commit messages should say what the change does in the imperative mood: `Add in-memory OCR confirm stub`.
 
@@ -41,4 +41,6 @@ The API test suite covers health, the 501 payment placeholder, and the OCR rule 
 - File routes return a private `storageKey`, never a permanent public URL.
 - `Idempotency-Key` will be required on payment and evidence creates. Do not drop it when those routes become real.
 - Default reminder offsets stay `[7, 1]` when the client omits them.
-- `not_applicable`, pause (`isActive = false`), and archive (`deletedAt`) stay three different operations.
+- `not_applicable`, pause (`isActive = false` plus a pause interval), and archive (`deletedAt`, which also pauses) stay three different operations.
+- Payments are voided with `POST .../payments/:id/void`. Do not add a payment DELETE or a `deletedAt` on Payment.
+- Amounts are integer centavos, MXN only. `overpaidAmount` is excess on one period, not a balance or a credit.

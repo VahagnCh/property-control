@@ -1,6 +1,5 @@
 import {
   Controller,
-  Delete,
   Get,
   Module,
   Patch,
@@ -13,6 +12,7 @@ import {
 
 /**
  * Payment routes record a payment the member already made.
+ * A correction is POST :paymentId/void. There is no DELETE.
  * Evidence is optional and is a different resource.
  */
 @Controller('properties/:propertyId/payments')
@@ -37,8 +37,8 @@ export class PaymentsController {
     return scaffoldNotReady('payments');
   }
 
-  @Delete(':paymentId')
-  remove(): never {
+  @Post(':paymentId/void')
+  voidPayment(): never {
     return scaffoldNotReady('payments');
   }
 }

@@ -42,4 +42,4 @@ Accepted costs:
 
 A pull request that adds a payment processor SDK, a bank aggregation client, a stored payment instrument, or a balance field contradicts this ADR and should be rejected. Reopening this is a Product decision announced in the Property Control channel, not a code review outcome.
 
-In this scaffold: the Prisma schema has no instrument, balance, or settlement column; `PaymentsController` records and voids and nothing else; and the Pagos tab in `apps/mobile` says the app does not move money.
+In this scaffold: the Prisma schema has no instrument, balance, or clearing column; `overpaidAmount` is the excess recorded on one period and is not a credit the next period can draw; `PaymentsController` records and voids and nothing else; and the Pagos tab in `apps/mobile` says the app does not move money.

@@ -1,6 +1,6 @@
 # Trust
 
-Authentication, authorization, private files, retention, and OCR privacy. Aligned to Trust MVP architecture v0.1 and [Backend formal v0](https://docs.google.com/document/d/1iekHZp5lOq4qTzLhglFproL2JSeI7Uw1q4I817d40dE/edit). The Trust architecture draft is [here](https://docs.google.com/document/d/1zbIoIroBNVOhfsX48RmP2Gac2ggZnjbsJBWgxxo6F9E/edit).
+Authentication, authorization, private files, retention, and OCR privacy. Aligned to Trust MVP architecture v0.1 and [Backend formal v0](https://docs.google.com/document/d/1iekHZp5lOq4qTzLhglFproL2JSeI7Uw1q4I817d40dE/edit). The Trust architecture draft is [here](https://docs.google.com/document/d/1zbIoIroBNVOhfsX48RmP2Gac2ggZnjbsJBWgxxo6F9E/edit). Reminder keys, quiet hours, and invites follow [EDGE_CASES.md](EDGE_CASES.md) where that spec is more specific. The public product name in that spec is DueRecord.
 
 Most of this is specified and not implemented. The placeholder guard in `apps/api/src/auth/access-token.guard.ts` throws on every request so it can never accidentally pass traffic; it is not attached to routes, which is why the stub routes are reachable.
 
@@ -30,10 +30,10 @@ Resolution order:
 
 1. Verify the access JWT against Trust's JWKS. Failure is **401**.
 2. Resolve the local `User` by `trust_sub = jwt.sub`. Upsert on first sight is fine.
-3. If the route is not property-scoped (`GET /v1/me`, `POST /v1/properties`), stop here.
+3. If the route is not property-scoped (`GET /v1/me`, `POST /v1/properties`, `POST /v1/invites/accept`), stop here. Accept then checks that the signed-in email matches the invite.
 4. Otherwise load the membership where `property_id = :propertyId AND user_id = :userId AND status = 'active' AND deleted_at IS NULL`, and the property is not soft-deleted.
 5. No membership, or a missing or soft-deleted property, is **404** — not 403. The API does not reveal which properties exist.
-6. A membership whose role is not in `requiredRoles` is **403**.
+6. A membership whose role is not in `requiredRoles` is **403**, except `POST .../payments/:paymentId/void`: a caller without write access receives **404**, never 403, so the route does not reveal that the payment exists.
 7. Attach `{ user, membership, propertyId }` to the request for the handler.
 
 ## 403 against 404
@@ -42,7 +42,7 @@ Resolution order:
 | :---- | :---- |
 | Missing, invalid, or expired JWT | 401 |
 | Valid JWT, no active membership, or the property is unknown or soft-deleted | **404** |
-| Active membership, role too low | 403 |
+| Active membership, role too low | 403, except payment void, which is 404 |
 | Soft-deleted child resource under a property the caller belongs to | 404 |
 
 Returning 403 for a property the caller cannot see would confirm that it exists. 404 does not.
@@ -69,7 +69,45 @@ Content-type allowlist: `image/jpeg`, `image/png`, `application/pdf`. Maximum si
 Upload, in either of two accepted shapes:
 
 - **Proxied multipart.** The client posts the file to the API, which validates the JWT, the membership, the write role, the content type, and the size, then streams the object to the private bucket, inserts the row, and appends an audit event.
-- **Pre-signed PUT.** The client asks for an upload URL. The API runs the same checks, builds the `storage_key`, gets a short-lived PUT URL, and returns `{ evidenceId, storageKey, uploadUrl, expiresAt }`. The client PUTs the bytes and then optionally calls the complete route, where the API verifies the object and marks it ready.
+- **Pre-signed PUT.** The client asks for an upload URL. The API runs the same checks, builds the `storage_key`, gets a short-lived PUT URL, and returns the upload-url shape below. The client PUTs the bytes and then calls the complete route, where the API verifies the object and marks it ready. This is the only upload-url request and response shape. Document uploads in this version are proxied multipart, not a second shape.
+
+```json
+{
+  "request": {
+    "headers": {
+      "Idempotency-Key": "<string, required>"
+    },
+    "body": {
+      "paymentId": "<uuid or null>",
+      "maintenanceTaskId": "<uuid or null>",
+      "type": "photo | screenshot | pdf",
+      "notes": "<string or null>",
+      "contentType": "image/jpeg | image/png | application/pdf",
+      "byteSize": 1048576,
+      "originalFilename": "<string or null>"
+    }
+  },
+  "response": {
+    "status": 201,
+    "body": {
+      "evidence": {
+        "id": "<uuid>",
+        "propertyId": "<uuid>",
+        "paymentId": "<uuid or null>",
+        "maintenanceTaskId": "<uuid or null>",
+        "storageKey": "properties/<propertyId>/evidence/<evidenceId>/<uuid>",
+        "type": "photo | screenshot | pdf",
+        "contentType": "image/jpeg | image/png | application/pdf",
+        "byteSize": 1048576,
+        "originalFilename": "<string or null>",
+        "notes": "<string or null>"
+      },
+      "uploadUrl": "<absolute https URL, short-lived PUT>",
+      "expiresAt": "<ISO-8601>"
+    }
+  }
+}
+```
 
 Read: the client calls the `content-url` route, the API checks the JWT and the membership and that the row is not soft-deleted, and issues a short-lived signed GET URL, 60 to 300 seconds. A permanent or public URL is never returned. The grant may be audited.
 
@@ -81,13 +119,13 @@ Who owns what: the API owns authorization, metadata, key generation, the allowli
 
 Append-only `audit_events` for sensitive changes: membership changes, obligation and payment mutations, soft and hard deletes, OCR confirmations, and optionally signed-URL grants. Rows carry the actor, the action, the entity, and before and after JSON. Audit rows are never deleted in the MVP.
 
-The audit trail matters more than usual here because some actions have no undo. Marking a period not applicable is one of them.
+The audit trail matters more than usual here because some actions have no undo. Marking a period not applicable is one of them. Voiding a payment is another: the row stays, the evidence stays, and the fix is a new payment.
 
 ## Retention
 
 | Phase | Behavior |
 | :---- | :---- |
-| Soft delete | `deleted_at = now()`, excluded from default queries, treated as absent by membership checks |
+| Soft delete | `deleted_at = now()`, excluded from default queries, treated as absent by membership checks. Payments have no `deleted_at`. A void is not a soft delete and the retention job does not remove the payment or its evidence. |
 | Hard delete | A daily job removes rows whose `deleted_at` is older than 30 days |
 | Storage | A hard delete of evidence or a document deletes the object at `storage_key` |
 | Audit | Both deletes append an audit event |
@@ -105,12 +143,21 @@ Users do not get a hard-delete control in the MVP. The retention job is the only
 
 ## No payment custody
 
-There is no bank connection, no payment instrument, no card token, no account or routing number, no clearing state, and no balance anywhere in this system. `payments.method` and `obligations.preferred_method` are descriptive strings a person typed, not instructions to a processor. This removes a whole category of obligation — PCI scope, money transmission, chargebacks — from the MVP. See [ADR 0001](adr/0001-tracking-not-money-movement.md).
+There is no bank connection, no payment instrument, no card token, no account or routing number, no clearing state, and no balance anywhere in this system. `overpaidAmount` is the excess recorded on one period so the client can show "Pagado de más". It is not spent and it is not carried into the next period. `payments.method` and `obligations.preferred_method` are descriptive strings a person typed, not instructions to a processor. This removes a whole category of obligation — PCI scope, money transmission, chargebacks — from the MVP. See [ADR 0001](adr/0001-tracking-not-money-movement.md).
+
+## Quiet hours and delivery idempotency
+
+Quiet hours are 21:00–08:00 in the recipient device timezone: a device-local time at or after 21:00, or before 08:00, is quiet. A reminder that lands there is deferred to the next 09:00 in that device timezone. At most 3 push deliveries go to one user on one device-local day. Email and in-app do not count toward the cap.
+
+`notification_deliveries` is unique on `(reminder_id, scheduled_for, user_id, channel)`. Reminder rows themselves are unique on (parent, `scheduled_for`, `channel`) by the two partial indexes in [DATA-MODEL.md](DATA-MODEL.md). That replaces a unique key of `(id, scheduled_for)`, which a primary key already makes vacuous.
+
+## Invites
+
+Owners invite by email with role `member` or `viewer`. The API stores a single-use token hash that expires 7 days after `sentAt`. Accepting requires a signed-in user with that email. This API owns the invite row and the accept route. Trust still mints the session the invitee uses to sign in. The behavior is [EDGE_CASES.md](EDGE_CASES.md) section 8.
 
 ## Open questions
 
 1. Roles: keep `owner | member | viewer` or cut to `owner | viewer`?
 2. Does the API sign storage URLs directly, or call a Trust signing RPC after authorizing?
 3. Does Trust own the OCR worker and call the API with results, or does the API call an OCR RPC after creating the job?
-4. Reminder delivery: in-app only for the MVP, or email through a notification service? Who owns retries?
-5. Membership invites: an email invite and accept flow in Trust, or add-by-subject with immediate active status?
+4. Who sends push and email, and who owns retries? The edge spec fixes the row keys, the 09:00 property-local fire time, quiet hours, the push cap, and that offset 0 is in-app only.

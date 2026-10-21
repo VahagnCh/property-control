@@ -2,6 +2,8 @@
 
 Summarized from the [confirmed product brief v1.1](https://docs.google.com/document/d/1F_DSJG5Fo6G3WXyGXJWyqscMp8LC9SbEqgGj-c68ric/edit) (amended 30 Sep 2026, when OCR moved into the MVP). The brief is the source of truth. This page exists so someone reading the repo does not have to open Drive to understand what is being built.
 
+Edge-case behavior for the public product, [DueRecord](EDGE_CASES.md), is locked in that spec. Where this page and the spec disagree, the spec wins.
+
 ## Mission
 
 A personal property OS for people who own several properties in Mexico. See what is owed, when it is due, what was paid, and the proof, across the whole portfolio.
@@ -54,9 +56,12 @@ These are confirmed. Changing one requires Product, not a pull request.
 | Tracking only | No payment processing, no custody of funds, no bank link, no payout. |
 | Evidence optional | A payment saves without a comprobante. The UI encourages one ("Sin comprobante") and warns once per session. |
 | Default reminders | `[7, 1]` days before due. Editable per obligation. |
-| Marcar no aplica | Skips **this period only**: outcome `not_applicable`, `nextDueDate` advances, `isActive` stays true. No undo in the MVP; the audit trail is the record. |
-| Pausar vs Archivar | Pause is `isActive = false` with no advancement. Archive is a soft-hide. Both differ from a not-applicable period. |
-| Pago parcial | Status `partial`. Does **not** advance `nextDueDate` until the period is paid in full or marked not applicable. |
+| Marcar no aplica | Skips **this period only**: outcome `not_applicable`, `nextDueDate` advances one period, `isActive` stays true. No undo in the MVP; the audit trail is the record. A period with a non-voided payment, or one that is already `paid` or `not_applicable`, returns 409. |
+| Pausar vs Archivar | Pause is `isActive = false` and a pause interval. Resume moves `nextDueDate` to the first scheduled date on or after today in the property timezone, and dates inside the pause are not created. Archive sets `deletedAt` and also pauses. Unarchive leaves the obligation paused. New payments and N/A on an archived obligation return 409. |
+| Pago parcial | Status `partial`. Does **not** advance `nextDueDate`. When the non-voided sum reaches the expected amount, the period is `paid` and advances exactly one period. |
+| Overpayment | The period is `paid`, it advances one period only, and the excess is `overpaidAmount` on that period. Nothing is carried into the next period. |
+| Payments are void-only | No payment delete. A void records `voidedAt`, `voidedBy`, and `voidReason`. A second void returns 409. |
+| Invites | An owner invites by email as member or viewer. The token is single-use and expires 7 days after it is sent. |
 | Authorization | Every property-scoped read and write passes a `PropertyMembership` check. |
 | File storage | Private `storage_key` plus short-lived signed URLs. No public URLs. |
 | Client sync | Online-first with an outbox. `Idempotency-Key` on payment and evidence creates. The server wins a conflict. |
@@ -82,7 +87,7 @@ These are confirmed. Changing one requires Product, not a pull request.
 - Every municipal portal integration
 - Marketplaces, listings, tenant screening
 - Legal lease workflows
-- Deleting a payment, unless Product reopens it
+- Deleting a payment. Corrections are voids; see [EDGE_CASES.md](EDGE_CASES.md)
 - Applying OCR output without confirmation
 
 ## Primary user
