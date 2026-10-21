@@ -16,7 +16,7 @@ The Nest stub maps **57** routes, counting each method and path Nest registers, 
 | Behavior | Routes |
 | :---- | :---- |
 | Real response | `GET /health`. OCR routes answer in memory only when `OCR_STUB_ENABLED` is `1`, `true`, `yes`, or `on` |
-| `{ items: [], stub: true, module }` | Collection reads: properties, memberships, obligations, period outcomes, payments, evidence, maintenance tasks, documents, reminders, audit events, home action items |
+| `{ items: [], stub: true, module }` | Collection reads: properties, memberships, invites, obligations, period outcomes, payments, evidence, maintenance tasks, documents, reminders, audit events, home action items |
 | **501** with the module name | Every create, update, delete, single-resource read, both `content-url` routes, and every OCR route while the flag is off |
 
 `501` is deliberate. A route that cannot enforce a membership check should not pretend to succeed. The two `content-url` routes stay unimplemented so this scaffold cannot hand out an object URL.
