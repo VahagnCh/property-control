@@ -31,7 +31,6 @@ jobs:
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/property_control
       AVISO_VERSION: "2026-10-21"
       AVISO_URL: "https://example.com/aviso"
-      SERVER_SECRET: test-server-secret-at-least-32-characters
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -44,10 +43,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: pnpm api:typecheck
+      - name: Generate the boot secret and app-role password
+        run: |
+          secret=$(openssl rand -base64 32 | tr -d '\n')
+          password=$(openssl rand -hex 24)
+          echo "::add-mask::$secret"
+          echo "::add-mask::$password"
+          echo "SERVER_SECRET=$secret" >> "$GITHUB_ENV"
+          echo "APP_ROLE_PASSWORD=$password" >> "$GITHUB_ENV"
       - name: Create the non-owner app role
         run: bash apps/api/prisma/bootstrap-app-role.sh
-        env:
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/property_control
       - name: Migrate as the database owner
         run: pnpm --filter @property-control/api exec prisma migrate deploy
         env:
@@ -56,7 +61,7 @@ jobs:
       - name: Test as the app role
         run: pnpm api:test
         env:
-          DATABASE_URL: postgresql://property_control_app:property_control_app@localhost:5432/property_control
+          DATABASE_URL: postgresql://property_control_app:${{ env.APP_ROLE_PASSWORD }}@localhost:5432/property_control
           DIRECT_URL: postgresql://postgres:postgres@localhost:5432/property_control
       - run: pnpm api:build
       - run: pnpm mobile:typecheck

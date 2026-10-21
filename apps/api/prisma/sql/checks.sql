@@ -243,6 +243,18 @@ CREATE TRIGGER aviso_versions_append_only_truncate
   FOR EACH STATEMENT
   EXECUTE FUNCTION append_only_reject();
 
+ALTER TABLE aviso_versions
+  DROP CONSTRAINT IF EXISTS aviso_versions_text_not_empty;
+ALTER TABLE aviso_versions
+  ADD CONSTRAINT aviso_versions_text_not_empty CHECK (length("text") > 0);
+
+ALTER TABLE aviso_versions
+  DROP CONSTRAINT IF EXISTS aviso_versions_text_sha256_matches;
+ALTER TABLE aviso_versions
+  ADD CONSTRAINT aviso_versions_text_sha256_matches CHECK (
+    text_sha256 = encode(sha256(convert_to("text", 'UTF8')), 'hex')
+  );
+
 DROP INDEX IF EXISTS idempotency_keys_user_scope;
 CREATE UNIQUE INDEX idempotency_keys_user_scope
   ON idempotency_keys (user_id, method, route, key)

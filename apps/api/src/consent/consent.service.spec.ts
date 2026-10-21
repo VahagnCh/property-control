@@ -1,5 +1,5 @@
-import { UnprocessableEntityException } from '@nestjs/common';
-import { describe, expect, it } from 'vitest';
+import { ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
+import { describe, expect, it, vi } from 'vitest';
 import type { AvisoConfig } from './aviso-config.js';
 import { ConsentService } from './consent.service.js';
 import { AvisoVersionMissingError, type ConsentAuditEntry, type ConsentRepository } from './consent.repository.js';
@@ -77,7 +77,7 @@ describe('ConsentService', () => {
     expect(await repo.find('user-1', '2026-10-21')).toBeNull();
   });
 
-  it('turns a missing aviso version into a domain 422', async () => {
+  it('turns a missing aviso version into a server fault', async () => {
     const repo: ConsentRepository = {
       find: async () => null,
       insert: async () => {
@@ -93,17 +93,24 @@ describe('ConsentService', () => {
       () => ({ avisoVersion: '2026-10-21', avisoUrl: 'https://example.com/aviso' }),
       { now: () => new Date('2026-10-21T18:00:00.000Z') },
     );
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
       await service.recordConsent({ userId: 'user-1', avisoVersion: '2026-10-21' });
-      throw new Error('expected aviso_version_missing');
+      throw new Error('expected aviso_unavailable');
     } catch (error) {
-      expect(error).toBeInstanceOf(UnprocessableEntityException);
-      expect((error as UnprocessableEntityException).getResponse()).toEqual({
-        statusCode: 422,
-        error: 'aviso_version_missing',
-        message: 'The current aviso version is not published.',
+      expect(error).toBeInstanceOf(ServiceUnavailableException);
+      expect((error as ServiceUnavailableException).getResponse()).toEqual({
+        statusCode: 503,
+        error: 'aviso_unavailable',
+        message: 'The current aviso version is not available.',
       });
       expect(error).not.toBeInstanceOf(AvisoVersionMissingError);
+      const alerts = spy.mock.calls.filter((call) => String(call[0]).includes('aviso_unavailable'));
+      expect(alerts).toEqual([['alert: aviso_unavailable']]);
+      expect(JSON.stringify(alerts)).not.toContain('user-1');
+      expect(JSON.stringify(alerts)).not.toContain('@');
+    } finally {
+      spy.mockRestore();
     }
   });
 

@@ -1,12 +1,12 @@
-import { randomUUID } from 'node:crypto';
-import { ConflictException, UnprocessableEntityException } from '@nestjs/common';
+import { createHash, randomUUID } from 'node:crypto';
+import { ConflictException, ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PrismaIdempotencyKeys } from '../src/auth/idempotency-keys.js';
 import { PrismaRateLimits, authSubjectHmac, bucketKey } from '../src/auth/rate-limit.js';
 import { PrismaRefreshTokens } from '../src/auth/prisma-refresh-tokens.js';
 import { hashToken } from '../src/auth/refresh-tokens.js';
-import { TEST_SERVER_SECRET } from '../src/auth/server-secret.js';
+import { TEST_SERVER_SECRET } from './test-server-secret.js';
 import { PrismaConsentRepository } from '../src/consent/prisma-consent.repository.js';
 import { ConsentService } from '../src/consent/consent.service.js';
 import type { ConsentAuditEntry, ConsentAuditLog } from '../src/consent/consent.repository.js';
@@ -289,7 +289,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
           version,
           url: 'https://example.com/aviso',
           text: 'Aviso de prueba.',
-          textSha256: 'a'.repeat(64),
+          textSha256: textSha256('Aviso de prueba.'),
         },
       });
       const service = new ConsentService(
@@ -518,6 +518,71 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
     }
   });
 
+  it('round-trips overpaid_amount above int32 as BIGINT', async () => {
+    const fixture = await createFixture(prisma);
+    const wire = '21474836.48';
+    const cents = wireAmountToCentavos(wire);
+    try {
+      expect(cents).toBe(2147483648n);
+      expect(cents > 2147483647n).toBe(true);
+      await prisma.obligationPeriodOutcome.create({
+        data: {
+          obligationId: fixture.obligationId,
+          propertyId: fixture.propertyId,
+          periodDueDate: new Date('2026-03-15T00:00:00.000Z'),
+          outcome: 'paid',
+          overpaidAmount: cents,
+        },
+      });
+      const stored = await prisma.obligationPeriodOutcome.findFirst({
+        where: { obligationId: fixture.obligationId },
+      });
+      expect(stored?.overpaidAmount).toBe(cents);
+      expect(centavosToWireAmount(stored?.overpaidAmount ?? 0n)).toBe(wire);
+      const raw = await prisma.$queryRaw<Array<{ overpaid_amount: bigint | string }>>`
+        SELECT overpaid_amount FROM obligation_period_outcomes
+        WHERE obligation_id = CAST(${fixture.obligationId} AS uuid)
+      `;
+      expect(centavosToWireAmount(BigInt(raw[0]?.overpaid_amount ?? 0))).toBe(wire);
+      await expect(
+        prisma.$executeRaw`
+          UPDATE obligation_period_outcomes
+          SET overpaid_amount = -1
+          WHERE obligation_id = CAST(${fixture.obligationId} AS uuid)
+        `,
+      ).rejects.toThrow(/obligation_period_outcomes_overpaid_nonnegative/);
+    } finally {
+      await deleteFixture(prisma, fixture);
+    }
+  });
+
+  it('denies payment deletes, migration writes, and aviso rows that fail the text checks', async () => {
+    const who = await prisma.$queryRaw<Array<{ current_user: string }>>`SELECT current_user`;
+    expect(who[0]?.current_user).toBe('property_control_app');
+    await expectDenied(prisma, 'DELETE FROM payments');
+    await expectDenied(prisma, 'UPDATE _prisma_migrations SET checksum = checksum');
+    await expectDenied(prisma, 'DELETE FROM _prisma_migrations');
+
+    const version = `aviso-${randomUUID()}`;
+    const text = 'Aviso con hash.';
+    await expect(
+      prisma.avisoVersion.create({
+        data: { version, url: 'https://example.com/aviso', text: '', textSha256: textSha256('') },
+      }),
+    ).rejects.toThrow(/aviso_versions_text_not_empty/);
+    await expect(
+      prisma.avisoVersion.create({
+        data: { version, url: 'https://example.com/aviso', text, textSha256: 'a'.repeat(64) },
+      }),
+    ).rejects.toThrow(/aviso_versions_text_sha256_matches/);
+    await prisma.avisoVersion.create({
+      data: { version, url: 'https://example.com/aviso', text, textSha256: textSha256(text) },
+    });
+    const stored = await prisma.avisoVersion.findUnique({ where: { version } });
+    expect(stored?.textSha256).toBe(textSha256(text));
+    await purgeAppendOnly({ avisoVersion: version });
+  });
+
   it('keeps a payments idempotency key from replaying on another route', async () => {
     const fixture = await createFixture(prisma);
     try {
@@ -611,7 +676,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
     const version = `aviso-${randomUUID()}`;
     try {
       await prisma.avisoVersion.create({
-        data: { version, url: 'https://example.com/aviso', text: 'Texto.', textSha256: 'c'.repeat(64) },
+        data: { version, url: 'https://example.com/aviso', text: 'Texto.', textSha256: textSha256('Texto.') },
       });
       await prisma.consent.create({
         data: {
@@ -671,7 +736,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
     const email = 'Invitee@Example.com';
     try {
       await prisma.avisoVersion.create({
-        data: { version, url: 'https://example.com/old', text: 'old text', textSha256: 'd'.repeat(64) },
+        data: { version, url: 'https://example.com/old', text: 'old text', textSha256: textSha256('old text') },
       });
       await expect(
         publishAvisoVersion(prisma, { version, url: 'https://example.com/new', text: AVISO_TEXT }),
@@ -688,15 +753,22 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
         () => ({ avisoVersion: 'missing-aviso-version', avisoUrl: 'https://example.com/missing' }),
         { now: () => new Date() },
       );
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       try {
         await service.recordConsent({ userId: fixture.userId, avisoVersion: 'missing-aviso-version' });
-        throw new Error('expected aviso_version_missing');
+        throw new Error('expected aviso_unavailable');
       } catch (error) {
-        expect(error).toBeInstanceOf(UnprocessableEntityException);
-        expect((error as UnprocessableEntityException).getResponse()).toMatchObject({
-          statusCode: 422,
-          error: 'aviso_version_missing',
+        expect(error).toBeInstanceOf(ServiceUnavailableException);
+        expect((error as ServiceUnavailableException).getResponse()).toMatchObject({
+          statusCode: 503,
+          error: 'aviso_unavailable',
         });
+        const alerts = spy.mock.calls.filter((call) => String(call[0]).includes('aviso_unavailable'));
+        expect(alerts).toEqual([['alert: aviso_unavailable']]);
+        expect(JSON.stringify(alerts)).not.toContain(fixture.userId);
+        expect(JSON.stringify(alerts)).not.toContain('@');
+      } finally {
+        spy.mockRestore();
       }
       expect(await prisma.consent.count({ where: { userId: fixture.userId } })).toBe(0);
       const created = new Date('2026-10-01T00:00:00.000Z');
@@ -789,7 +861,8 @@ async function deleteFixture(prisma: PrismaClient, fixture: Fixture, avisoVersio
     avisoVersion,
   });
   await prisma.membershipInvite.deleteMany({ where: { propertyId: fixture.propertyId } });
-  await prisma.payment.deleteMany({ where: { propertyId: fixture.propertyId } });
+  await prisma.obligationPeriodOutcome.deleteMany({ where: { propertyId: fixture.propertyId } });
+  await ownerClient.payment.deleteMany({ where: { propertyId: fixture.propertyId } });
   await prisma.refreshToken.deleteMany({ where: { userId: fixture.userId } });
   await prisma.idempotencyKey.deleteMany({ where: { userId: fixture.userId } });
   await prisma.obligation.deleteMany({ where: { propertyId: fixture.propertyId } });
@@ -822,6 +895,20 @@ async function purgeAppendOnly(scope: {
       await tx.avisoVersion.deleteMany({ where: { version: scope.avisoVersion } });
     }
   });
+}
+
+function textSha256(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
+async function expectDenied(prisma: PrismaClient, statement: string): Promise<void> {
+  await expect(
+    prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(statement);
+      throw new Error(`statement was not denied: ${statement}`);
+    }),
+    statement,
+  ).rejects.toThrow(/permission denied/i);
 }
 
 function twoFields(providerName: string, notes: string): OcrExtractor {

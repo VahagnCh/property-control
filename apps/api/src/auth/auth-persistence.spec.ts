@@ -1,6 +1,6 @@
 import { BadRequestException, UnprocessableEntityException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
-import { TEST_SERVER_SECRET } from './server-secret.js';
+import { TEST_SERVER_SECRET } from '../../test/test-server-secret.js';
 import { MemoryIdempotencyKeys } from './idempotency-keys.js';
 import { MemoryRateLimits, authSubjectHmac } from './rate-limit.js';
 import { MemoryRefreshTokens, hashToken } from './refresh-tokens.js';

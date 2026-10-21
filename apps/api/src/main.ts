@@ -1,11 +1,23 @@
 import 'dotenv/config';
+import { PrismaClient } from '@prisma/client';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
-import { loadAvisoConfig } from './consent/aviso-config.js';
+import { prepareBoot } from './boot.js';
 import { configureApp } from './configure-app.js';
 
 async function bootstrap(): Promise<void> {
-  loadAvisoConfig(process.env);
+  const prisma = new PrismaClient();
+  try {
+    await prepareBoot(process.env, async (version) => {
+      const row = await prisma.avisoVersion.findUnique({
+        where: { version },
+        select: { version: true },
+      });
+      return row !== null;
+    });
+  } finally {
+    await prisma.$disconnect();
+  }
   const app = await NestFactory.create(AppModule, { bodyParser: false });
   configureApp(app);
   const port = Number(process.env.PORT ?? 3000);

@@ -16,7 +16,7 @@ GET    /v1/health
 
 ## What the stub does
 - Property-scoped routes will require `Authorization: Bearer <access_jwt>`. Trust mints that token; this API only validates it.
-- JSON in, JSON out. Money amounts (`amount`, `expectedAmount`, `overpaidAmount`) are decimal strings such as `"1234.50"` plus a currency code. They are never JSON numbers and never floats, and the API does not send centavos. `amount` and `expectedAmount` are BIGINT centavos in the database. `"18450.00"` with currency `MXN` is stored as `1845000` centavos. Conversion happens at the repository boundary with integer arithmetic.
+- JSON in, JSON out. Money amounts (`amount`, `expectedAmount`, `overpaidAmount`) are decimal strings such as `"1234.50"` plus a currency code. They are never JSON numbers and never floats, and the API does not send centavos. `amount`, `expectedAmount`, and `overpaidAmount` are BIGINT centavos in the database. `"18450.00"` with currency `MXN` is stored as `1845000` centavos. Conversion happens at the repository boundary with integer arithmetic.
 - Currency is `MXN` only. Any other currency returns 422.
 
 ## What the stub does
@@ -376,7 +376,7 @@ No consent route is registered. `GET /v1/me` stays **501**. The contract, for th
 
 `GET /v1/me` includes `consent: { required, avisoVersion, avisoUrl }`. `required` is true when the caller has no row for the configured `AVISO_VERSION`.
 
-`POST /v1/me/consent` takes `{ avisoVersion }`. `appVersion` comes from the client header or body. The first accept is **201** and stores `acceptedAt` on the server, in the same transaction as its audit entry. A repeat of the same version is **200** and returns the existing row. It does not change `acceptedAt` or `appVersion`, and it writes no second audit entry. Any other version, including an older published one, is **422** `aviso_version_mismatch`. A current version that is not published is **422** `aviso_version_missing`. Publishing a new aviso version makes `required` true again. The old row stays. Reads do not require consent. A write before the current consent is **403** `consent_required`, and only after 501, 401, 400, 413, 404, and the viewer check.
+`POST /v1/me/consent` takes `{ avisoVersion }`. `appVersion` comes from the client header or body. The first accept is **201** and stores `acceptedAt` on the server, in the same transaction as its audit entry. A repeat of the same version is **200** and returns the existing row. It does not change `acceptedAt` or `appVersion`, and it writes no second audit entry. Any other version, including an older published one, is **422** `aviso_version_mismatch`. A current version that is not published is **503** `aviso_unavailable`. The process also refuses to listen when that configured version has no row. Publishing a new aviso version makes `required` true again. The old row stays. Reads do not require consent. A write before the current consent is **403** `consent_required`, and only after 501, 401, 400, 413, 404, and the viewer check.
 
 `AVISO_VERSION` must be a non-empty string and `AVISO_URL` must be an http(s) URL. `main.ts` checks both before it listens. The test app does not.
 

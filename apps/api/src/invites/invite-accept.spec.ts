@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TEST_SERVER_SECRET } from '../auth/server-secret.js';
+import { TEST_SERVER_SECRET } from '../../test/test-server-secret.js';
 import { decideInviteAccept, decideInviteManage, inviteEmailHmac, type InviteSnapshot } from './invite-accept.js';
 
 const NOW = new Date('2026-10-21T18:00:00.000Z');

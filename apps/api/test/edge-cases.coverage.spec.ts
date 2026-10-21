@@ -46,6 +46,7 @@ describe('edge-case spec coverage', () => {
     expect(paymentModel).toMatch(/amount\s+BigInt/);
 
     expect(schema).toContain('overpaidAmount');
+    expect(schema).toMatch(/overpaidAmount\s+BigInt/);
     expect(schema).toContain('dueDay');
     expect(schema).toContain('scheduleAnchor');
     expect(schema).toContain('model MembershipInvite');

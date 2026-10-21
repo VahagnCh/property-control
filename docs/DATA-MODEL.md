@@ -121,7 +121,7 @@ One row per `(obligation_id, period_due_date)`.
 | `period_due_date` | The period key, with `obligation_id` |
 | `outcome` | `paid` · `partial` · `not_applicable` |
 | `payment_id` | Nullable. When set, the latest non-voided payment for the outcome. The full ledger stays in `payments`. |
-| `overpaid_amount` | Integer centavos in the database, default 0. The API wire value is a decimal string such as `"1234.50"` plus currency `MXN`, never a float. Excess of the non-voided sum over `expected_amount` on this period only. Not a credit for the next period. 0 when the sum does not exceed the expected amount, and 0 when `expected_amount` is null. |
+| `overpaid_amount` | BIGINT centavos in the database, default 0. The API wire value is a decimal string such as `"1234.50"` plus currency `MXN`, never a float. Excess of the non-voided sum over `expected_amount` on this period only. Not a credit for the next period. 0 when the sum does not exceed the expected amount, and 0 when `expected_amount` is null. |
 
 Rules:
 

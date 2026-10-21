@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { UnprocessableEntityException } from '@nestjs/common';
+import { ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
 import type { AvisoConfig } from './aviso-config.js';
 import {
   AvisoVersionMissingError,
@@ -81,10 +81,11 @@ export class ConsentService {
       return { outcome: 'created', consent: created };
     } catch (error) {
       if (error instanceof AvisoVersionMissingError) {
-        throw new UnprocessableEntityException({
-          statusCode: 422,
-          error: 'aviso_version_missing',
-          message: 'The current aviso version is not published.',
+        console.error('alert: aviso_unavailable');
+        throw new ServiceUnavailableException({
+          statusCode: 503,
+          error: 'aviso_unavailable',
+          message: 'The current aviso version is not available.',
         });
       }
       if (!(error instanceof UniqueConsentError)) {

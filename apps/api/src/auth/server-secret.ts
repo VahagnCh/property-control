@@ -1,14 +1,32 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
 
-/** Test-only secret. Production reads `SERVER_SECRET` and never logs it. */
-export const TEST_SERVER_SECRET = 'test-server-secret-at-least-32-characters';
-
+/**
+ * Boot secret. The value is base64 or base64url and must decode to at least
+ * 32 bytes. The returned string is the trimmed input. Errors never include it.
+ */
 export function serverSecret(env: NodeJS.ProcessEnv = process.env): string {
   const secret = env.SERVER_SECRET?.trim() ?? '';
-  if (secret.length < 32) {
-    throw new Error('SERVER_SECRET must be at least 32 characters.');
+  if (secret.length === 0) {
+    throw new Error('SERVER_SECRET is required.');
+  }
+  const decoded = decodeSecret(secret);
+  if (decoded === null || decoded.length < 32) {
+    throw new Error('SERVER_SECRET must decode to at least 32 bytes.');
   }
   return secret;
+}
+
+function decodeSecret(secret: string): Buffer | null {
+  const stripped = secret.replace(/=+$/g, '').replace(/-/g, '+').replace(/_/g, '/');
+  if (stripped.length === 0 || !/^[A-Za-z0-9+/]+$/.test(stripped) || stripped.length % 4 === 1) {
+    return null;
+  }
+  const padded = stripped + '='.repeat((4 - (stripped.length % 4)) % 4);
+  const bytes = Buffer.from(padded, 'base64');
+  if (bytes.toString('base64').replace(/=+$/g, '') !== stripped) {
+    return null;
+  }
+  return bytes;
 }
 
 /** Keyed HMAC. The stored value is hex, never the plain email. */

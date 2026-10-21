@@ -339,9 +339,10 @@ model Payment {
 /// not_applicable must not reference a Payment. Pause is Obligation.isActive
 /// plus ObligationPauseInterval. Archive is Obligation.deletedAt.
 /// Those three mechanisms stay separate. Archive also pauses.
-/// overpaidAmount is excess integer centavos on this period only. The API
-/// wire value is a decimal string such as "1234.50" plus currency MXN, never
-/// a JSON float. It is not a credit and it does not reduce the next period.
+/// overpaidAmount is excess integer centavos on this period only, stored as
+/// BIGINT. The API wire value is a decimal string such as "1234.50" plus
+/// currency MXN, never a JSON float. It is not a credit and it does not
+/// reduce the next period.
 model ObligationPeriodOutcome {
   id             String        @id @default(uuid()) @db.Uuid
   obligationId   String        @map("obligation_id") @db.Uuid
@@ -349,7 +350,7 @@ model ObligationPeriodOutcome {
   periodDueDate  DateTime      @map("period_due_date") @db.Date
   outcome        PeriodOutcome
   paymentId      String?       @map("payment_id") @db.Uuid
-  overpaidAmount Int           @default(0) @map("overpaid_amount")
+  overpaidAmount BigInt        @default(0) @map("overpaid_amount")
   createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
 
   obligation Obligation @relation(fields: [obligationId], references: [id])
