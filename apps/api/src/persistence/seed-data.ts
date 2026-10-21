@@ -35,7 +35,9 @@ export async function publishAvisoVersion(
 }
 
 export async function seedDatabase(prisma: PrismaClient, env: NodeJS.ProcessEnv): Promise<void> {
-  const aviso = loadAvisoConfig(env);
+  if (env.SEED_DEMO_DATA !== 'true') {
+    throw new Error('SEED_DEMO_DATA=true is required before inserting demo rows.');
+  }
   await prisma.user.upsert({
     where: { id: DEMO_USER_ID },
     create: { id: DEMO_USER_ID, trustSub: 'demo', displayName: 'Demo' },
@@ -77,9 +79,27 @@ export async function seedDatabase(prisma: PrismaClient, env: NodeJS.ProcessEnv)
       dueDay: 15,
     },
   });
-  await publishAvisoVersion(prisma, {
-    version: aviso.avisoVersion,
-    url: aviso.avisoUrl,
-    text: AVISO_TEXT,
-  });
+}
+
+/**
+ * Demo rows and the aviso row are separate. Neither runs unless its flag is set.
+ * Do not set SEED_DEMO_DATA once the database holds real rows.
+ */
+export async function seedFromEnv(prisma: PrismaClient, env: NodeJS.ProcessEnv): Promise<void> {
+  const seed = env.SEED_DEMO_DATA === 'true';
+  const publish = env.PUBLISH_AVISO === 'true';
+  if (!seed && !publish) {
+    throw new Error('Set SEED_DEMO_DATA=true for demo rows, or PUBLISH_AVISO=true to publish the aviso.');
+  }
+  if (seed) {
+    await seedDatabase(prisma, env);
+  }
+  if (publish) {
+    const aviso = loadAvisoConfig(env);
+    await publishAvisoVersion(prisma, {
+      version: aviso.avisoVersion,
+      url: aviso.avisoUrl,
+      text: AVISO_TEXT,
+    });
+  }
 }

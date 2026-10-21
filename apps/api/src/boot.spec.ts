@@ -2,18 +2,14 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import type { RuntimeRole } from './auth/runtime-role.js';
+import { roleFacts, type RuntimeRole } from './auth/runtime-role.js';
 import { prepareBoot, type BootHooks } from './boot.js';
 
 const apiRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const validSecret = Buffer.alloc(32, 9).toString('base64');
 const shortSecret = Buffer.alloc(31, 9).toString('base64');
 
-const appRole: RuntimeRole = {
-  currentUser: 'property_control_app',
-  superuser: false,
-  databaseOwner: false,
-};
+const appRole: RuntimeRole = roleFacts({ currentUser: 'property_control_app' });
 
 function hooks(
   finder: (version: string) => Promise<boolean>,
@@ -92,15 +88,26 @@ describe('prepareBoot', () => {
     await expect(
       prepareBoot(
         publishedEnv(validSecret),
-        hooks(finder, async () => ({ currentUser: 'postgres', superuser: true, databaseOwner: true })),
+        hooks(finder, async () => roleFacts({ currentUser: 'postgres', superuser: true, databaseOwner: true })),
       ),
     ).rejects.toThrow(/property_control_app/);
     await expect(
       prepareBoot(
         publishedEnv(validSecret),
-        hooks(finder, async () => ({ currentUser: 'neon_owner', superuser: false, databaseOwner: true })),
+        hooks(finder, async () => roleFacts({ currentUser: 'neon_owner', databaseOwner: true })),
       ),
     ).rejects.toThrow(/not the database owner/);
+    expect(finder).not.toHaveBeenCalled();
+  });
+
+  it('fails in production when DIRECT_URL is set and does not read the role', async () => {
+    const finder = vi.fn(async () => true);
+    const role = vi.fn(async () => appRole);
+    const env = publishedEnv(validSecret);
+    env.NODE_ENV = 'production';
+    env.DIRECT_URL = 'postgresql://owner@localhost/property_control';
+    await expect(prepareBoot(env, hooks(finder, role))).rejects.toThrow('DIRECT_URL must not be set on the API process.');
+    expect(role).not.toHaveBeenCalled();
     expect(finder).not.toHaveBeenCalled();
   });
 
@@ -122,6 +129,8 @@ describe('prepareBoot', () => {
   it('is called from the process entrypoint', () => {
     const main = readFileSync(resolve(apiRoot, 'src/main.ts'), 'utf8');
     expect(main).toContain('prepareBoot(');
+    expect(main).toContain('RedactingLogger');
+    expect(main).toContain('createPrismaClient');
   });
 
   it('keeps the test secret identifier out of production sources', () => {

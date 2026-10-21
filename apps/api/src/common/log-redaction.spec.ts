@@ -8,17 +8,38 @@ describe('redactForLog', () => {
   it('removes emails, tokens, codes, and signed URLs', () => {
     const signed =
       'https://bucket.example/file?X-Amz-Signature=abcdef0123456789&X-Amz-Credential=AKIAEXAMPLE';
-    const raw = `user person@example.com bearer Bearer eyJhbGciOi.payload.sig code 123456 url ${signed}`;
+    const raw = [
+      'user person@example.com jose@correo.mx user@münchen.de',
+      'bearer Bearer eyJhbGciOi.payload.sig',
+      'basic Basic dXNlcjpwYXNz',
+      'Cookie: session=abc; refresh=xyz',
+      'refreshToken=raw-refresh-value',
+      'Idempotency-Key: idem-123',
+      'code 123456',
+      `url ${signed}`,
+      'amount 123456 expected 85000 wire 19000.00',
+    ].join('\n');
     const redacted = redactForLog(raw);
     expect(redacted).not.toContain('person@example.com');
+    expect(redacted).not.toContain('jose@correo.mx');
+    expect(redacted).not.toContain('münchen.de');
     expect(redacted).not.toContain('eyJhbGciOi');
-    expect(redacted).not.toContain('123456');
+    expect(redacted).not.toContain('dXNlcjpwYXNz');
+    expect(redacted).not.toContain('session=abc');
+    expect(redacted).not.toContain('raw-refresh-value');
+    expect(redacted).not.toContain('idem-123');
+    expect(redacted).not.toContain('code 123456');
     expect(redacted).not.toContain('X-Amz-Signature=');
     expect(redacted).not.toContain('AKIAEXAMPLE');
     expect(redacted).toContain('[redacted-email]');
     expect(redacted).toContain('[redacted-token]');
     expect(redacted).toContain('[redacted-code]');
     expect(redacted).toContain('[redacted-url]');
+    expect(redacted).toContain('Basic [redacted]');
+    expect(redacted).toContain('[redacted-cookie]');
+    expect(redacted).toContain('amount 123456');
+    expect(redacted).toContain('85000');
+    expect(redacted).toContain('19000.00');
   });
 
   it('logs only the redacted line', () => {

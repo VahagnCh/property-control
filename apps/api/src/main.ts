@@ -1,13 +1,14 @@
 import 'dotenv/config';
-import { PrismaClient } from '@prisma/client';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
 import { readRuntimeRole } from './auth/runtime-role.js';
 import { prepareBoot } from './boot.js';
+import { RedactingLogger } from './common/redacting-logger.js';
 import { configureApp } from './configure-app.js';
+import { createPrismaClient } from './persistence/prisma-client.js';
 
 async function bootstrap(): Promise<void> {
-  const prisma = new PrismaClient();
+  const prisma = createPrismaClient();
   try {
     await prepareBoot(process.env, {
       runtimeRole: () => readRuntimeRole(prisma),
@@ -22,7 +23,7 @@ async function bootstrap(): Promise<void> {
   } finally {
     await prisma.$disconnect();
   }
-  const app = await NestFactory.create(AppModule, { bodyParser: false });
+  const app = await NestFactory.create(AppModule, { bodyParser: false, logger: new RedactingLogger() });
   configureApp(app);
   const port = Number(process.env.PORT ?? 3000);
   await app.listen(port);

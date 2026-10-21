@@ -22,10 +22,12 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// Migrations run outside the web service, with DATABASE_URL set to the owner
+// connection for that command only. The API process uses the app-role URL
+// and refuses to boot in production when DIRECT_URL is set.
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 enum MembershipRole {
