@@ -1,7 +1,19 @@
 const WIRE_AMOUNT = /^(\d+)(?:\.(\d{1,2}))?$/;
 const INT32_MAX_CENTAVOS = 2147483647;
 
-export type MoneyParseCode = 'empty' | 'negative' | 'invalid' | 'too_many_decimals' | 'overflow';
+export type MoneyParseCode =
+  | 'empty'
+  | 'negative'
+  | 'invalid'
+  | 'too_many_decimals'
+  | 'overflow'
+  | 'currency';
+
+/** Wire money is a decimal amount plus a currency code. MXN is the only code. */
+export type WireMoney = {
+  amount: string;
+  currency: 'MXN';
+};
 
 export class MoneyParseError extends Error {
   readonly code: MoneyParseCode;
@@ -50,6 +62,18 @@ export function formatWireAmount(centavos: number): string {
   const whole = Math.trunc(centavos / 100);
   const fraction = centavos % 100;
   return `${whole}.${String(fraction).padStart(2, '0')}`;
+}
+
+export function formatWireMoney(centavos: number): WireMoney {
+  return { amount: formatWireAmount(centavos), currency: 'MXN' };
+}
+
+/** Rejects any currency other than the exact code `MXN`, then parses the amount. */
+export function parseWireMoney(wire: { amount?: string; currency?: string }): number {
+  if (wire.currency !== 'MXN') {
+    throw new MoneyParseError('currency');
+  }
+  return parseMxnToCentavos(wire.amount ?? '');
 }
 
 /** es-MX display. Separate from the wire value: "$1,234.50" is not "1234.50". */

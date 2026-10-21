@@ -39,5 +39,5 @@ export function VoidErrorText({
   if (!result.message) {
     return null;
   }
-  return <Text>{result.message}</Text>;
+  return <Text testID={result.refresh ? 'void-needs-refresh' : undefined}>{result.message}</Text>;
 }

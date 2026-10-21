@@ -1,4 +1,11 @@
-import { formatMxnDisplay, formatWireAmount, MoneyParseError, parseMxnToCentavos } from './money';
+import {
+  formatMxnDisplay,
+  formatWireAmount,
+  formatWireMoney,
+  MoneyParseError,
+  parseMxnToCentavos,
+  parseWireMoney,
+} from './money';
 
 describe('MXN centavos', () => {
   it('converts wire strings to integer centavos and back without floats', () => {
@@ -56,5 +63,28 @@ describe('MXN centavos', () => {
     expect(() => parseMxnToCentavos('21474836.48')).toThrow(MoneyParseError);
     expect(() => formatWireAmount(1.5)).toThrow(MoneyParseError);
     expect(() => formatMxnDisplay(-1)).toThrow(MoneyParseError);
+  });
+
+  it('sends a decimal string plus currency MXN and rejects any other currency', () => {
+    expect(formatWireMoney(123450)).toEqual({ amount: '1234.50', currency: 'MXN' });
+    expect(formatWireMoney(0)).toEqual({ amount: '0.00', currency: 'MXN' });
+    expect(parseWireMoney({ amount: '1234.5', currency: 'MXN' })).toBe(123450);
+    expect(parseWireMoney({ amount: '0.00', currency: 'MXN' })).toBe(0);
+
+    for (const currency of ['USD', 'mxn', 'Mxn', '', 'MXN ', ' MXN']) {
+      expect(() => parseWireMoney({ amount: '1.00', currency })).toThrow(MoneyParseError);
+      try {
+        parseWireMoney({ amount: '1.00', currency });
+      } catch (error) {
+        expect(error).toMatchObject({ code: 'currency' });
+      }
+    }
+    expect(() => parseWireMoney({ amount: '1.00' })).toThrow(MoneyParseError);
+    expect(() => parseWireMoney({ currency: 'MXN' })).toThrow(MoneyParseError);
+    try {
+      parseWireMoney({ currency: 'MXN' });
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'empty' });
+    }
   });
 });

@@ -1,10 +1,23 @@
 import {
+  classifyInviteAccept,
   INVITE_TTL_MS,
   INVITE_WRONG_ACCOUNT_MESSAGE,
+  InviteAcceptInput,
   inviteStatus,
   isInviteExpired,
+  mapAcceptRouteStatus,
   mapInviteProblem,
 } from './inviteErrors';
+
+const openInvite: InviteAcceptInput = {
+  tokenKnown: true,
+  accountMatches: true,
+  used: false,
+  revoked: false,
+  superseded: false,
+  expired: false,
+  alreadyMember: false,
+};
 
 describe('invite errors', () => {
   it('maps token outcomes to the agreed status codes', () => {
@@ -25,16 +38,59 @@ describe('invite errors', () => {
     );
   });
 
-  it('shows the same neutral message for a wrong account whether the status is 403 or 404', () => {
-    const from403 = mapInviteProblem({ reason: 'wrong_account', status: 403 });
-    const from404 = mapInviteProblem({ reason: 'wrong_account', status: 404 });
-    expect(from403).toBe(INVITE_WRONG_ACCOUNT_MESSAGE);
-    expect(from404).toBe(from403);
-    expect(from403).toBe('Esta invitación no es válida para tu cuenta.');
-    expect(inviteStatus({ reason: 'wrong_account', status: 403 })).toBe(403);
-    expect(inviteStatus({ reason: 'wrong_account', status: 404 })).toBe(404);
-    expect(from403).not.toBe(mapInviteProblem({ reason: 'unknown_token' }));
-    expect(from403).not.toBe(mapInviteProblem({ reason: 'non_owner' }));
+  it('classifies a wrong account as 404 before used, revoked, superseded, expired, or already-member', () => {
+    for (const flag of ['used', 'revoked', 'superseded', 'expired', 'alreadyMember'] as const) {
+      const problem = classifyInviteAccept({
+        ...openInvite,
+        accountMatches: false,
+        [flag]: true,
+      });
+      expect(problem).toEqual({ reason: 'wrong_account' });
+      if (!('reason' in problem)) {
+        throw new Error('expected a problem');
+      }
+      expect(inviteStatus(problem)).toBe(404);
+      expect(mapInviteProblem(problem)).toBe(INVITE_WRONG_ACCOUNT_MESSAGE);
+      expect(mapInviteProblem(problem)).toBe('Esta invitación no es válida para tu cuenta.');
+    }
+
+    const unknown = classifyInviteAccept({
+      ...openInvite,
+      tokenKnown: false,
+      accountMatches: false,
+      used: true,
+    });
+    expect(unknown).toEqual({ reason: 'unknown_token' });
+    if (!('reason' in unknown)) {
+      throw new Error('expected a problem');
+    }
+    expect(inviteStatus(unknown)).toBe(404);
+    expect(mapInviteProblem(unknown)).toBe('No encontramos esta invitación.');
+    expect(mapInviteProblem(unknown)).not.toBe(INVITE_WRONG_ACCOUNT_MESSAGE);
+  });
+
+  it('classifies used, revoked, superseded, expired, and an existing member after the account check', () => {
+    expect(classifyInviteAccept({ ...openInvite, used: true })).toEqual({ reason: 'used' });
+    expect(classifyInviteAccept({ ...openInvite, revoked: true })).toEqual({ reason: 'revoked' });
+    expect(classifyInviteAccept({ ...openInvite, superseded: true })).toEqual({
+      reason: 'superseded',
+    });
+    expect(classifyInviteAccept({ ...openInvite, expired: true })).toEqual({ reason: 'expired' });
+    expect(classifyInviteAccept({ ...openInvite, alreadyMember: true })).toEqual({
+      reason: 'already_member',
+    });
+    expect(classifyInviteAccept(openInvite)).toEqual({ ok: true });
+  });
+
+  it('keeps a 403 on the accept route on the same neutral message', () => {
+    expect(mapAcceptRouteStatus(403)).toBe(INVITE_WRONG_ACCOUNT_MESSAGE);
+    expect(mapAcceptRouteStatus(403, 'unknown_token')).toBe(INVITE_WRONG_ACCOUNT_MESSAGE);
+    expect(mapAcceptRouteStatus(403, 'wrong_account')).toBe('Esta invitación no es válida para tu cuenta.');
+    expect(mapAcceptRouteStatus(404, 'wrong_account')).toBe(INVITE_WRONG_ACCOUNT_MESSAGE);
+    expect(mapAcceptRouteStatus(404, 'unknown_token')).toBe('No encontramos esta invitación.');
+    expect(mapAcceptRouteStatus(404)).toBeNull();
+    expect(mapAcceptRouteStatus(403)).not.toBe(mapInviteProblem({ reason: 'non_owner' }));
+    expect(mapAcceptRouteStatus(410)).toBeNull();
   });
 
   it('expires at sentAt plus 7 days, including the exact boundary', () => {
