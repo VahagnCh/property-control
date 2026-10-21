@@ -1,0 +1,36 @@
+# dependencies
+node_modules/
+
+# builds
+dist/
+coverage/
+*.tsbuildinfo
+
+# env
+.env
+.env.*
+!.env.example
+
+# Expo / React Native
+.expo/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+apps/mobile/ios/
+apps/mobile/android/
+
+# Prisma client output if generated outside node_modules
+apps/api/src/generated/
+
+# logs and OS
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+pnpm-debug.log*
+.DS_Store
+*.pem
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision

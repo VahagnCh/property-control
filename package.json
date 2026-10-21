@@ -1,0 +1,29 @@
+{
+  "name": "property-control",
+  "private": true,
+  "packageManager": "pnpm@10.33.3",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "api:dev": "pnpm --filter @property-control/api start:dev",
+    "api:start": "pnpm --filter @property-control/api start",
+    "api:build": "pnpm --filter @property-control/api build",
+    "api:test": "pnpm --filter @property-control/api test",
+    "api:typecheck": "pnpm --filter @property-control/api typecheck",
+    "api:prisma:validate": "pnpm --filter @property-control/api prisma:validate",
+    "mobile:start": "pnpm --filter @property-control/mobile start",
+    "mobile:android": "pnpm --filter @property-control/mobile android",
+    "mobile:ios": "pnpm --filter @property-control/mobile ios",
+    "mobile:typecheck": "pnpm --filter @property-control/mobile typecheck",
+    "mobile:test": "pnpm --filter @property-control/mobile test"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "esbuild",
+      "prisma"
+    ]
+  }
+}

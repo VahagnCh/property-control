@@ -1,0 +1,588 @@
+// PropControl data model — aligned to Backend formal v0 (1 Oct 2026)
+// and to docs/EDGE_CASES.md (DueRecord edge-case spec).
+//
+// This database records obligations, payments the user already made, files,
+// reminders, and OCR suggestions. It does not store balances, bank links,
+// payout instructions, payment instruments, or a credit carried into the
+// next period. overpaidAmount is the excess on one period, not a balance.
+// Money columns are integer centavos. The API wire format is a decimal
+// string such as "1234.50" plus currency MXN, never a JSON float.
+//
+// Partial unique indexes that Prisma cannot express live in
+// prisma/sql/checks.sql. The first migration must run that file.
+//
+// OcrSuggestion is a review row. Creating or finishing an OcrJob does not
+// write Obligation or Payment columns. Those columns change only when
+// application code handles POST .../ocr-jobs/:id/confirm.
+//
+// SQL checks Prisma cannot express, including the reminder partial unique
+// indexes, are in prisma/sql/checks.sql. The first migration must run that file.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MembershipRole {
+  owner
+  member
+  viewer
+
+  @@map("membership_role")
+}
+
+enum MembershipStatus {
+  active
+  invited
+  revoked
+
+  @@map("membership_status")
+}
+
+// English values. Spanish labels live in the client: predial, Agua, CFE, …
+enum ObligationCategory {
+  predial
+  water
+  electricity
+  gas
+  internet
+  mantenimiento
+  mortgage
+  insurance
+  security
+  other
+
+  @@map("obligation_category")
+}
+
+enum ObligationCadence {
+  monthly
+  bimonthly
+  quarterly
+  semiannual
+  annual
+  custom
+  irregular
+
+  @@map("obligation_cadence")
+}
+
+enum PropertyType {
+  house
+  apartment
+  land
+  commercial
+  other
+
+  @@map("property_type")
+}
+
+enum OccupancyStatus {
+  owned
+  rented
+  family
+  investment
+
+  @@map("occupancy_status")
+}
+
+enum PaymentStatus {
+  recorded
+  voided
+
+  @@map("payment_status")
+}
+
+enum PeriodOutcome {
+  paid
+  partial
+  not_applicable
+
+  @@map("period_outcome")
+}
+
+enum EvidenceType {
+  photo
+  screenshot
+  pdf
+
+  @@map("evidence_type")
+}
+
+enum MaintenanceStatus {
+  open
+  in_progress
+  done
+  cancelled
+
+  @@map("maintenance_status")
+}
+
+enum ReminderChannel {
+  email
+  push
+  in_app
+
+  @@map("reminder_channel")
+}
+
+enum ReminderStatus {
+  pending
+  sent
+  cancelled
+  failed
+
+  @@map("reminder_status")
+}
+
+enum OcrJobStatus {
+  pending
+  processing
+  suggested
+  confirmed
+  rejected
+  failed
+
+  @@map("ocr_job_status")
+}
+
+enum OcrTargetEntityType {
+  obligation
+  payment
+  property
+  document_meta
+
+  @@map("ocr_target_entity_type")
+}
+
+enum OcrApplyStatus {
+  pending
+  accepted
+  rejected
+
+  @@map("ocr_apply_status")
+}
+
+/// Local row for a Trust subject. No password and no session secret.
+model User {
+  id          String   @id @default(uuid()) @db.Uuid
+  trustSub    String   @unique @map("trust_sub")
+  email       String?
+  displayName String?  @map("display_name")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  memberships            PropertyMembership[]
+  recordedPayments       Payment[]                @relation("PaymentRecordedBy")
+  voidedPayments         Payment[]                @relation("PaymentVoidedBy")
+  uploadedEvidence       Evidence[]               @relation("EvidenceUploadedBy")
+  uploadedDocuments      Document[]               @relation("DocumentUploadedBy")
+  auditEvents            AuditEvent[]             @relation("AuditActor")
+  idempotencyRecords     IdempotencyRecord[]
+  sentInvites            MembershipInvite[]       @relation("InviteSentBy")
+  notificationDeliveries NotificationDelivery[]
+
+  @@map("users")
+}
+
+model Property {
+  id              String            @id @default(uuid()) @db.Uuid
+  name            String
+  propertyType    PropertyType      @default(other) @map("property_type")
+  occupancyStatus OccupancyStatus?  @map("occupancy_status")
+  addressLine     String?           @map("address_line")
+  city            String?
+  state           String?
+  country         String            @default("MX")
+  postalCode      String?           @map("postal_code")
+  /// IANA name from the tz database, never a fixed offset. Every Property
+  /// response includes this field. Default America/Mexico_City.
+  /// The one-year paidAt back-date limit uses this timezone, not UTC.
+  timezone        String            @default("America/Mexico_City")
+  deletedAt       DateTime?         @map("deleted_at") @db.Timestamptz(6)
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  memberships    PropertyMembership[]
+  obligations    Obligation[]
+  payments       Payment[]
+  periodOutcomes ObligationPeriodOutcome[]
+  pauseIntervals ObligationPauseInterval[]
+  evidence       Evidence[]
+  maintenance    MaintenanceTask[]
+  documents      Document[]
+  reminders      Reminder[]
+  auditEvents    AuditEvent[]
+  ocrJobs        OcrJob[]
+  idempotency    IdempotencyRecord[]
+  invites        MembershipInvite[]
+
+  @@map("properties")
+}
+
+model PropertyMembership {
+  id         String           @id @default(uuid()) @db.Uuid
+  propertyId String           @map("property_id") @db.Uuid
+  userId     String           @map("user_id") @db.Uuid
+  role       MembershipRole   @default(viewer)
+  status     MembershipStatus @default(active)
+  deletedAt  DateTime?        @map("deleted_at") @db.Timestamptz(6)
+  createdAt  DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  property Property @relation(fields: [propertyId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+
+  @@unique([propertyId, userId])
+  @@index([userId])
+  @@index([propertyId])
+  @@map("property_memberships")
+}
+
+/// Recurring or one-shot rule. A Payment is a separate recorded event.
+model Obligation {
+  id               String              @id @default(uuid()) @db.Uuid
+  propertyId       String              @map("property_id") @db.Uuid
+  category         ObligationCategory
+  title            String
+  providerName     String?             @map("provider_name")
+  recurrence       ObligationCadence   @default(monthly)
+  /// Anchor day 1–31. The calendar day is clamped to the month. See EDGE_CASES §6.
+  dueDay           Int?                @map("due_day")
+  /// Year-month of period index 0. The stored day is the clamped due date.
+  scheduleAnchor   DateTime?           @map("schedule_anchor") @db.Date
+  nextDueDate      DateTime?           @map("next_due_date") @db.Date
+  /// Integer centavos in the database. Null means a variable amount with no
+  /// expected total. The API wire value is a decimal string such as "1234.50"
+  /// plus currency MXN, never a JSON float.
+  expectedAmount   Int?                @map("expected_amount")
+  currency         String              @default("MXN") @db.VarChar(3)
+  reminderOffsets  Int[]               @default([7, 1]) @map("reminder_offsets")
+  preferredMethod  String?             @map("preferred_method")
+  notes            String?
+  isActive         Boolean             @default(true) @map("is_active")
+  deletedAt        DateTime?           @map("deleted_at") @db.Timestamptz(6)
+  createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  property       Property                  @relation(fields: [propertyId], references: [id])
+  payments       Payment[]
+  periodOutcomes ObligationPeriodOutcome[]
+  pauseIntervals ObligationPauseInterval[]
+  reminders      Reminder[]
+
+  @@index([propertyId])
+  @@index([propertyId, category])
+  @@map("obligations")
+}
+
+/// A payment the user already made. Evidence is optional.
+/// Corrections are voids. There is no deletedAt and no delete route.
+model Payment {
+  id               String        @id @default(uuid()) @db.Uuid
+  propertyId       String        @map("property_id") @db.Uuid
+  obligationId     String        @map("obligation_id") @db.Uuid
+  periodDueDate    DateTime      @map("period_due_date") @db.Date
+  recordedByUserId String        @map("recorded_by_user_id") @db.Uuid
+  /// Integer centavos in the database. Must be greater than 0. MVP currency
+  /// is MXN only. The API wire value is a decimal string such as "1234.50"
+  /// plus that currency code, never a JSON float.
+  amount           Int
+  currency         String        @default("MXN") @db.VarChar(3)
+  /// The one-year back-date limit is checked in the property timezone, not UTC.
+  paidAt           DateTime      @map("paid_at") @db.Timestamptz(6)
+  method           String?
+  reference        String?
+  notes            String?
+  status           PaymentStatus @default(recorded)
+  idempotencyKey   String        @map("idempotency_key")
+  voidedAt         DateTime?     @map("voided_at") @db.Timestamptz(6)
+  voidedByUserId   String?       @map("voided_by") @db.Uuid
+  voidReason       String?       @map("void_reason") @db.VarChar(500)
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  property       Property                  @relation(fields: [propertyId], references: [id])
+  obligation     Obligation                @relation(fields: [obligationId], references: [id])
+  recordedBy     User                      @relation("PaymentRecordedBy", fields: [recordedByUserId], references: [id])
+  voidedBy       User?                     @relation("PaymentVoidedBy", fields: [voidedByUserId], references: [id])
+  evidence       Evidence[]
+  periodOutcomes ObligationPeriodOutcome[]
+
+  @@unique([propertyId, idempotencyKey])
+  @@index([obligationId, periodDueDate])
+  @@index([propertyId, paidAt])
+  @@map("payments")
+}
+
+/// One row per (obligation, period due date).
+/// not_applicable must not reference a Payment. Pause is Obligation.isActive
+/// plus ObligationPauseInterval. Archive is Obligation.deletedAt.
+/// Those three mechanisms stay separate. Archive also pauses.
+/// overpaidAmount is excess integer centavos on this period only. The API
+/// wire value is a decimal string such as "1234.50" plus currency MXN, never
+/// a JSON float. It is not a credit and it does not reduce the next period.
+model ObligationPeriodOutcome {
+  id             String        @id @default(uuid()) @db.Uuid
+  obligationId   String        @map("obligation_id") @db.Uuid
+  propertyId     String        @map("property_id") @db.Uuid
+  periodDueDate  DateTime      @map("period_due_date") @db.Date
+  outcome        PeriodOutcome
+  paymentId      String?       @map("payment_id") @db.Uuid
+  overpaidAmount Int           @default(0) @map("overpaid_amount")
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  obligation Obligation @relation(fields: [obligationId], references: [id])
+  property   Property   @relation(fields: [propertyId], references: [id])
+  payment    Payment?   @relation(fields: [paymentId], references: [id])
+
+  @@unique([obligationId, periodDueDate])
+  @@index([propertyId, periodDueDate])
+  @@map("obligation_period_outcomes")
+}
+
+/// One closed or open pause. Dates after lastScheduledDueDate and inside the
+/// interval are never created. resumedOn null means the pause is still open.
+model ObligationPauseInterval {
+  id                    String    @id @default(uuid()) @db.Uuid
+  obligationId          String    @map("obligation_id") @db.Uuid
+  propertyId            String    @map("property_id") @db.Uuid
+  pausedOn              DateTime  @map("paused_on") @db.Date
+  resumedOn             DateTime? @map("resumed_on") @db.Date
+  lastScheduledDueDate  DateTime  @map("last_scheduled_due_date") @db.Date
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  obligation Obligation @relation(fields: [obligationId], references: [id])
+  property   Property   @relation(fields: [propertyId], references: [id])
+
+  @@index([obligationId])
+  @@map("obligation_pause_intervals")
+}
+
+/// Exactly one of paymentId or maintenanceTaskId in the application layer.
+model Evidence {
+  id                 String       @id @default(uuid()) @db.Uuid
+  propertyId         String       @map("property_id") @db.Uuid
+  paymentId          String?      @map("payment_id") @db.Uuid
+  maintenanceTaskId  String?      @map("maintenance_task_id") @db.Uuid
+  uploadedByUserId   String       @map("uploaded_by_user_id") @db.Uuid
+  storageKey         String       @unique @map("storage_key")
+  type               EvidenceType
+  uploadedAt         DateTime     @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  notes              String?
+  contentType        String       @map("content_type")
+  byteSize           BigInt       @map("byte_size")
+  originalFilename   String?      @map("original_filename")
+  idempotencyKey     String       @map("idempotency_key")
+  deletedAt          DateTime?    @map("deleted_at") @db.Timestamptz(6)
+  createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  property        Property         @relation(fields: [propertyId], references: [id])
+  payment         Payment?         @relation(fields: [paymentId], references: [id])
+  maintenanceTask MaintenanceTask? @relation(fields: [maintenanceTaskId], references: [id])
+  uploadedBy      User             @relation("EvidenceUploadedBy", fields: [uploadedByUserId], references: [id])
+  ocrJobs         OcrJob[]
+
+  @@unique([propertyId, idempotencyKey])
+  @@index([paymentId])
+  @@index([maintenanceTaskId])
+  @@index([propertyId])
+  @@map("evidence")
+}
+
+model MaintenanceTask {
+  id          String            @id @default(uuid()) @db.Uuid
+  propertyId  String            @map("property_id") @db.Uuid
+  title       String
+  description String?
+  status      MaintenanceStatus @default(open)
+  dueOn       DateTime?         @map("due_on") @db.Date
+  deletedAt   DateTime?         @map("deleted_at") @db.Timestamptz(6)
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  property  Property   @relation(fields: [propertyId], references: [id])
+  evidence  Evidence[]
+  reminders Reminder[]
+
+  @@index([propertyId])
+  @@map("maintenance_tasks")
+}
+
+model Document {
+  id               String    @id @default(uuid()) @db.Uuid
+  propertyId       String    @map("property_id") @db.Uuid
+  uploadedByUserId String    @map("uploaded_by_user_id") @db.Uuid
+  title            String
+  storageKey       String    @unique @map("storage_key")
+  contentType      String    @map("content_type")
+  byteSize         BigInt    @map("byte_size")
+  originalFilename String?   @map("original_filename")
+  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  property   Property @relation(fields: [propertyId], references: [id])
+  uploadedBy User     @relation("DocumentUploadedBy", fields: [uploadedByUserId], references: [id])
+  ocrJobs    OcrJob[]
+
+  @@index([propertyId])
+  @@map("documents")
+}
+
+/// Parent is exactly one of obligation or maintenance task.
+/// Uniqueness is the two partial indexes in prisma/sql/checks.sql:
+/// (obligation_id, scheduled_for, channel) WHERE obligation_id IS NOT NULL
+/// (maintenance_task_id, scheduled_for, channel) WHERE maintenance_task_id IS NOT NULL
+model Reminder {
+  id                String          @id @default(uuid()) @db.Uuid
+  propertyId        String          @map("property_id") @db.Uuid
+  obligationId      String?         @map("obligation_id") @db.Uuid
+  maintenanceTaskId String?         @map("maintenance_task_id") @db.Uuid
+  periodDueDate     DateTime?       @map("period_due_date") @db.Date
+  scheduledFor      DateTime        @map("scheduled_for") @db.Timestamptz(6)
+  channel           ReminderChannel @default(in_app)
+  status            ReminderStatus  @default(pending)
+  sentAt            DateTime?       @map("sent_at") @db.Timestamptz(6)
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  property        Property               @relation(fields: [propertyId], references: [id])
+  obligation      Obligation?            @relation(fields: [obligationId], references: [id])
+  maintenanceTask MaintenanceTask?       @relation(fields: [maintenanceTaskId], references: [id])
+  deliveries      NotificationDelivery[]
+
+  @@index([scheduledFor])
+  @@index([propertyId])
+  @@map("reminders")
+}
+
+/// Delivery idempotency from Trust: one row per recipient, fire time, and channel.
+model NotificationDelivery {
+  id           String          @id @default(uuid()) @db.Uuid
+  reminderId   String          @map("reminder_id") @db.Uuid
+  userId       String          @map("user_id") @db.Uuid
+  scheduledFor DateTime        @map("scheduled_for") @db.Timestamptz(6)
+  channel      ReminderChannel
+  createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  reminder Reminder @relation(fields: [reminderId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+
+  @@unique([reminderId, scheduledFor, userId, channel], map: "notification_deliveries_idempotency_key")
+  @@map("notification_deliveries")
+}
+
+/// Email invite. Only an owner invites, by email, as member or viewer.
+/// The raw token is returned once. tokenHash is lowercase hex SHA-256.
+/// Tokens are single-use. expiresAt is sentAt plus 7 days. A resend
+/// restarts those 7 days. Accept checks, in order: an unknown token or
+/// the wrong account is 404 before any token state is revealed; a used,
+/// revoked, superseded, or expired token is 410; an invitee who is already
+/// a member is 409. A non-owner invite action is 403. Acceptance requires
+/// the invited email.
+model MembershipInvite {
+  id              String         @id @default(uuid()) @db.Uuid
+  propertyId      String         @map("property_id") @db.Uuid
+  email           String
+  role            MembershipRole
+  tokenHash       String         @unique @map("token_hash")
+  invitedByUserId String         @map("invited_by_user_id") @db.Uuid
+  sentAt          DateTime       @default(now()) @map("sent_at") @db.Timestamptz(6)
+  expiresAt       DateTime       @map("expires_at") @db.Timestamptz(6)
+  usedAt          DateTime?      @map("used_at") @db.Timestamptz(6)
+  revokedAt       DateTime?      @map("revoked_at") @db.Timestamptz(6)
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  property  Property @relation(fields: [propertyId], references: [id])
+  invitedBy User     @relation("InviteSentBy", fields: [invitedByUserId], references: [id])
+
+  @@index([propertyId, email])
+  @@map("membership_invites")
+}
+
+/// Append-only. No updatedAt and no deletedAt.
+model AuditEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  propertyId  String?  @map("property_id") @db.Uuid
+  actorUserId String?  @map("actor_user_id") @db.Uuid
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String?  @map("entity_id") @db.Uuid
+  beforeState Json?    @map("before_state")
+  afterState  Json?    @map("after_state")
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  property Property? @relation(fields: [propertyId], references: [id])
+  actor    User?     @relation("AuditActor", fields: [actorUserId], references: [id])
+
+  @@index([propertyId, createdAt])
+  @@index([entityType, entityId])
+  @@map("audit_events")
+}
+
+model OcrJob {
+  id         String       @id @default(uuid()) @db.Uuid
+  propertyId String       @map("property_id") @db.Uuid
+  documentId String       @map("document_id") @db.Uuid
+  evidenceId String?      @map("evidence_id") @db.Uuid
+  status     OcrJobStatus @default(pending)
+  storageKey String       @map("storage_key")
+  vendor     String?
+  error      String?
+  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  property    Property        @relation(fields: [propertyId], references: [id])
+  document    Document        @relation(fields: [documentId], references: [id])
+  evidence    Evidence?       @relation(fields: [evidenceId], references: [id])
+  suggestions OcrSuggestion[]
+
+  @@index([propertyId, createdAt])
+  @@index([documentId])
+  @@index([status])
+  @@map("ocr_jobs")
+}
+
+model OcrSuggestion {
+  id               String              @id @default(uuid()) @db.Uuid
+  ocrJobId         String              @map("ocr_job_id") @db.Uuid
+  targetEntityType OcrTargetEntityType @map("target_entity_type")
+  targetEntityId   String?             @map("target_entity_id") @db.Uuid
+  fieldPath        String              @map("field_path")
+  suggestedValue   Json                @map("suggested_value")
+  confidence       Decimal?            @db.Decimal(5, 4)
+  userEditedValue  Json?               @map("user_edited_value")
+  applyStatus      OcrApplyStatus      @default(pending) @map("apply_status")
+  createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  ocrJob OcrJob @relation(fields: [ocrJobId], references: [id], onDelete: Cascade)
+
+  @@index([ocrJobId])
+  @@index([ocrJobId, applyStatus])
+  @@map("ocr_suggestions")
+}
+
+model IdempotencyRecord {
+  id             String   @id @default(uuid()) @db.Uuid
+  propertyId     String   @map("property_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  routeKey       String   @map("route_key")
+  idempotencyKey String   @map("idempotency_key")
+  responseStatus Int?     @map("response_status")
+  responseBody   Json?    @map("response_body")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  property Property @relation(fields: [propertyId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+
+  @@unique([propertyId, routeKey, idempotencyKey])
+  @@map("idempotency_records")
+}
