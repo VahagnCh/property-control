@@ -9,5 +9,8 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.spec.ts', 'test/**/*.spec.ts'],
     globals: true,
+    env: {
+      OBJECT_STORAGE_ENV: 'staging',
+    },
   },
 });

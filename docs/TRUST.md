@@ -67,9 +67,11 @@ No public ACL, no permanent public URL, no CDN-public bucket. The database store
 Key conventions:
 
 ```text
-properties/{propertyId}/evidence/{evidenceId}/{uuid}
-properties/{propertyId}/documents/{documentId}/{uuid}
+{env}/evidence/{uuid}
+{env}/documents/{uuid}
 ```
+
+`env` is `staging` or `prod`, from `OBJECT_STORAGE_ENV`. The key has no property id, user id, name, or filename. The property id stays on the database row.
 
 Content-type allowlist: `image/jpeg`, `image/png`, `application/pdf`. Maximum size is 10 MiB, exactly 10,485,760 bytes (`MAX_EVIDENCE_BYTES`). The same cap applies to documents.
 
@@ -142,7 +144,7 @@ Users do not get a hard-delete control in the MVP. The retention job is the only
 ## OCR privacy
 
 - The raw file and any OCR artifact stay in private storage. Access needs a valid JWT and an active membership, same as any other file.
-- The job may build a private source key from validated UUIDs, never a URL. That key, and any object path, is not returned on any OCR or upload response, including errors. An opaque `fileId` from `crypto.randomUUID` is allowed. It is not derived from the source key or the path. It resolves only through a property-scoped route behind the membership guard, and a foreign id is 404. Tests walk those bodies for `storageKey`, `storage_key`, and a raw bucket path, and they do not treat an id as a leak.
+- The job may build a private source key `{env}/documents/{uuid}`, never a URL and never a property id. That key, and any object path, is not returned on any OCR or upload response, including errors. An opaque `fileId` from `crypto.randomUUID` is allowed. It is not derived from the source key or the path. It resolves only through a property-scoped route behind the membership guard, and a foreign id is 404. Tests walk those bodies for `storageKey`, `storage_key`, and a raw bucket path, and they do not treat an id as a leak.
 - The vendor identifier is opaque. The vendor never writes an obligation or a payment row; it returns suggestions and the API persists them as suggestions.
 - Extracted values live in `ocr_suggestions.suggested_value`. Until someone confirms, they are proposals attached to the job, not fields on a property's records.
 - Retention for OCR artifacts follows the policy above.

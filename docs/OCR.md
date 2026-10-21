@@ -106,7 +106,7 @@ The response contains the job, the updated suggestions, and `applied`, which lis
 | Expired job | 410. It is not confirmed. |
 | Applied | `persisted` is true only when the confirm's saves commit. A confirm with no `saveValue` writes stays `persisted: false`. `storageKey` is absent. |
 
-The private source key, when one is built, is assembled server-side from validated UUIDs only. It is not a URL, and it is not a field on any OCR response. Tests walk success and error bodies for `storageKey`, `storage_key`, and a raw `properties/...` bucket path.
+The private source key, when one is built, is `{env}/documents/{uuid}` from `OBJECT_STORAGE_ENV` (`staging` or `prod`). It has no property id. It is not a URL, and it is not a field on any OCR response. Tests walk success and error bodies for `storageKey`, `storage_key`, and a raw `properties/...` bucket path.
 
 ### Tests that hold the rule
 

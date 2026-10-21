@@ -1,31 +1,24 @@
 import { Injectable } from '@nestjs/common';
-import { isTraversal, isUuid } from '../common/path-safety.js';
-import { OCR_ERROR, ocrBadRequest } from './ocr-errors.js';
+import { documentSourceKey, storageEnvFromConfig } from '../evidence/storage-key.js';
 
 export const OBJECT_STORAGE = Symbol('OBJECT_STORAGE');
 
 export interface ObjectStorage {
-  buildOcrSourceKey(propertyId: string, documentId: string): string;
+  buildOcrSourceKey(): string;
 }
 
 /**
- * Builds a private storage key from ids that have already been checked.
+ * Private document key for the OCR stub. The property id stays on the row.
  * The key is never copied onto an OCR response.
  */
 @Injectable()
 export class PrivateObjectStorage implements ObjectStorage {
   readonly calls: string[] = [];
 
-  buildOcrSourceKey(propertyId: string, documentId: string): string {
-    if (
-      !isUuid(propertyId) ||
-      !isUuid(documentId) ||
-      isTraversal(propertyId) ||
-      isTraversal(documentId)
-    ) {
-throw ocrBadRequest(OCR_ERROR.invalidSourceKey, 'Invalid source key input.');
-    }
-    const key = `properties/${propertyId}/documents/${documentId}/ocr-stub`;
+  constructor(private readonly config: NodeJS.ProcessEnv = process.env) {}
+
+  buildOcrSourceKey(): string {
+    const key = documentSourceKey(storageEnvFromConfig(this.config));
     this.calls.push(key);
     return key;
   }

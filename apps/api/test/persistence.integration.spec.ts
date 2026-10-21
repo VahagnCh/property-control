@@ -26,6 +26,7 @@ import {
 } from '../src/persistence/seed-data.js';
 import { PrismaLedger } from '../src/persistence/prisma-ledger.js';
 import { recordPayment, voidPayment } from '../src/payments/ledger.js';
+import { documentSourceKey, evidenceSourceKey } from '../src/evidence/storage-key.js';
 
 const enabled = Boolean(process.env.DATABASE_URL && process.env.DIRECT_URL);
 let ownerClient: PrismaClient;
@@ -59,6 +60,112 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       ORDER BY table_name
     `;
     expect(sourceKeys.map((row) => row.table_name)).toEqual(['documents', 'evidence', 'ocr_jobs']);
+  });
+
+  it('rejects an old source_key and accepts env/kind/uuid', async () => {
+    const fixture = await createFixture(prisma);
+    const paymentId = randomUUID();
+    const evidenceId = randomUUID();
+    const documentId = randomUUID();
+    const jobId = randomUUID();
+    const oldEvidence = `properties/${fixture.propertyId}/evidence/${evidenceId}/${randomUUID()}`;
+    const oldDocument = `properties/${fixture.propertyId}/documents/${documentId}/ocr-stub`;
+    try {
+      await prisma.payment.create({
+        data: {
+          id: paymentId,
+          propertyId: fixture.propertyId,
+          obligationId: fixture.obligationId,
+          periodDueDate: new Date('2026-03-15T00:00:00.000Z'),
+          recordedByUserId: fixture.userId,
+          amount: 10000n,
+          currency: 'MXN',
+          paidAt: new Date('2026-03-03T18:00:00.000Z'),
+          status: 'recorded',
+          idempotencyKey: paymentId,
+        },
+      });
+      await prisma.evidence.create({
+        data: {
+          id: evidenceId,
+          propertyId: fixture.propertyId,
+          paymentId,
+          uploadedByUserId: fixture.userId,
+          sourceKey: evidenceSourceKey('staging'),
+          type: 'photo',
+          contentType: 'image/jpeg',
+          sizeBytes: 10n,
+          idempotencyKey: evidenceId,
+        },
+      });
+      await expect(
+        prisma.evidence.create({
+          data: {
+            id: randomUUID(),
+            propertyId: fixture.propertyId,
+            paymentId,
+            uploadedByUserId: fixture.userId,
+            sourceKey: oldEvidence,
+            type: 'photo',
+            contentType: 'image/jpeg',
+            sizeBytes: 10n,
+            idempotencyKey: randomUUID(),
+          },
+        }),
+      ).rejects.toThrow(/evidence_source_key_shape/);
+      expect(oldEvidence).toContain(fixture.propertyId);
+      expect(oldEvidence).not.toMatch(/^(staging|prod)\/evidence\//);
+
+      await prisma.document.create({
+        data: {
+          id: documentId,
+          propertyId: fixture.propertyId,
+          uploadedByUserId: fixture.userId,
+          title: 'Deed',
+          sourceKey: documentSourceKey('prod'),
+          contentType: 'application/pdf',
+          byteSize: 10n,
+        },
+      });
+      await expect(
+        prisma.document.create({
+          data: {
+            id: randomUUID(),
+            propertyId: fixture.propertyId,
+            uploadedByUserId: fixture.userId,
+            title: 'Old',
+            sourceKey: oldDocument,
+            contentType: 'application/pdf',
+            byteSize: 10n,
+          },
+        }),
+      ).rejects.toThrow(/documents_source_key_shape/);
+
+      await prisma.ocrJob.create({
+        data: {
+          id: jobId,
+          propertyId: fixture.propertyId,
+          documentId,
+          sourceKey: documentSourceKey('staging'),
+        },
+      });
+      await expect(
+        prisma.ocrJob.create({
+          data: {
+            id: randomUUID(),
+            propertyId: fixture.propertyId,
+            documentId,
+            sourceKey: oldDocument,
+          },
+        }),
+      ).rejects.toThrow(/ocr_jobs_source_key_shape/);
+    } finally {
+      await prisma.ocrJob.deleteMany({ where: { propertyId: fixture.propertyId } });
+      await prisma.evidence.deleteMany({ where: { propertyId: fixture.propertyId } });
+      await prisma.document.deleteMany({ where: { propertyId: fixture.propertyId } });
+      await ownerClient.payment.deleteMany({ where: { propertyId: fixture.propertyId } });
+      await deleteFixture(prisma, fixture);
+    }
   });
 
   it('rejects amount 0, a nextDueDate outside 1990–2100, and a void without a reason', async () => {
