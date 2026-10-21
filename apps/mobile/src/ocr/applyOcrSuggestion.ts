@@ -110,7 +110,16 @@ export type OcrReplaceRowModel = {
   toast: string;
 };
 
-type FieldOptions = { targetEntityId?: string; now?: Date; timeZone?: string };
+type FieldOptions = {
+  targetEntityId?: string;
+  now?: Date;
+  timeZone?: string;
+  /**
+   * Local undo only. Mantener after Reemplazar writes this back.
+   * A saved field uses `savedValue` instead. Never sent on the confirm request.
+   */
+  previousValue?: string;
+};
 
 /** Row id the screen scrolls into view when this suggestion blocks confirm. */
 export function ocrSuggestionScrollTarget(suggestionId: string): string {
@@ -326,7 +335,12 @@ export function editOcrField<T extends Record<string, string>>(
   };
 }
 
-/** "Mantener lo que escribí". The typed value stays. */
+/**
+ * "Mantener lo que escribí". The confirm action is `reject`.
+ * After Reemplazar, pass the tap's `previousValue` so the form returns to the
+ * text from before that tap. A saved field returns to `savedValue`.
+ * That text stays off the confirm request.
+ */
 export function keepTypedField<T extends Record<string, string>>(
   form: T,
   suggestion: OcrSuggestion,
@@ -336,7 +350,15 @@ export function keepTypedField<T extends Record<string, string>>(
   if (!isApplyableField(form, field) || suggestion.field !== field) {
     return { form, decision: null };
   }
-  return { form, decision: clientDecision(suggestion, field, 'kept', options) };
+  const decision = clientDecision(suggestion, field, 'kept', options);
+  if (!decision) {
+    return { form, decision: null };
+  }
+  const restore = valueAfterKeep(suggestion, options?.previousValue);
+  if (restore === undefined || (form[field] ?? '') === restore) {
+    return { form, decision };
+  }
+  return { form: { ...form, [field]: restore }, decision };
 }
 
 /** Rechazar. The typed value stays, including when the suggestion was confirmed. */
@@ -570,6 +592,16 @@ function wireOnly(decision: OcrWireDecision): OcrWireDecision {
     payload.targetEntityId = decision.targetEntityId;
   }
   return payload;
+}
+
+function valueAfterKeep(suggestion: OcrSuggestion, previousValue: string | undefined): string | undefined {
+  if (previousValue === undefined) {
+    return undefined;
+  }
+  if (fieldIsSaved(suggestion) && typeof suggestion.savedValue === 'string') {
+    return suggestion.savedValue;
+  }
+  return previousValue;
 }
 
 function savedFieldHold<T extends Record<string, string>>(

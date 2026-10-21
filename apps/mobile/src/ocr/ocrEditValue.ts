@@ -22,7 +22,8 @@ function reject(key: CopyKey): TextInputResult {
  * Per-field OCR edit check. Disallowed characters are rejected before the
  * field rule, so a NUL in an amount is `form.text.invalidChars`.
  * Amounts use the record-payment money parser and are canonicalized to two
- * decimals. `0.00` is allowed. Thousands separators are not.
+ * decimals. Zero and negative amounts are rejected, matching the server
+ * centavos check. Thousands separators are not.
  * `paidDate` / `paidAt` use the paid-date window. `nextDueDate` uses its window.
  * A date edit without `now` is not sent.
  */
@@ -56,7 +57,11 @@ export function validateOcrEditValue(
   }
   if (field === 'amount' || field === 'expectedAmount') {
     try {
-      return { ok: true, value: formatWireAmount(parseMxnToCentavos(editedValue)) };
+      const centavos = parseMxnToCentavos(editedValue);
+      if (centavos <= 0) {
+        return reject('ocr.edit.invalid');
+      }
+      return { ok: true, value: formatWireAmount(centavos) };
     } catch {
       return reject('ocr.edit.invalid');
     }

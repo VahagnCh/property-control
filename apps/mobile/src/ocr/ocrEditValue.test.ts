@@ -61,9 +61,22 @@ describe('per-field OCR edits', () => {
     expect(edited.form.amount).toBe('10.50');
     expect(edited.decision && JSON.parse(JSON.stringify(edited.decision)).editedValue).toBe('10.50');
 
-    expect(edit('expectedAmount', '0').form.expectedAmount).toBe('0.00');
-    expect(edit('amount', '0.00').error).toBeNull();
-    expect(edit('amount', '0.00').form.amount).toBe('0.00');
+    expect(edit('amount', '0').decision).toBeNull();
+    expect(edit('amount', '0').form).toBe(fields);
+    expect(edit('amount', '0').error).toEqual({ key: 'ocr.edit.invalid', message: INVALID });
+    expect(edit('expectedAmount', '0').decision).toBeNull();
+    expect(edit('expectedAmount', '0').form).toBe(fields);
+    expect(edit('amount', '0.00').decision).toBeNull();
+    expect(edit('amount', '0.00').form).toBe(fields);
+    expect(edit('amount', '0.00').error?.key).toBe('ocr.edit.invalid');
+    expect(edit('amount', '-1').decision).toBeNull();
+    expect(edit('amount', '-1').error?.key).toBe('ocr.edit.invalid');
+    expect(edit('amount', '0.001').decision).toBeNull();
+    expect(edit('amount', '0.001').error?.key).toBe('ocr.edit.invalid');
+    const centavo = edit('amount', '0.01');
+    expect(centavo.error).toBeNull();
+    expect(centavo.form.amount).toBe('0.01');
+    expect(centavo.decision?.editedValue).toBe('0.01');
 
     const commas = edit('amount', '1,234.50');
     expect(commas.decision).toBeNull();
