@@ -173,7 +173,7 @@ This is the only upload-url request and response shape. `docs/TRUST.md` uses thi
         "propertyId": "<uuid>",
         "paymentId": "<uuid or null>",
         "maintenanceTaskId": "<uuid or null>",
-        "storageKey": "properties/<propertyId>/evidence/<evidenceId>/<uuid>",
+        "fileId": "<uuid>",
         "type": "photo | screenshot | pdf",
         "contentType": "image/jpeg | image/png | application/pdf",
         "byteSize": 1048576,

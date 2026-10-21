@@ -145,7 +145,7 @@ An optional private file supporting a payment or a maintenance task.
 
 | Field | Notes |
 | :---- | :---- |
-| `storage_key` | Unique. The private object key. The API may expose it as `fileId`. **Never a public URL.** |
+| `storage_key` | Unique. Private object key on the row. The client receives a `fileId` only and never this key. |
 | `type` | `photo` · `screenshot` · `pdf` |
 | `content_type` | Allowlist: `image/jpeg`, `image/png`, `application/pdf` |
 | `byte_size` | Greater than zero, at most 15,728,640 (15 MiB) |

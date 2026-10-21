@@ -74,6 +74,15 @@ describe('edge-case spec coverage', () => {
       return matches[0];
     });
     expect(blocks[0]).toBe(blocks[1]);
+    for (const block of blocks) {
+      expect(block).not.toMatch(/storageKey/);
+      const parsed = JSON.parse(block ?? '{}') as {
+        response?: { body?: { evidence?: Record<string, unknown>; uploadUrl?: unknown } };
+      };
+      expect(parsed.response?.body?.evidence).not.toHaveProperty('storageKey');
+      expect(parsed.response?.body?.evidence).toHaveProperty('fileId');
+      expect(JSON.stringify(parsed)).not.toMatch(/properties\/<propertyId>\/evidence/);
+    }
     expect(JSON.parse(blocks[0] ?? '{}')).toHaveProperty('response.body.uploadUrl');
   });
 });

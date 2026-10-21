@@ -95,7 +95,7 @@ Upload, in either of two accepted shapes:
         "propertyId": "<uuid>",
         "paymentId": "<uuid or null>",
         "maintenanceTaskId": "<uuid or null>",
-        "storageKey": "properties/<propertyId>/evidence/<evidenceId>/<uuid>",
+        "fileId": "<uuid>",
         "type": "photo | screenshot | pdf",
         "contentType": "image/jpeg | image/png | application/pdf",
         "byteSize": 1048576,
