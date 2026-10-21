@@ -16,6 +16,7 @@ import {
 import { PROPERTY_ACCESS, type PropertyAccess } from '../src/auth/property-access.js';
 import { AppModule } from '../src/app.module.js';
 import { configureApp } from '../src/configure-app.js';
+import { HEALTH_PROBE } from '../src/health/live-health.controller.js';
 import { OCR_RUNTIME } from '../src/ocr/ocr-runtime.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -122,7 +123,7 @@ function walk(stack: RouteLayer[], prefix = ''): string[] {
 }
 
 function familyOf(path: string): Family {
-  if (path === '/health' || path.startsWith('/health/')) return 'health';
+  if (path === '/v1/health' || path.startsWith('/v1/health/')) return 'health';
   if (path === '/v1/me' || path.startsWith('/v1/me/')) return 'me';
   if (path.includes('/home/')) return 'home';
   if (path.includes('/ocr-jobs')) return 'ocr';
@@ -224,6 +225,9 @@ async function boot(options?: {
   corsOrigins?: string[];
 }): Promise<INestApplication> {
   let builder: TestingModuleBuilder = Test.createTestingModule({ imports: [AppModule] });
+  builder = builder.overrideProvider(HEALTH_PROBE).useValue({
+    ping: () => Promise.reject(new Error('down')),
+  });
   if (options?.enabled !== undefined) {
     builder = builder.overrideProvider(OCR_RUNTIME).useValue({
       enabled: options.enabled,
@@ -325,7 +329,7 @@ describe('API P1', () => {
     await app.close();
   });
 
-  it('inventory matches docs/API.md, including GET /health', () => {
+  it('inventory matches docs/API.md, including GET /v1/health', () => {
     const markdown = readFileSync(resolve(repoRoot, 'docs/API.md'), 'utf8');
     const stated = Number(markdown.match(/maps \*\*(\d+)\*\* routes/)?.[1]);
     const documented = documentedRoutes(markdown);
@@ -358,7 +362,7 @@ describe('API P1', () => {
     const server = app.getHttpServer();
     const targets = routes.filter((route) => {
       const path = route.split(/\s+/)[1] ?? '';
-      if (isOcr(path) || path === '/health' || isListTemplate(route)) return false;
+      if (isOcr(path) || path === '/health' || path === '/v1/health' || isListTemplate(route)) return false;
       return true;
     });
     expect(targets.length).toBeGreaterThan(0);
@@ -391,7 +395,12 @@ describe('API P1', () => {
           body: method === 'GET' ? undefined : '{}',
           contentType: method === 'GET' ? undefined : 'application/json',
         });
-        const open = isListTemplate(route) || template === '/health' ? 200 : 501;
+        const open =
+          isListTemplate(route) || template === '/health'
+            ? 200
+            : template === '/v1/health'
+              ? 503
+              : 501;
         expect(response.status, `${family} ${route} ${token ?? 'no token'}`).toBe(open);
         expectNoSecret(response.body);
       }
@@ -552,7 +561,7 @@ describe('API P1 literal traversal and CORS allow-list', () => {
       { family: 'audit', path: '/v1/properties/../audit-events', status: 400 },
       { family: 'me', path: '/v1/me/../me', status: 400 },
       { family: 'home', path: '/v1/home/../home/action-items', status: 400 },
-      { family: 'health', path: '/health/../health', status: 400 },
+      { family: 'health', path: '/v1/health/../v1/health', status: 400 },
       {
         family: 'ocr',
         path: `/v1/properties/../documents/${UUID_B}/ocr-jobs`,
@@ -569,8 +578,8 @@ describe('API P1 literal traversal and CORS allow-list', () => {
 
   it('does not reflect a non-allow-listed origin', async () => {
     const server = app.getHttpServer();
-    const denied = await send(server, 'GET', '/health', { origin: 'https://evil.example' });
-    const allowed = await send(server, 'GET', '/health', { origin: 'https://app.example' });
+    const denied = await send(server, 'GET', '/v1/health', { origin: 'https://evil.example' });
+    const allowed = await send(server, 'GET', '/v1/health', { origin: 'https://app.example' });
     expect(denied.headers['access-control-allow-origin']).toBeUndefined();
     expect(allowed.headers['access-control-allow-origin']).toBe('https://app.example');
     expect(allowed.headers['access-control-allow-origin']).not.toBe('*');

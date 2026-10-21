@@ -63,7 +63,7 @@ These are confirmed. Changing one requires Product, not a pull request.
 | Payments are void-only | No payment delete. A void records `voidedAt`, `voidedBy`, and `voidReason`. A second void returns 409. |
 | Invites | An owner invites by email as member or viewer. The token is single-use and expires 7 days after it is sent. |
 | Authorization | Every property-scoped read and write passes a `PropertyMembership` check. |
-| File storage | Private `storage_key` plus short-lived signed URLs. No public URLs. |
+| File storage | Private source key plus short-lived signed URLs. No public URLs. |
 | Client sync | Online-first with an outbox. `Idempotency-Key` on payment and evidence creates. The server wins a conflict. |
 | OCR | On upload: extract, then **suggest**, then the person **confirms**. No silent auto-fill, ever. |
 

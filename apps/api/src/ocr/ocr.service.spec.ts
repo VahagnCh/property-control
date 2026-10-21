@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   GoneException,
   HttpException,
+  InternalServerErrorException,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -126,7 +127,11 @@ describe('OcrService', () => {
       storage.buildOcrSourceKey('property-1', DOCUMENT);
       expect.unreachable();
     } catch (error) {
-      expect((error as BadRequestException).getResponse()).toMatchObject({ error: 'invalid_storage_key' });
+      expect((error as BadRequestException).getResponse()).toMatchObject({
+        error: 'invalid_source_key',
+        message: 'Invalid source key input.',
+      });
+      expect(JSON.stringify((error as BadRequestException).getResponse())).not.toMatch(/storage[_-]?key/i);
     }
     expect(storage.calls).toEqual([]);
   });
@@ -1439,7 +1444,7 @@ describe('OcrService', () => {
     expect(error).not.toBeInstanceOf(BadRequestException);
   });
 
-  it('falls back when the property timezone is invalid and does not throw 500', async () => {
+  it('returns 500 when the property timezone is invalid and leaves suggestions pending', async () => {
     const service = serviceWith({
       clock: new ManualClock(Date.parse('2026-10-21T18:00:00.000Z')),
       lookup: {
@@ -1451,17 +1456,29 @@ describe('OcrService', () => {
     });
     const { job } = service.enqueue(PROPERTY, DOCUMENT);
     const suggestions = suggestionMap(service, PROPERTY, job.id);
-    const result = await service.confirm(
-      PROPERTY,
-      job.id,
-      suggestions.map((row) =>
-        row.fieldPath === 'nextDueDate'
-          ? { suggestionId: row.id, action: 'edit' as const, editedValue: '2026-11-15', targetEntityId: OBLIGATION }
-          : { suggestionId: row.id, action: 'reject' as const },
-      ),
-    );
-    expect(result.job.status).toBe('confirmed');
-    expect(result.suggestions.find((row) => row.fieldPath === 'nextDueDate')?.userEditedValue).toBe('2026-11-15');
+    const error = await service
+      .confirm(
+        PROPERTY,
+        job.id,
+        suggestions.map((row) =>
+          row.fieldPath === 'nextDueDate'
+            ? { suggestionId: row.id, action: 'edit' as const, editedValue: '2026-11-15', targetEntityId: OBLIGATION }
+            : { suggestionId: row.id, action: 'reject' as const },
+        ),
+      )
+      .then(
+        () => {
+          throw new Error('confirm resolved');
+        },
+        (caught: unknown) => caught,
+      );
+    expect(error).toBeInstanceOf(InternalServerErrorException);
+    expect((error as InternalServerErrorException).getStatus()).toBe(500);
+    expect((error as InternalServerErrorException).getResponse()).toMatchObject({
+      error: 'invalid_stored_timezone',
+    });
+    const after = suggestionMap(service, PROPERTY, job.id);
+    expect(after.every((row) => row.applyStatus === 'pending')).toBe(true);
   });
 
   it('rejects C0 on single-line text and normalizes newlines on notes', async () => {

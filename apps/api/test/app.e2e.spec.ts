@@ -75,14 +75,6 @@ describe('API scaffold', () => {
     await app.close();
   });
 
-  it('GET /health', async () => {
-    const response = await request(app.getHttpServer()).get('/health').expect(200);
-    expect(response.body).toEqual({
-      status: 'ok',
-      service: 'property-control-api',
-    });
-  });
-
   it('GET /v1/properties is an empty scaffold list', async () => {
     const response = await request(app.getHttpServer()).get('/v1/properties').expect(200);
     expect(response.body).toEqual({

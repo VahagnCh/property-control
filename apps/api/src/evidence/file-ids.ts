@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { NotFoundException } from '@nestjs/common';
+import { notFoundException } from '../common/not-found.js';
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -11,7 +11,7 @@ export interface IssuedFile {
 interface PrivateFile {
   fileId: string;
   propertyId: string;
-  storageKey: string;
+  sourceKey: string;
 }
 
 /**
@@ -24,22 +24,22 @@ export class PropertyFileIds {
 
   issue(propertyId: string): IssuedFile {
     const fileId = randomUUID();
-    const storageKey = `properties/${propertyId}/evidence/${randomUUID()}/${randomUUID()}`;
-    this.files.set(fileId, { fileId, propertyId, storageKey });
+    const sourceKey = `properties/${propertyId}/evidence/${randomUUID()}/${randomUUID()}`;
+    this.files.set(fileId, { fileId, propertyId, sourceKey });
     return { fileId };
   }
 
   resolve(propertyId: string, fileId: string): IssuedFile {
     const row = this.files.get(fileId);
     if (!row || row.propertyId !== propertyId) {
-      throw new NotFoundException('Not found.');
+      throw notFoundException();
     }
     return { fileId: row.fileId };
   }
 
   /** Test-only. Production responses use issue() and resolve(). */
-  storageKey(fileId: string): string | undefined {
-    return this.files.get(fileId)?.storageKey;
+  sourceKey(fileId: string): string | undefined {
+    return this.files.get(fileId)?.sourceKey;
   }
 }
 

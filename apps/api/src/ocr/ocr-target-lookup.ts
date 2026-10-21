@@ -20,21 +20,39 @@ export interface OcrTargetLookup {
     propertyId: string;
     entityType: OcrTargetEntityType;
     entityId: string;
-  }): boolean;
+  }): boolean | Promise<boolean>;
   /**
    * Payment targets only. `recorded` allows confirm. `voided` is 422
    * `target_voided`. Any other status, or a missing method, is 422
    * `target_status_unknown`.
    */
-  paymentStatus?(input: { propertyId: string; entityId: string }): string;
-  /** IANA name. Omitted means America/Mexico_City. */
-  timeZone?(propertyId: string): string | undefined;
+paymentStatus?(input: {
+    propertyId: string;
+    entityId: string;
+  }): string | undefined | Promise<string | undefined>;
+  /** IANA name. Omitted or blank means America/Mexico_City. An invalid stored name fails. */
+  timeZone?(propertyId: string): string | undefined | Promise<string | undefined>;
   /**
    * Persisted field value. undefined or null means nothing is saved.
    * Unsaved form text is not provided here.
    */
-  savedValue?(input: SavedFieldQuery): unknown;
-  saveValue?(input: SavedFieldQuery, value: unknown): void;
+  savedValue?(input: SavedFieldQuery): unknown | Promise<unknown>;
+  saveValue?(input: SavedFieldQuery, value: unknown): void | Promise<void>;
+  /**
+   * When present, confirm runs its writes and audit appends inside this
+   * callback. A throw rolls the callback's writes back.
+   */
+  runInTransaction?<T>(work: () => Promise<T>): Promise<T>;
+  appendAudit?(event: OcrAuditAppend): void | Promise<void>;
+}
+
+export interface OcrAuditAppend {
+  propertyId: string | null;
+  actorUserId: string | null;
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  metadata: Record<string, unknown>;
 }
 
 export class FailClosedOcrTargetLookup implements OcrTargetLookup {
