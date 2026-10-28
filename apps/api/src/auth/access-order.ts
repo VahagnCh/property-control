@@ -4,6 +4,7 @@ export type AccessKind = 'create_property' | 'read' | 'write';
 
 /**
  * Pure gate for the auth-guard PR. It is not attached to controllers.
+ * `consent_required` is not enforced on any route. The Oct 28 writes PR tracks that.
  * Stubbed routes answer 501 before the token is read.
  * POST /v1/properties has no membership check.
  * Reads skip the viewer and consent gates.
