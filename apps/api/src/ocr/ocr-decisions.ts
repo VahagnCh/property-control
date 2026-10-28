@@ -80,8 +80,12 @@ function isAcceptAll(value: Record<string, unknown>): boolean {
   return (
     value.acceptAll === true ||
     value.accept_all === true ||
+    value.replaceAll === true ||
+    value.replace_all === true ||
     value.action === 'accept-all' ||
-    value.action === 'accept_all'
+    value.action === 'accept_all' ||
+    value.action === 'replace-all' ||
+    value.action === 'replace_all'
   );
 }
 

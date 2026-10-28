@@ -235,6 +235,195 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
     }
   });
 
+  it('writes an ocr.accepted audit when an accept commits', async () => {
+    const fixture = await createFixture(prisma);
+    try {
+      const store = new PrismaOcrFieldStore(prisma);
+      const service = new OcrService(
+        { enabled: true, jobsMax: 10, jobTtlMs: 60_000 },
+        store,
+        undefined,
+        oneField('providerName', 'CFE Norte'),
+      );
+      const { job } = service.enqueue(fixture.propertyId, randomUUID());
+      const suggestion = service.getJob(fixture.propertyId, job.id).suggestions[0];
+      const confirmed = await service.confirm(
+        fixture.propertyId,
+        job.id,
+        {
+          decisions: [
+            {
+              suggestionId: suggestion!.id,
+              action: 'accept',
+              targetEntityId: fixture.obligationId,
+            },
+          ],
+        },
+        { actorUserId: fixture.userId },
+      );
+      expect(confirmed.persisted).toBe(true);
+      const obligation = await prisma.obligation.findUnique({ where: { id: fixture.obligationId } });
+      expect(obligation?.providerName).toBe('CFE Norte');
+      const audit = await prisma.auditEvent.findFirst({
+        where: { propertyId: fixture.propertyId, action: 'ocr.accepted' },
+      });
+      expect(audit?.metadata).toMatchObject({
+        source: 'ocr',
+        ocrJobId: job.id,
+        suggestionId: suggestion!.id,
+        field: 'providerName',
+        confidence: 0.95,
+        edited: false,
+        newValue: 'CFE Norte',
+      });
+    } finally {
+      await deleteFixture(prisma, fixture);
+    }
+  });
+
+  it('rolls the field write back when the audit insert fails', async () => {
+    const fixture = await createFixture(prisma);
+    try {
+      const store = new PrismaOcrFieldStore(prisma);
+      const lookup: OcrTargetLookup = {
+        belongsToProperty: (input) => store.belongsToProperty(input),
+        timeZone: (propertyId) => store.timeZone(propertyId),
+        savedValue: (input) => store.savedValue(input),
+        saveValue: (input, value) => store.saveValue(input, value),
+        runInTransaction: (work) => store.runInTransaction(work),
+        appendAudit: async () => {
+          throw new Error('audit insert failed');
+        },
+      };
+      const service = new OcrService(
+        { enabled: true, jobsMax: 10, jobTtlMs: 60_000 },
+        lookup,
+        undefined,
+        oneField('providerName', 'CFE Norte'),
+      );
+      const { job } = service.enqueue(fixture.propertyId, randomUUID());
+      const suggestion = service.getJob(fixture.propertyId, job.id).suggestions[0];
+      await expect(
+        service.confirm(fixture.propertyId, job.id, {
+          decisions: [{ suggestionId: suggestion!.id, action: 'accept', targetEntityId: fixture.obligationId }],
+        }),
+      ).rejects.toThrow(/audit insert failed/);
+      const obligation = await prisma.obligation.findUnique({ where: { id: fixture.obligationId } });
+      expect(obligation?.providerName).toBeNull();
+      expect(await prisma.auditEvent.count({ where: { propertyId: fixture.propertyId } })).toBe(0);
+    } finally {
+      await deleteFixture(prisma, fixture);
+    }
+  });
+
+  it('leaves no audit row when the field write fails', async () => {
+    const fixture = await createFixture(prisma);
+    try {
+      const store = new PrismaOcrFieldStore(prisma);
+      const lookup: OcrTargetLookup = {
+        belongsToProperty: (input) => store.belongsToProperty(input),
+        timeZone: (propertyId) => store.timeZone(propertyId),
+        savedValue: (input) => store.savedValue(input),
+        saveValue: async () => {
+          throw new Error('write failed');
+        },
+        runInTransaction: (work) => store.runInTransaction(work),
+        appendAudit: (event) => store.appendAudit(event),
+      };
+      const service = new OcrService(
+        { enabled: true, jobsMax: 10, jobTtlMs: 60_000 },
+        lookup,
+        undefined,
+        oneField('providerName', 'CFE Norte'),
+      );
+      const { job } = service.enqueue(fixture.propertyId, randomUUID());
+      const suggestion = service.getJob(fixture.propertyId, job.id).suggestions[0];
+      await expect(
+        service.confirm(fixture.propertyId, job.id, {
+          decisions: [{ suggestionId: suggestion!.id, action: 'accept', targetEntityId: fixture.obligationId }],
+        }),
+      ).rejects.toThrow(/write failed/);
+      const obligation = await prisma.obligation.findUnique({ where: { id: fixture.obligationId } });
+      expect(obligation?.providerName).toBeNull();
+      expect(await prisma.auditEvent.count({ where: { propertyId: fixture.propertyId } })).toBe(0);
+    } finally {
+      await deleteFixture(prisma, fixture);
+    }
+  });
+
+  it('rolls back only the confirm whose transaction failed when two overlap', async () => {
+    const fixtureA = await createFixture(prisma);
+    const fixtureB = await createFixture(prisma);
+    try {
+      const store = new PrismaOcrFieldStore(prisma);
+      let releaseA: () => void = () => undefined;
+      const bInside = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+      let markAWrote: () => void = () => undefined;
+      const aWriteDone = new Promise<void>((resolve) => {
+        markAWrote = resolve;
+      });
+      const aQuery = {
+        propertyId: fixtureA.propertyId,
+        entityType: 'obligation' as const,
+        entityId: fixtureA.obligationId,
+        fieldPath: 'providerName',
+      };
+      const bQuery = {
+        propertyId: fixtureB.propertyId,
+        entityType: 'obligation' as const,
+        entityId: fixtureB.obligationId,
+        fieldPath: 'providerName',
+      };
+      const a = store.runInTransaction(async () => {
+        await store.saveValue(aQuery, 'From A');
+        markAWrote();
+        await bInside;
+        await store.appendAudit({
+          propertyId: fixtureA.propertyId,
+          actorUserId: fixtureA.userId,
+          action: 'ocr.accepted',
+          entityType: 'obligation',
+          entityId: fixtureA.obligationId,
+          metadata: { marker: 'confirm-a' },
+        });
+        throw new Error('rollback A');
+      });
+      const b = (async () => {
+        await aWriteDone;
+        await store.runInTransaction(async () => {
+          releaseA();
+          await store.saveValue(bQuery, 'From B');
+          await store.appendAudit({
+            propertyId: fixtureB.propertyId,
+            actorUserId: fixtureB.userId,
+            action: 'ocr.accepted',
+            entityType: 'obligation',
+            entityId: fixtureB.obligationId,
+            metadata: { marker: 'confirm-b' },
+          });
+        });
+      })();
+      const [aResult, bResult] = await Promise.allSettled([a, b]);
+      expect(aResult.status).toBe('rejected');
+      expect(bResult.status).toBe('fulfilled');
+      const obligationA = await prisma.obligation.findUnique({ where: { id: fixtureA.obligationId } });
+      const obligationB = await prisma.obligation.findUnique({ where: { id: fixtureB.obligationId } });
+      expect(obligationA?.providerName).toBeNull();
+      expect(obligationB?.providerName).toBe('From B');
+      expect(await prisma.auditEvent.count({ where: { propertyId: fixtureA.propertyId, action: 'ocr.accepted' } })).toBe(0);
+      const auditsB = await prisma.auditEvent.findMany({
+        where: { propertyId: fixtureB.propertyId, action: 'ocr.accepted' },
+      });
+      expect(auditsB).toHaveLength(1);
+      expect(auditsB[0]?.metadata).toMatchObject({ marker: 'confirm-b' });
+    } finally {
+      await deleteFixture(prisma, fixtureA);
+      await deleteFixture(prisma, fixtureB);
+    }
+  });
+
   it('lets one void win and leaves that void unchanged', async () => {
     const fixture = await createFixture(prisma);
     try {

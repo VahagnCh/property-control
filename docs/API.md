@@ -253,7 +253,7 @@ POST /v1/properties/:propertyId/ocr-jobs/:ocrJobId/confirm
 
 Path ids are UUIDs. A non-UUID id on any matched route is **400**. The in-memory map has a cap (`OCR_JOBS_MAX`, default 50) and a TTL (`OCR_JOB_TTL_MS`, default 15 minutes). Expired jobs can be dropped. An unexpired suggested job is never evicted; a full map returns **429**. Confirming an expired job returns **410**. Confirming a job that is not `suggested`, including a second confirm, returns **409**.
 
-Confirm requires one decision for every suggestion. The body is exactly `{ decisions: [{ suggestionId, action: accept|reject|edit|replace, editedValue?, targetEntityId? }] }`. A missing decision is **422** `missing_decision` and the body names that `suggestionId`.
+Confirm requires one decision for every suggestion. The body is exactly `{ decisions: [{ suggestionId, action: accept|reject|edit|replace, editedValue?, targetEntityId? }] }`. An unknown suggestion id is **404** `not_found` before the missing-decision check, including when that id is the whole body or is added to a complete set. The 404 body does not repeat the id. A missing decision is **422** `missing_decision` and the body names that `suggestionId`. A duplicate decision is **400** `duplicate_decision`.
 
 Each suggestion carries `band`: `alta` at or above the configured alta cutoff, `media` from the media cutoff up to alta, and `revisa` below the media cutoff. The defaults are 0.90 and 0.80, read from `OCR_CONFIDENCE_ALTA` and `OCR_CONFIDENCE_MEDIA`. A low-confidence flag forces `revisa` whatever the score, including an ambiguous amount such as `1,234`. A score above 1, below 0, NaN, or non-numeric is also `revisa`. The job returns the configured `confidenceBands`.
 
@@ -287,7 +287,8 @@ Every OCR 4xx body includes a stable `error` string next to `message`. Clients m
 | `saved_value_conflict` | 409 | The saved field changed between planning a confirm and writing it. The transaction rolls back | |
 | `missing_decision` | 422 | A suggestion has no decision | `suggestionId` |
 | `client_prior_value_rejected` | 422 | `clientPriorValue` on the body or on a decision | |
-| `bulk_accept_rejected` | 422 | `acceptAll`, `accept_all`, or action `accept-all` / `accept_all` | |
+| `bulk_accept_rejected` | 422 | `acceptAll`, `accept_all`, `replaceAll`, `replace_all`, or action `accept-all` / `accept_all` / `replace-all` / `replace_all` | |
+| `target_not_writable` | 422 | Payment field or property title. Those writes do not exist yet | `suggestionId`, `field` |
 | `edited_value_invalid` | 422 | `editedValue` or an accepted suggestion does not match `fieldPath` | `suggestionId`, `field` |
 | `next_due_date_out_of_range` | 422 | `nextDueDate` is outside the property-timezone window or the 1990–2100 bound | `suggestionId`, `field` |
 | `bound_target_immutable` | 422 | Same-property retarget of an already-bound suggestion | |
@@ -296,9 +297,11 @@ Every OCR 4xx body includes a stable `error` string next to `message`. Clients m
 | `target_status_unknown` | 422 | Payment target has no status check, or a status other than `recorded` or `voided` | |
 | `field_already_set` | 409 | Accept or edit of a saved non-null value | `suggestionId`, `field` |
 
-Single-line text rejects every C0 character, including tab, CR, and LF. The `notes` field is the multi-line exception: it allows LF, and CR or CRLF is stored as LF. A tab in notes is still rejected. An invalid property `timezone` is **422** on write. A stored invalid timezone is **500** `invalid_stored_timezone` and does not fall back to `America/Mexico_City`. A blank timezone still defaults to `America/Mexico_City`.
+Single-line text rejects every C0 character, including tab, CR, and LF, plus U+2028 and U+2029. A title that contains LF, CR, U+2028, or U+2029 is 422. The `notes` field is the multi-line exception: it allows LF, U+2028, and U+2029, and CR or CRLF is stored as LF before the length limit. That limit counts UTF-16 code units, the same measure as Mobile's counter: 1000 emoji pass and 1001 emoji fail. A notes value that is only CR becomes a line feed and is 422 because it is whitespace. C1, every bidi control (U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069), zero-width characters, U+00AD, U+180E, U+2061–U+2064, lone surrogates, NUL, DEL, and a tab in notes are still rejected. An invalid property `timezone` is **422** on write. A stored invalid timezone is **500** `invalid_stored_timezone` and does not fall back to `America/Mexico_City`. A blank timezone still defaults to `America/Mexico_City`.
 
 When the field is already saved, the replace audit is `{ suggestionId, field, action: "replace", actorUserId, previousValue, newValue }`. `previousValue` is the persisted server value. Before the record is saved, the audit is `{ suggestionId, field, decision: "replaced", suggestedValue }` and has no previous value. On payment create, that field's audit source is `ocr_replace` with the `suggestionId`.
+
+A successful accept or edit writes one applied-field audit, `{ source: "ocr", ocrJobId, suggestionId, field, actorUserId, confidence, edited, previousValue, newValue }`. `edited` is false for accept and true for edit. `previousValue` is null, because a saved non-null field cannot be accepted or edited. `newValue` is the value written. Reject writes no applied-field audit. The audit stores neither raw document text nor `clientPriorValue`. Accept or edit of a saved value stays **409** and writes no audit.
 
 Job statuses: `pending` → `processing` → `suggested` → `confirmed` | `rejected` | `failed`.
 Suggestion apply statuses: `pending` → `accepted` | `rejected`.

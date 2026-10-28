@@ -17,6 +17,9 @@ describe('text input', () => {
       `año\u000E`,
       `año\u001F`,
       `año\u007F`,
+      `pago\u061C1`,
+      `pago\u200E1`,
+      `pago\u200F1`,
       `pago\u202A1`,
       `pago\u202B1`,
       `pago\u202C1`,
@@ -26,6 +29,11 @@ describe('text input', () => {
       `pago\u20671`,
       `pago\u20681`,
       `pago\u20691`,
+      `pago\u00AD1`,
+      `pago\u180E1`,
+      `pago\u20611`,
+      `pago\u20641`,
+      `pago\uD800`,
       `folio\u200B`,
       `folio\u200C`,
       `folio\u200D`,
@@ -44,7 +52,7 @@ describe('text input', () => {
   });
 
   it('rejects every C0 character on a single-line field, including tab, LF, and CR', () => {
-    for (const char of ['\t', '\n', '\r', '\u0000', '\u000B', '\u007F']) {
+    for (const char of ['\t', '\n', '\r', '\u0000', '\u000B', '\u007F', '\u2028', '\u2029']) {
       const value = `año${char}folio`;
       expect(validateTextInput(value, 'title')).toEqual({
         ok: false,
@@ -68,6 +76,8 @@ describe('text input', () => {
       ok: true,
       value: 'linea 1\nlinea 2',
     });
+    expect(validateTextInput('linea\u2028dos', 'notes')).toEqual({ ok: true, value: 'linea\u2028dos' });
+    expect(validateTextInput('linea\u2028dos', 'title').ok).toBe(false);
     expect(validateTextInput('año\nfolio', 'title').ok).toBe(false);
     expect(validateTextInput('Cafe\r', 'title').ok).toBe(false);
 
@@ -140,6 +150,14 @@ describe('text input', () => {
     const exactMultiByte = 'ñ'.repeat(BODY_MAX_BYTES / 2);
     expect(validateTextInput(exactMultiByte, 'body').ok).toBe(true);
     expect(validateTextInput(`${exactMultiByte}ñ`, 'body').ok).toBe(false);
+
+    const emoji = '\u{1F600}';
+    expect(emoji).toHaveLength(2);
+    const notesOk = emoji.repeat(1000);
+    const notesOver = emoji.repeat(1001);
+    expect(notesOk).toHaveLength(2000);
+    expect(validateTextInput(notesOk, 'notes')).toEqual({ ok: true, value: notesOk });
+    expect(validateTextInput(notesOver, 'notes').ok).toBe(false);
 
     const both = `${'x'.repeat(TITLE_MAX_CHARS)}\u0000`;
     expect(validateTextInput(both, 'title')).toEqual({
