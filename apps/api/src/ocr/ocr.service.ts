@@ -662,7 +662,8 @@ function confirmAuditAction(audit: OcrConfirmAudit): string {
   if ('edited' in audit && audit.source === 'ocr') {
     return audit.edited ? 'ocr.edited' : 'ocr.accepted';
   }
-  return 'action' in audit ? 'ocr.replace' : 'ocr.replaced';
+  // EC-9.2: a saved replace is ocr.replaced. An unsaved Reemplazar writes no row.
+  return 'ocr.replaced';
 }
 
 function namedSuggestion(error: UnprocessableEntityException, suggestion: OcrSuggestion): UnprocessableEntityException {

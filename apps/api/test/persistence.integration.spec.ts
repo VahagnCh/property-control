@@ -218,7 +218,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       const obligation = await prisma.obligation.findUnique({ where: { id: fixture.obligationId } });
       expect(obligation?.providerName).toBe('CFE Norte');
       const audit = await prisma.auditEvent.findFirst({
-        where: { propertyId: fixture.propertyId, action: 'ocr.replace' },
+        where: { propertyId: fixture.propertyId, action: 'ocr.replaced' },
       });
       expect(audit?.entityType).toBe('obligation');
       expect(audit?.entityId).toBe(fixture.obligationId);
@@ -359,7 +359,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
         { actorUserId: fixture.userId },
       );
       const replaceAudit = await prisma.auditEvent.findFirst({
-        where: { propertyId: fixture.propertyId, action: 'ocr.replace' },
+        where: { propertyId: fixture.propertyId, action: 'ocr.replaced' },
       });
       expect(replaceAudit?.beforeState).toEqual(redactedTextState(stored));
       expect(replaceAudit?.afterState).toEqual(redactedTextState(replaced));
