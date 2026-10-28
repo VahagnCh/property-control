@@ -1,6 +1,6 @@
 # DueRecord: edge-case behavior spec
 
-Locked by Product on 20 Oct 2026. DueRecord is the public product name. Packages, the Expo slug, and code identifiers stay property-control. The app display name and UI copy say DueRecord.
+Locked by Product on 20 Oct 2026. DueRecord is the public product name. Packages, the Expo slug, and code identifiers stay property-control. The Expo URL scheme is `duerecord`. The app display name and UI copy say DueRecord.
 
 Each rule below is one checkable statement. A test in `apps/api/test/edge-cases.spec.ts` carries the same id and sentence. "Period" means one due instance of an Obligation, keyed by the obligation and a calendar due date. "Settled" means the period outcome is `paid` or `not_applicable`. "Non-voided sum" means the sum of `amount` over payments for that period whose status is `recorded`. "Write access" means an active PropertyMembership with role `owner` or `member`. "Today" means the current calendar date in the property's IANA timezone. A "candidate" due date is a date produced by the schedule in section 6 that is not a skipped pause date. A skipped pause date lies inside a pause interval and is after that interval's `lastScheduledDueDate`.
 
@@ -107,3 +107,13 @@ Confirm decisions are per field: accept, replace, reject, or edit. There is no s
 
 - **EC-9.1** When a saved field already has a persisted value, replace writes an audit with the server-side previous value, the new value, action replace, the suggestionId, and the actor. accept or edit returns 409 with error field_already_set and does not mark the suggestion accepted. reject leaves the value unchanged.
 - **EC-9.2** Before a record is saved, a replace audit stores only the suggestionId, the field, decision replaced, and the suggested value. It does not store a client-typed previous value. On save, the payment create audit records source ocr_replace and the suggestionId. A request that contains clientPriorValue returns 422. A bulk accept-all returns 422.
+
+## 10. Mobile notification links
+
+This section is the mobile client. It does not add an API test id.
+
+- A `duerecord://notificaciones/<uuid>` link, and the same path on an Expo Go `exp://…/--/` link, opens a stub screen. The nid is an 8-4-4-4-12 hex id. The path is exactly those two segments. `..`, an empty segment, a trailing slash, or a host or port opens Inicio.
+- The stub shows the same not-found copy for every nid: “Esta notificación ya no está disponible”, “Puede que se haya eliminado o que no tengas acceso.”, and “Ir a Inicio”. The call to action opens Inicio. The screen does not render the nid or any other text taken from the URL.
+- Without a session the link stops on sign-in. Ahora no and Cancelar drop it and open Inicio. There is no auth storage in this client. Tokens, when they land, use expo-secure-store and never AsyncStorage.
+- Query and fragment are removed before a route receives params. `property-control://` is not handled. The Expo Go prefix is registered only while running in Expo Go or a dev build, not in a store or TestFlight build.
+- Follow-up: fetch the notification through the API, check membership, and keep this generic not-found for a foreign or unknown nid. [Notification detail: fetch via API with membership check](https://github.com/VahagnCh/property-control/issues/13).
