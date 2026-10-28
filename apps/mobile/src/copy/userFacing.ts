@@ -66,6 +66,9 @@ export const COPY = {
   'invite.unavailable':
     'Esta invitación no está disponible. Pide a quien te invitó que te envíe una nueva.',
   'invite.expired': 'Esta invitación ya no se puede usar. Pide una nueva.',
+  'notif.notFound.title': 'Esta notificación ya no está disponible',
+  'notif.notFound.body': 'Puede que se haya eliminado o que no tengas acceso.',
+  'notif.notFound.cta': 'Ir a Inicio',
 } as const;
 
 export type CopyKey = keyof typeof COPY;

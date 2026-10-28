@@ -93,6 +93,25 @@ export interface UnsavedReplaceAudit {
 
 export type OcrReplaceAudit = SavedReplaceAudit | UnsavedReplaceAudit;
 
+/**
+ * One event per field an accept or edit actually applies.
+ * previousValue is null because a saved non-null field cannot be accepted or edited.
+ * Raw document text is not copied here.
+ */
+export interface OcrAppliedFieldAudit {
+  source: 'ocr';
+  ocrJobId: string;
+  suggestionId: string;
+  field: string;
+  actorUserId: string | null;
+  confidence: number | null;
+  edited: boolean;
+  previousValue: null;
+  newValue: unknown;
+}
+
+export type OcrConfirmAudit = OcrReplaceAudit | OcrAppliedFieldAudit;
+
 /** Shape the payment create audit uses when the field came from replace. */
 export interface OcrReplaceCreateAudit {
   source: 'ocr_replace';
@@ -111,7 +130,7 @@ export interface OcrConfirmResult {
   job: OcrJob;
   suggestions: OcrSuggestion[];
   applied: OcrAppliedField[];
-  audits: OcrReplaceAudit[];
+  audits: OcrConfirmAudit[];
   /**
    * True only when this confirm committed every saveValue write.
    * False when nothing was written to a saved field.

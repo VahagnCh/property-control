@@ -13,20 +13,25 @@ export type TextInputResult =
   | { ok: false; key: CopyKey; message: string };
 
 /**
- * PR #3 `REJECTED_TEXT` in apps/api/src/ocr/ocr-fields.ts at 743ea24.
- * C0 (including tab, LF, CR, and DEL), C1, bidi overrides, and zero-width.
+ * Same set as `REJECTED_TEXT` in apps/api/src/ocr/ocr-fields.ts.
+ * C0 (including tab, LF, CR, and DEL), C1, every bidi control
+ * (U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069), zero-width,
+ * U+00AD, U+180E, U+2061–U+2064, lone surrogates, and U+2028–U+2029.
  */
 const REJECTED_TEXT =
-  /[\u0000-\u001F\u007F-\u009F\u200B-\u200D\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/u;
+  /[\u0000-\u001F\u007F-\u009F\u00AD\u061C\u180E\u200B-\u200F\u2028-\u202E\u2060-\u2064\u2066-\u2069\uD800-\uDFFF\uFEFF]/u;
 
 /**
- * PR #3 `MULTILINE_REJECTED_TEXT`. Same set, except U+000A is allowed
- * after CR and CRLF have been stored as LF.
+ * Same set, except U+000A, U+2028, and U+2029 stay allowed after CR and
+ * CRLF have been stored as LF.
  */
 const MULTILINE_REJECTED_TEXT =
-  /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\u200B-\u200D\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/u;
+  /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uD800-\uDFFF\uFEFF]/u;
 
-/** PR #3 notes field maxLength. */
+/**
+ * Notes max, counted in UTF-16 code units (`string.length`), the same
+ * measure as the API. 1000 emoji pass. 1001 emoji fail.
+ */
 export const NOTES_MAX_CHARS = 2000;
 
 const WHITESPACE_ONLY = /^[\s\u00A0]*$/u;
@@ -71,9 +76,9 @@ function reject(key: CopyKey): TextInputResult {
 /**
  * Rejects disallowed characters. It does not strip them.
  * A single-line field rejects every C0 character, including tab, LF, and CR,
- * plus C1, bidi overrides, and zero-width characters (PR #3 REJECTED_TEXT).
- * A multi-line note stores CR and CRLF as LF, then rejects the same set except LF.
- * Title max is 300 characters. Body max is 32 KB. OCR notes max is 2000 characters.
+ * plus U+2028 and U+2029, C1, every bidi control, and zero-width characters.
+ * A multi-line note stores CR and CRLF as LF, then rejects the same set except LF, U+2028, and U+2029.
+ * Title max is 300 UTF-16 code units. Body max is 32 KB. OCR notes max is 2000 UTF-16 code units.
  * A single-line field that is empty or whitespace uses `form.text.required`.
  * A blank note stays `ocr.edit.invalid`.
  */

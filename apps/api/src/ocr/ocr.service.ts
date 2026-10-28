@@ -17,6 +17,8 @@ import {
 import { FailClosedOcrTargetLookup, OCR_TARGET_LOOKUP, type OcrTargetLookup } from './ocr-target-lookup.js';
 import type {
   OcrAppliedField,
+  OcrAppliedFieldAudit,
+  OcrConfirmAudit,
   OcrConfirmResult,
   OcrDecision,
   OcrJob,
@@ -42,7 +44,7 @@ interface PlanStep {
   value?: unknown;
   kept?: boolean;
   write?: boolean;
-  audit?: OcrReplaceAudit;
+  audit?: OcrConfirmAudit;
   saved?: SavedSnapshot;
 }
 
@@ -169,7 +171,7 @@ throw ocrNotFound();
     const persisted = await this.commitWrites(record, plan);
 
     const applied: OcrAppliedField[] = [];
-    const audits: OcrReplaceAudit[] = [];
+    const audits: OcrConfirmAudit[] = [];
     for (const step of plan) {
       if (step.decision.action === 'reject' || !step.entityId) {
         step.suggestion.applyStatus = 'rejected';
@@ -326,26 +328,42 @@ throw ocrNotFound();
           field: suggestion.fieldPath,
         });
       }
+      if (!persistableTarget(suggestion.targetEntityType)) {
+        throw ocrUnprocessable(
+          OCR_ERROR.targetNotWritable,
+          'This confirm target cannot be saved yet.',
+          { suggestionId: suggestion.id, field: suggestion.fieldPath },
+        );
+      }
       if (decision.action === 'replace') {
-        const audit: OcrReplaceAudit = saved.present
-          ? {
-              suggestionId: suggestion.id,
-              field: suggestion.fieldPath,
-              action: 'replace',
-              actorUserId,
-              previousValue: saved.value,
-              newValue: value,
-            }
-          : {
-              suggestionId: suggestion.id,
-              field: suggestion.fieldPath,
-              decision: 'replaced',
-              suggestedValue: value,
-            };
-        steps.push({ suggestion, decision, entityId, value, write: saved.present, audit, saved });
+        // EC-9.2: only saved state is audited. An unsaved Reemplazar writes no row.
+        if (!saved.present) {
+          steps.push({ suggestion, decision, entityId, value, write: false, saved });
+          continue;
+        }
+        const audit: OcrReplaceAudit = {
+          suggestionId: suggestion.id,
+          field: suggestion.fieldPath,
+          action: 'replace',
+          actorUserId,
+          previousValue: saved.value,
+          newValue: value,
+        };
+        steps.push({ suggestion, decision, entityId, value, write: true, audit, saved });
         continue;
       }
-      steps.push({ suggestion, decision, entityId, value, write: true, saved });
+      const appliedAudit: OcrAppliedFieldAudit = {
+        source: 'ocr',
+        ocrJobId: suggestion.ocrJobId,
+        suggestionId: suggestion.id,
+        field: suggestion.fieldPath,
+        actorUserId,
+        confidence: suggestion.confidence ?? null,
+        edited: decision.action === 'edit',
+        previousValue: null,
+        newValue: value,
+      };
+      steps.push({ suggestion, decision, entityId, value, write: true, audit: appliedAudit, saved });
     }
     return steps;
   }
@@ -455,7 +473,7 @@ if (!(await this.targetBelongs(record, suggestion, entityId))) {
       await this.lookup.appendAudit({
         propertyId: record.job.propertyId,
         actorUserId,
-        action: 'action' in step.audit ? 'ocr.replace' : 'ocr.replaced',
+        action: confirmAuditAction(step.audit),
         entityType: step.suggestion.targetEntityType,
         entityId: step.entityId ?? null,
         metadata: { ...step.audit },
@@ -629,6 +647,18 @@ function sameSaved(left: SavedSnapshot, right: SavedSnapshot): boolean {
     return JSON.stringify(left.value) === JSON.stringify(right.value);
   }
   return false;
+}
+
+/** Obligation fields and a document title can be saved. Payment fields and a property title cannot, yet. */
+function persistableTarget(entityType: OcrSuggestion['targetEntityType']): boolean {
+  return entityType === 'obligation' || entityType === 'document_meta';
+}
+
+function confirmAuditAction(audit: OcrConfirmAudit): string {
+  if ('edited' in audit && audit.source === 'ocr') {
+    return audit.edited ? 'ocr.edited' : 'ocr.accepted';
+  }
+  return 'action' in audit ? 'ocr.replace' : 'ocr.replaced';
 }
 
 function namedSuggestion(error: UnprocessableEntityException, suggestion: OcrSuggestion): UnprocessableEntityException {
