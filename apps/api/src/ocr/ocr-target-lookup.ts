@@ -53,6 +53,9 @@ export interface OcrAuditAppend {
   entityType: string;
   entityId: string | null;
   metadata: Record<string, unknown>;
+  /** Null when that side has no text. Multi-line free text is `{ length, sha256 }` only. */
+  beforeState?: { length: number; sha256: string } | null;
+  afterState?: { length: number; sha256: string } | null;
 }
 
 export class FailClosedOcrTargetLookup implements OcrTargetLookup {

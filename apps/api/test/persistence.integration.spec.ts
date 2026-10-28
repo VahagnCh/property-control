@@ -13,6 +13,7 @@ import type { ConsentAuditEntry, ConsentAuditLog } from '../src/consent/consent.
 import { AVISO_TEXT } from '../src/consent/aviso-text.js';
 import { inviteEmailHmac } from '../src/invites/invite-accept.js';
 import { centavosToWireAmount, wireAmountToCentavos } from '../src/payments/wire-money.js';
+import { redactedTextState } from '../src/ocr/audit-text.js';
 import type { OcrExtractor } from '../src/ocr/ocr-extractor.js';
 import { OcrService } from '../src/ocr/ocr.service.js';
 import type { OcrTargetLookup } from '../src/ocr/ocr-target-lookup.js';
@@ -276,6 +277,100 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
         edited: false,
         newValue: 'CFE Norte',
       });
+    } finally {
+      await deleteFixture(prisma, fixture);
+    }
+  });
+
+  it('stores notes audit states as length and sha256 and not the note text', async () => {
+    const fixture = await createFixture(prisma);
+    const edited = 'Linea 1\r\nNota secreta 88421';
+    const stored = 'Linea 1\nNota secreta 88421';
+    const replaced = 'Nota nueva 99001';
+    try {
+      const store = new PrismaOcrFieldStore(prisma);
+      const service = new OcrService(
+        { enabled: true, jobsMax: 10, jobTtlMs: 60_000 },
+        store,
+        undefined,
+        oneField('notes', 'sugerida'),
+      );
+      const { job } = service.enqueue(fixture.propertyId, randomUUID());
+      const suggestion = service.getJob(fixture.propertyId, job.id).suggestions[0];
+      await service.confirm(
+        fixture.propertyId,
+        job.id,
+        {
+          decisions: [
+            {
+              suggestionId: suggestion!.id,
+              action: 'edit',
+              editedValue: edited,
+              targetEntityId: fixture.obligationId,
+            },
+          ],
+        },
+        { actorUserId: fixture.userId },
+      );
+      const obligation = await prisma.obligation.findUnique({ where: { id: fixture.obligationId } });
+      expect(obligation?.notes).toBe(stored);
+      const audit = await prisma.auditEvent.findFirst({
+        where: { propertyId: fixture.propertyId, action: 'ocr.edited' },
+      });
+      expect(audit?.beforeState).toBeNull();
+      expect(audit?.afterState).toEqual(redactedTextState(stored));
+      expect(audit?.metadata).toMatchObject({
+        ocrJobId: job.id,
+        confidence: 0.95,
+        field: 'notes',
+        edited: true,
+      });
+      const serialized = JSON.stringify({
+        before: audit?.beforeState,
+        after: audit?.afterState,
+        metadata: audit?.metadata,
+      });
+      expect(serialized).not.toContain('Nota secreta');
+      expect(serialized).not.toContain('sugerida');
+      expect(serialized).not.toContain(edited);
+      expect(serialized).not.toContain(stored);
+
+      const again = new OcrService(
+        { enabled: true, jobsMax: 10, jobTtlMs: 60_000 },
+        store,
+        undefined,
+        oneField('notes', replaced),
+      );
+      const second = again.enqueue(fixture.propertyId, randomUUID());
+      const next = again.getJob(fixture.propertyId, second.job.id).suggestions[0];
+      await again.confirm(
+        fixture.propertyId,
+        second.job.id,
+        {
+          decisions: [
+            {
+              suggestionId: next!.id,
+              action: 'replace',
+              editedValue: replaced,
+              targetEntityId: fixture.obligationId,
+            },
+          ],
+        },
+        { actorUserId: fixture.userId },
+      );
+      const replaceAudit = await prisma.auditEvent.findFirst({
+        where: { propertyId: fixture.propertyId, action: 'ocr.replace' },
+      });
+      expect(replaceAudit?.beforeState).toEqual(redactedTextState(stored));
+      expect(replaceAudit?.afterState).toEqual(redactedTextState(replaced));
+      const replaceSerialized = JSON.stringify({
+        before: replaceAudit?.beforeState,
+        after: replaceAudit?.afterState,
+        metadata: replaceAudit?.metadata,
+      });
+      expect(replaceSerialized).not.toContain(stored);
+      expect(replaceSerialized).not.toContain(replaced);
+      expect(replaceSerialized).not.toContain('Nota secreta');
     } finally {
       await deleteFixture(prisma, fixture);
     }

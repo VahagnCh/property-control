@@ -5,6 +5,7 @@ import { readStoredTimezone } from '../properties/property.response.js';
 import { CLOCK, SystemClock, type Clock } from './clock.js';
 import { parseDecisions } from './ocr-decisions.js';
 import { OCR_EXTRACTOR, StubOcrExtractor, type ExtractedField, type OcrExtractor } from './ocr-extractor.js';
+import { sealAuditText } from './audit-text.js';
 import { canonicalizeFieldValue, confidenceBand } from './ocr-fields.js';
 import { OCR_ERROR, ocrBadRequest, ocrCapacity, ocrConflict, ocrGone, ocrNotFound, ocrUnprocessable } from './ocr-errors.js';
 import { parseMxAmount, parseMxDate } from './ocr-locale.js';
@@ -183,7 +184,7 @@ throw ocrNotFound();
         step.suggestion.userEditedValue = step.value;
       }
       if (step.audit) {
-        audits.push(step.audit);
+        audits.push(sealAuditText(step.suggestion.fieldPath, step.audit).callerAudit);
       }
       if (step.write && step.entityId) {
         applied.push({
@@ -470,13 +471,16 @@ if (!(await this.targetBelongs(record, suggestion, entityId))) {
         continue;
       }
       const actorUserId = 'actorUserId' in step.audit ? step.audit.actorUserId : null;
+      const sealed = sealAuditText(step.suggestion.fieldPath, step.audit);
       await this.lookup.appendAudit({
         propertyId: record.job.propertyId,
         actorUserId,
         action: confirmAuditAction(step.audit),
         entityType: step.suggestion.targetEntityType,
         entityId: step.entityId ?? null,
-        metadata: { ...step.audit },
+        metadata: sealed.metadata,
+        beforeState: sealed.beforeState,
+        afterState: sealed.afterState,
       });
     }
   }

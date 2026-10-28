@@ -82,7 +82,7 @@ Rules:
 - A suggestion needs a `target_entity_id`, from the row or from the decision, before it can be accepted, replaced, or edited. Missing is 422. A non-UUID is 400. A bound target cannot be changed: the same property is 422, and a foreign or forged id is 404. A missing, wrong-type, or soft-deleted target is 404. A voided payment is 422. Confirm does not create an entity.
 - All-or-nothing for the accepted set. A partial failure returns 409 or 422 rather than applying some fields and silently dropping others.
 - Every decision rejected means the job ends `rejected`, no entity field changes, and the document stays stored.
-- Each applied field gets an audit event. Accept and edit use `{ source: "ocr", ocrJobId, suggestionId, field, actorUserId, confidence, edited, previousValue: null, newValue }`. `edited` is false for accept and true for edit. Reject writes no applied-field audit. Raw document text is not stored in the audit. Replace keeps its own audit shape.
+- Each applied field gets an audit event. Accept and edit use `{ source: "ocr", ocrJobId, suggestionId, field, actorUserId, confidence, edited, previousValue: null, newValue }`. `edited` is false for accept and true for edit. Reject writes no applied-field audit. Raw document text is not stored in the audit. An unsaved Reemplazar writes no audit row. A saved replace keeps its own audit shape. `notes` and maintenance `description` store `{ length, sha256 }` in `before_state` and `after_state`, never the text.
 
 The response contains the job, the updated suggestions, and `applied`, which lists every field actually written with its entity and field path. That list is the auditable answer to "what did OCR change".
 
