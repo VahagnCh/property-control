@@ -1491,6 +1491,151 @@ describe('OcrService', () => {
     ).toBe('BBVA');
   });
 
+  it('rejects C1, bidi, and zero-width notes, a lone CR, title newlines, and notes past 2000 after normalization', async () => {
+    const extractor: OcrExtractor = {
+      extract: () => ({
+        outcome: 'suggested',
+        suggestions: [
+          {
+            targetEntityType: 'obligation',
+            fieldPath: 'notes',
+            suggestedValue: 'nota',
+            confidence: 0.95,
+          },
+          {
+            targetEntityType: 'document_meta',
+            fieldPath: 'title',
+            suggestedValue: 'Titulo',
+            confidence: 0.95,
+          },
+        ],
+      }),
+    };
+    const saves: unknown[] = [];
+    const audits: unknown[] = [];
+    const base = lookup();
+    const recording: OcrTargetLookup = {
+      belongsToProperty: (input) => base.belongsToProperty(input),
+      saveValue(input, value) {
+        saves.push({ input, value });
+      },
+      appendAudit(event) {
+        audits.push(event);
+      },
+    };
+    const open = () => {
+      const service = serviceWith({ extractor, lookup: recording });
+      const { job } = service.enqueue(PROPERTY, DOCUMENT);
+      const suggestions = suggestionMap(service, PROPERTY, job.id);
+      const notes = suggestions.find((row) => row.fieldPath === 'notes');
+      const title = suggestions.find((row) => row.fieldPath === 'title');
+      expect(notes).toBeDefined();
+      expect(title).toBeDefined();
+      return { service, job, notes, title };
+    };
+    const edit = (
+      session: ReturnType<typeof open>,
+      notesValue: string,
+      titleValue: string,
+    ) =>
+      session.service.confirm(
+        PROPERTY,
+        session.job.id,
+        [
+          {
+            suggestionId: session.notes?.id ?? '',
+            action: 'edit' as const,
+            editedValue: notesValue,
+            targetEntityId: OBLIGATION,
+          },
+          {
+            suggestionId: session.title?.id ?? '',
+            action: 'edit' as const,
+            editedValue: titleValue,
+          },
+        ],
+      );
+
+    const rejected = open();
+    const notesSamples = [
+      'c1\u0085',
+      'c1\u009F',
+      'nul\u0000',
+      'del\u007F',
+      'tab\t',
+      'bidi\u061C',
+      'bidi\u200E',
+      'bidi\u200F',
+      'bidi\u202A',
+      'bidi\u202E',
+      'bidi\u2066',
+      'bidi\u2069',
+      'zw\u200B',
+      'zw\uFEFF',
+      'zw\u2060',
+      'shy\u00AD',
+      'mvs\u180E',
+      'inv\u2061',
+      'inv\u2064',
+      'lone\uD800',
+      'lone\uDFFF',
+      '\r',
+      'a'.repeat(2001),
+      `${'a\r\n'.repeat(1000)}b`,
+      '\u{1F600}'.repeat(1001),
+    ];
+    for (const sample of notesSamples) {
+      await expect(edit(rejected, sample, 'Titulo')).rejects.toMatchObject({
+        response: {
+          error: 'edited_value_invalid',
+          field: 'notes',
+          suggestionId: rejected.notes?.id,
+          statusCode: 422,
+        },
+      });
+      await expect(edit(rejected, sample, 'Titulo')).rejects.toBeInstanceOf(UnprocessableEntityException);
+    }
+    for (const sample of ['a\nb', 'a\rb', 'a\u2028b', 'a\u2029b', 'a\u200Eb', 'a\u061Cb']) {
+      await expect(edit(rejected, 'nota', sample)).rejects.toMatchObject({
+        response: {
+          error: 'edited_value_invalid',
+          field: 'title',
+          suggestionId: rejected.title?.id,
+          statusCode: 422,
+        },
+      });
+    }
+    expect(
+      suggestionMap(rejected.service, PROPERTY, rejected.job.id).every((row) => row.applyStatus === 'pending'),
+    ).toBe(true);
+    expect(saves).toEqual([]);
+    expect(audits).toEqual([]);
+
+    const exact = open();
+    const exactResult = await edit(exact, 'a'.repeat(2000), 'Titulo');
+    expect(exactResult.suggestions.find((row) => row.fieldPath === 'notes')?.userEditedValue).toBe('a'.repeat(2000));
+
+    const normalized = open();
+    const normalizedResult = await edit(normalized, 'a\r\n'.repeat(1000), 'Titulo');
+    const stored = normalizedResult.suggestions.find((row) => row.fieldPath === 'notes')?.userEditedValue;
+    expect(stored).toBe('a\n'.repeat(1000));
+    expect(stored).toHaveLength(2000);
+
+    const loneCr = open();
+    const loneCrResult = await edit(loneCr, 'a\rb', 'Titulo');
+    expect(loneCrResult.suggestions.find((row) => row.fieldPath === 'notes')?.userEditedValue).toBe('a\nb');
+
+    const emoji = '\u{1F600}';
+    expect(emoji).toHaveLength(2);
+    const emojiOk = open();
+    const emojiResult = await edit(emojiOk, emoji.repeat(1000), 'Titulo');
+    expect(emojiResult.suggestions.find((row) => row.fieldPath === 'notes')?.userEditedValue).toHaveLength(2000);
+
+    const lineSep = open();
+    const lineSepResult = await edit(lineSep, 'linea\u2028dos', 'Titulo');
+    expect(lineSepResult.suggestions.find((row) => row.fieldPath === 'notes')?.userEditedValue).toBe('linea\u2028dos');
+  });
+
   it('records only the suggestion when replace happens before the record is saved', async () => {
     const service = serviceWith();
     const { job } = service.enqueue(PROPERTY, DOCUMENT);
