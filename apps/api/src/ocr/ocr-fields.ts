@@ -10,14 +10,24 @@ import { canonicalizeMxText } from './ocr-locale.js';
 
 const MAX_CENTAVOS = 2_147_483_647;
 /**
- * C0 (including DEL), C1, bidi overrides, and zero-width characters.
- * These are rejected, not stripped.
+ * Rejected, not stripped. Trust security brief v1.2 rev f.5 §8.3:
+ * `notes` and maintenance `description` are multi-line, limited to 2,000
+ * UTF-16 code units after normalization. Every other text field is single-line.
+ *
+ * Bidi controls: U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069.
+ * Also C0 (including NUL, tab, and DEL), C1, zero-width (U+200B–U+200D, U+2060, U+FEFF),
+ * soft hyphen U+00AD, U+180E, invisible operators U+2061–U+2064, and lone surrogates.
+ * Single-line fields also reject line and paragraph separators U+2028 and U+2029.
+ * Multi-line fields allow U+000A after CR and CRLF become LF.
+ *
+ * maxLength counts UTF-16 code units (`string.length`), the same measure as
+ * Mobile's counter. 1000 emoji pass. 1001 emoji fail.
  */
 const REJECTED_TEXT =
-  /[\u0000-\u001F\u007F-\u009F\u200B-\u200D\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/u;
-/** Same as REJECTED_TEXT, except U+000A is allowed after CR and CRLF become LF. */
+  /[\u0000-\u001F\u007F-\u009F\u00AD\u061C\u180E\u200B-\u200F\u2028-\u202E\u2060-\u2064\u2066-\u2069\uD800-\uDFFF\uFEFF]/u;
+/** Same set, except U+000A, U+2028, and U+2029 stay allowed. */
 const MULTILINE_REJECTED_TEXT =
-  /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\u200B-\u200D\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/u;
+  /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uD800-\uDFFF\uFEFF]/u;
 const WHITESPACE_ONLY = /^[\s\u00A0]*$/u;
 
 export interface FieldValueContext {
@@ -29,7 +39,7 @@ interface FieldRule {
   kind: 'amount' | 'date' | 'text';
   entities: readonly OcrTargetEntityType[];
   maxLength?: number;
-  /** Notes only. Other text fields are single-line and reject every C0 character. */
+  /** §8.3: multi-line for notes and maintenance description. Every other text field is single-line. */
   multiline?: boolean;
 }
 
@@ -152,6 +162,7 @@ function assertCanonicalText(value: unknown, maxLength: number, multiline: boole
     normalized = normalized.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   }
   const rejected = multiline ? MULTILINE_REJECTED_TEXT : REJECTED_TEXT;
+  // `length` is UTF-16 code units, matching Mobile's counter. An emoji is 2.
   if (
     normalized.length === 0 ||
     normalized.length > maxLength ||

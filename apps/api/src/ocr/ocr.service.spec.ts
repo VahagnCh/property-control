@@ -567,9 +567,61 @@ describe('OcrService', () => {
       suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),
     ).toBe(true);
 
-    const result = await service.confirm(PROPERTY, job.id, decisionsFor(OBLIGATION, PAYMENT));
-    expect(result.persisted).toBe(false);
-    expect(result.applied.map((row) => row.entityId).sort()).toEqual([OBLIGATION, PAYMENT].sort());
+    const saves: unknown[] = [];
+    const recording = serviceWith({
+      lookup: {
+        belongsToProperty({ entityType, entityId }) {
+          if (entityType === 'obligation') return entityId === OBLIGATION;
+          if (entityType === 'payment') return entityId === PAYMENT;
+          return false;
+        },
+        paymentStatus() {
+          return 'recorded';
+        },
+        saveValue(_input, value) {
+          saves.push(value);
+        },
+        appendAudit() {
+          saves.push('audit');
+        },
+      },
+      extractor: {
+        extract: () => ({
+          outcome: 'suggested',
+          suggestions: [
+            {
+              targetEntityType: 'obligation',
+              fieldPath: 'providerName',
+              suggestedValue: 'BBVA Hipoteca',
+              confidence: 0.95,
+            },
+            {
+              targetEntityType: 'payment',
+              fieldPath: 'expectedAmount',
+              suggestedValue: '100.00',
+              confidence: 0.95,
+            },
+          ],
+        }),
+      },
+    });
+    const recordingJob = recording.enqueue(PROPERTY, DOCUMENT_2).job;
+    const recordingRows = suggestionMap(recording, PROPERTY, recordingJob.id);
+    await expect(
+      recording.confirm(
+        PROPERTY,
+        recordingJob.id,
+        recordingRows.map((row) => ({
+          suggestionId: row.id,
+          action: 'accept' as const,
+          targetEntityId: row.targetEntityType === 'payment' ? PAYMENT : OBLIGATION,
+        })),
+      ),
+    ).rejects.toMatchObject({
+      response: { error: 'target_not_writable', field: 'expectedAmount', statusCode: 422 },
+    });
+    expect(saves).toEqual([]);
+    expect(suggestionMap(recording, PROPERTY, recordingJob.id).every((row) => row.applyStatus === 'pending')).toBe(true);
     expect(knownPayments).toEqual(new Set([PAYMENT]));
     expect(Object.getOwnPropertyNames(OcrService.prototype)).not.toContain('createPayment');
   });
@@ -1292,6 +1344,47 @@ describe('OcrService', () => {
     ).toBe(true);
   });
 
+  it('returns 422 target_not_writable for a property title and writes nothing', async () => {
+    const saves: string[] = [];
+    const service = serviceWith({
+      lookup: {
+        belongsToProperty({ entityType, entityId }) {
+          return entityType === 'property' && entityId === PROPERTY;
+        },
+        saveValue() {
+          saves.push('save');
+        },
+        appendAudit() {
+          saves.push('audit');
+        },
+      },
+      extractor: {
+        extract: () => ({
+          outcome: 'suggested',
+          suggestions: [
+            {
+              targetEntityType: 'property',
+              fieldPath: 'title',
+              suggestedValue: 'Casa',
+              confidence: 0.9,
+            },
+          ],
+        }),
+      },
+    });
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const [row] = suggestionMap(service, PROPERTY, job.id);
+    await expect(
+      service.confirm(PROPERTY, job.id, [
+        { suggestionId: row?.id ?? '', action: 'accept', targetEntityId: PROPERTY },
+      ]),
+    ).rejects.toMatchObject({
+      response: { error: 'target_not_writable', field: 'title', suggestionId: row?.id, statusCode: 422 },
+    });
+    expect(saves).toEqual([]);
+    expect(suggestionMap(service, PROPERTY, job.id)[0]?.applyStatus).toBe('pending');
+  });
+
   it('returns 422 when a payment target has no paymentStatus', async () => {
     const service = serviceWith({
       lookup: {
@@ -1491,6 +1584,151 @@ describe('OcrService', () => {
     ).toBe('BBVA');
   });
 
+  it('rejects C1, bidi, and zero-width notes, a lone CR, title newlines, and notes past 2000 after normalization', async () => {
+    const extractor: OcrExtractor = {
+      extract: () => ({
+        outcome: 'suggested',
+        suggestions: [
+          {
+            targetEntityType: 'obligation',
+            fieldPath: 'notes',
+            suggestedValue: 'nota',
+            confidence: 0.95,
+          },
+          {
+            targetEntityType: 'document_meta',
+            fieldPath: 'title',
+            suggestedValue: 'Titulo',
+            confidence: 0.95,
+          },
+        ],
+      }),
+    };
+    const saves: unknown[] = [];
+    const audits: unknown[] = [];
+    const base = lookup();
+    const recording: OcrTargetLookup = {
+      belongsToProperty: (input) => base.belongsToProperty(input),
+      saveValue(input, value) {
+        saves.push({ input, value });
+      },
+      appendAudit(event) {
+        audits.push(event);
+      },
+    };
+    const open = () => {
+      const service = serviceWith({ extractor, lookup: recording });
+      const { job } = service.enqueue(PROPERTY, DOCUMENT);
+      const suggestions = suggestionMap(service, PROPERTY, job.id);
+      const notes = suggestions.find((row) => row.fieldPath === 'notes');
+      const title = suggestions.find((row) => row.fieldPath === 'title');
+      expect(notes).toBeDefined();
+      expect(title).toBeDefined();
+      return { service, job, notes, title };
+    };
+    const edit = (
+      session: ReturnType<typeof open>,
+      notesValue: string,
+      titleValue: string,
+    ) =>
+      session.service.confirm(
+        PROPERTY,
+        session.job.id,
+        [
+          {
+            suggestionId: session.notes?.id ?? '',
+            action: 'edit' as const,
+            editedValue: notesValue,
+            targetEntityId: OBLIGATION,
+          },
+          {
+            suggestionId: session.title?.id ?? '',
+            action: 'edit' as const,
+            editedValue: titleValue,
+          },
+        ],
+      );
+
+    const rejected = open();
+    const notesSamples = [
+      'c1\u0085',
+      'c1\u009F',
+      'nul\u0000',
+      'del\u007F',
+      'tab\t',
+      'bidi\u061C',
+      'bidi\u200E',
+      'bidi\u200F',
+      'bidi\u202A',
+      'bidi\u202E',
+      'bidi\u2066',
+      'bidi\u2069',
+      'zw\u200B',
+      'zw\uFEFF',
+      'zw\u2060',
+      'shy\u00AD',
+      'mvs\u180E',
+      'inv\u2061',
+      'inv\u2064',
+      'lone\uD800',
+      'lone\uDFFF',
+      '\r',
+      'a'.repeat(2001),
+      `${'a\r\n'.repeat(1000)}b`,
+      '\u{1F600}'.repeat(1001),
+    ];
+    for (const sample of notesSamples) {
+      await expect(edit(rejected, sample, 'Titulo')).rejects.toMatchObject({
+        response: {
+          error: 'edited_value_invalid',
+          field: 'notes',
+          suggestionId: rejected.notes?.id,
+          statusCode: 422,
+        },
+      });
+      await expect(edit(rejected, sample, 'Titulo')).rejects.toBeInstanceOf(UnprocessableEntityException);
+    }
+    for (const sample of ['a\nb', 'a\rb', 'a\u2028b', 'a\u2029b', 'a\u200Eb', 'a\u061Cb']) {
+      await expect(edit(rejected, 'nota', sample)).rejects.toMatchObject({
+        response: {
+          error: 'edited_value_invalid',
+          field: 'title',
+          suggestionId: rejected.title?.id,
+          statusCode: 422,
+        },
+      });
+    }
+    expect(
+      suggestionMap(rejected.service, PROPERTY, rejected.job.id).every((row) => row.applyStatus === 'pending'),
+    ).toBe(true);
+    expect(saves).toEqual([]);
+    expect(audits).toEqual([]);
+
+    const exact = open();
+    const exactResult = await edit(exact, 'a'.repeat(2000), 'Titulo');
+    expect(exactResult.suggestions.find((row) => row.fieldPath === 'notes')?.userEditedValue).toBe('a'.repeat(2000));
+
+    const normalized = open();
+    const normalizedResult = await edit(normalized, 'a\r\n'.repeat(1000), 'Titulo');
+    const stored = normalizedResult.suggestions.find((row) => row.fieldPath === 'notes')?.userEditedValue;
+    expect(stored).toBe('a\n'.repeat(1000));
+    expect(stored).toHaveLength(2000);
+
+    const loneCr = open();
+    const loneCrResult = await edit(loneCr, 'a\rb', 'Titulo');
+    expect(loneCrResult.suggestions.find((row) => row.fieldPath === 'notes')?.userEditedValue).toBe('a\nb');
+
+    const emoji = '\u{1F600}';
+    expect(emoji).toHaveLength(2);
+    const emojiOk = open();
+    const emojiResult = await edit(emojiOk, emoji.repeat(1000), 'Titulo');
+    expect(emojiResult.suggestions.find((row) => row.fieldPath === 'notes')?.userEditedValue).toHaveLength(2000);
+
+    const lineSep = open();
+    const lineSepResult = await edit(lineSep, 'linea\u2028dos', 'Titulo');
+    expect(lineSepResult.suggestions.find((row) => row.fieldPath === 'notes')?.userEditedValue).toBe('linea\u2028dos');
+  });
+
   it('records only the suggestion when replace happens before the record is saved', async () => {
     const service = serviceWith();
     const { job } = service.enqueue(PROPERTY, DOCUMENT);
@@ -1506,18 +1744,213 @@ describe('OcrService', () => {
       ),
       { actorUserId: 'user-a' },
     );
-    expect(result.audits).toEqual([
-      {
-        suggestionId: provider?.id,
-        field: 'providerName',
-        decision: 'replaced',
-        suggestedValue: 'BBVA Hipoteca',
-      },
-    ]);
-    expect(result.audits[0]).not.toHaveProperty('previousValue');
-    expect(result.audits[0]).not.toHaveProperty('clientPriorValue');
+    expect(result.audits).toEqual([]);
     expect(result.applied).toEqual([]);
     expect(result.persisted).toBe(false);
+    expect(result.suggestions.find((row) => row.fieldPath === 'providerName')?.applyStatus).toBe('accepted');
+  });
+
+  it('audits accept and edit of an unsaved field, and not a reject or a saved-field edit', async () => {
+    const rawDocument = 'RAW_DOCUMENT_CFE_RECIBO_88421';
+    const extractor: OcrExtractor = {
+      extract: () => ({
+        outcome: 'suggested',
+        suggestions: [
+          {
+            targetEntityType: 'obligation',
+            fieldPath: 'providerName',
+            suggestedValue: 'CFE',
+            confidence: 0.91,
+          },
+          {
+            targetEntityType: 'obligation',
+            fieldPath: 'notes',
+            suggestedValue: rawDocument,
+            confidence: 0.7,
+          },
+        ],
+      }),
+    };
+    const open = () => {
+      const service = serviceWith({ extractor });
+      const { job } = service.enqueue(PROPERTY, DOCUMENT);
+      const suggestions = suggestionMap(service, PROPERTY, job.id);
+      const provider = suggestions.find((row) => row.fieldPath === 'providerName');
+      const notes = suggestions.find((row) => row.fieldPath === 'notes');
+      expect(provider).toBeDefined();
+      expect(notes?.suggestedValue).toBe(rawDocument);
+      return { service, job, provider, notes };
+    };
+    const noDocumentText = (audits: unknown) => {
+      const serialized = JSON.stringify(audits);
+      expect(serialized).not.toContain(rawDocument);
+      expect(serialized).not.toContain('documentText');
+      expect(serialized).not.toContain('clientPriorValue');
+    };
+
+    const accepted = open();
+    const acceptResult = await accepted.service.confirm(
+      PROPERTY,
+      accepted.job.id,
+      [
+        { suggestionId: accepted.provider?.id ?? '', action: 'accept', targetEntityId: OBLIGATION },
+        { suggestionId: accepted.notes?.id ?? '', action: 'reject' },
+      ],
+      { actorUserId: 'user-a' },
+    );
+    expect(acceptResult.audits).toEqual([
+      {
+        source: 'ocr',
+        ocrJobId: accepted.job.id,
+        suggestionId: accepted.provider?.id,
+        field: 'providerName',
+        actorUserId: 'user-a',
+        confidence: 0.91,
+        edited: false,
+        previousValue: null,
+        newValue: 'CFE',
+      },
+    ]);
+    noDocumentText(acceptResult.audits);
+    expect(acceptResult.suggestions.find((row) => row.fieldPath === 'notes')?.suggestedValue).toBe(rawDocument);
+
+    const edited = open();
+    const editResult = await edited.service.confirm(
+      PROPERTY,
+      edited.job.id,
+      [
+        {
+          suggestionId: edited.provider?.id ?? '',
+          action: 'edit',
+          editedValue: 'Comision Federal',
+          targetEntityId: OBLIGATION,
+        },
+        { suggestionId: edited.notes?.id ?? '', action: 'reject' },
+      ],
+      { actorUserId: 'user-a' },
+    );
+    expect(editResult.audits).toEqual([
+      {
+        source: 'ocr',
+        ocrJobId: edited.job.id,
+        suggestionId: edited.provider?.id,
+        field: 'providerName',
+        actorUserId: 'user-a',
+        confidence: 0.91,
+        edited: true,
+        previousValue: null,
+        newValue: 'Comision Federal',
+      },
+    ]);
+    noDocumentText(editResult.audits);
+
+    const both = open();
+    const bothResult = await both.service.confirm(
+      PROPERTY,
+      both.job.id,
+      [
+        { suggestionId: both.provider?.id ?? '', action: 'accept', targetEntityId: OBLIGATION },
+        {
+          suggestionId: both.notes?.id ?? '',
+          action: 'edit',
+          editedValue: 'Pago revisado',
+          targetEntityId: OBLIGATION,
+        },
+      ],
+      { actorUserId: 'user-a' },
+    );
+    expect(bothResult.audits).toEqual([
+      {
+        source: 'ocr',
+        ocrJobId: both.job.id,
+        suggestionId: both.provider?.id,
+        field: 'providerName',
+        actorUserId: 'user-a',
+        confidence: 0.91,
+        edited: false,
+        previousValue: null,
+        newValue: 'CFE',
+      },
+      {
+        source: 'ocr',
+        ocrJobId: both.job.id,
+        suggestionId: both.notes?.id,
+        field: 'notes',
+        actorUserId: 'user-a',
+        confidence: 0.7,
+        edited: true,
+        previousValue: null,
+        newValue: 'Pago revisado',
+      },
+    ]);
+    noDocumentText(bothResult.audits);
+
+    const rejected = open();
+    const rejectResult = await rejected.service.confirm(
+      PROPERTY,
+      rejected.job.id,
+      [
+        { suggestionId: rejected.provider?.id ?? '', action: 'reject' },
+        { suggestionId: rejected.notes?.id ?? '', action: 'reject' },
+      ],
+      { actorUserId: 'user-a' },
+    );
+    expect(rejectResult.audits).toEqual([]);
+    expect(rejectResult.applied).toEqual([]);
+    noDocumentText(rejectResult.audits);
+
+    const saved = new Map<string, unknown>([['providerName', 'CFE ya capturado']]);
+    const base = lookup();
+    const blocked = serviceWith({
+      extractor,
+      lookup: {
+        belongsToProperty: (input) => base.belongsToProperty(input),
+        savedValue({ fieldPath }) {
+          return saved.has(fieldPath) ? saved.get(fieldPath) : undefined;
+        },
+        saveValue({ fieldPath }, value) {
+          saved.set(fieldPath, value);
+        },
+      },
+    });
+    const blockedJob = blocked.enqueue(PROPERTY, DOCUMENT_2).job;
+    const blockedSuggestions = suggestionMap(blocked, PROPERTY, blockedJob.id);
+    const blockedProvider = blockedSuggestions.find((row) => row.fieldPath === 'providerName');
+    const blockedNotes = blockedSuggestions.find((row) => row.fieldPath === 'notes');
+    for (const decision of [
+      { suggestionId: blockedProvider?.id ?? '', action: 'accept' as const, targetEntityId: OBLIGATION },
+      {
+        suggestionId: blockedProvider?.id ?? '',
+        action: 'edit' as const,
+        editedValue: 'Otro',
+        targetEntityId: OBLIGATION,
+      },
+    ]) {
+      try {
+        await blocked.confirm(
+          PROPERTY,
+          blockedJob.id,
+          [decision, { suggestionId: blockedNotes?.id ?? '', action: 'reject' }],
+          { actorUserId: 'user-a' },
+        );
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConflictException);
+        const response = (error as ConflictException).getResponse();
+        expect(response).toMatchObject({
+          statusCode: 409,
+          error: 'field_already_set',
+          suggestionId: blockedProvider?.id,
+          field: 'providerName',
+        });
+        expect(response).not.toHaveProperty('newValue');
+        expect(response).not.toHaveProperty('previousValue');
+        expect(JSON.stringify(response)).not.toContain(rawDocument);
+      }
+    }
+    expect(saved.get('providerName')).toBe('CFE ya capturado');
+    expect(blocked.getJob(PROPERTY, blockedJob.id).job.status).toBe('suggested');
+    expect(suggestionMap(blocked, PROPERTY, blockedJob.id).every((row) => row.applyStatus === 'pending')).toBe(true);
   });
 
   it('rejects clientPriorValue and a bulk accept-all with 422', async () => {
@@ -1557,6 +1990,15 @@ describe('OcrService', () => {
     ).rejects.toMatchObject({ response: { error: 'bulk_accept_rejected', statusCode: 422 } });
     await expect(
       service.confirm(PROPERTY, job.id, { accept_all: true }),
+    ).rejects.toMatchObject({ response: { error: 'bulk_accept_rejected', statusCode: 422 } });
+    await expect(
+      service.confirm(PROPERTY, job.id, { replaceAll: true }),
+    ).rejects.toMatchObject({ response: { error: 'bulk_accept_rejected', statusCode: 422 } });
+    await expect(
+      service.confirm(PROPERTY, job.id, { decisions: [{ action: 'replace-all' }] }),
+    ).rejects.toMatchObject({ response: { error: 'bulk_accept_rejected', statusCode: 422 } });
+    await expect(
+      service.confirm(PROPERTY, job.id, { replace_all: true }),
     ).rejects.toMatchObject({ response: { error: 'bulk_accept_rejected', statusCode: 422 } });
     expect(
       suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending'),

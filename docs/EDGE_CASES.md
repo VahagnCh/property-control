@@ -1,12 +1,12 @@
 # DueRecord: edge-case behavior spec
 
-Locked by Product on 20 Oct 2026. DueRecord is the public product name. Packages, the Expo slug, and code identifiers stay property-control. The app display name and UI copy say DueRecord.
+Locked by Product on 20 Oct 2026. DueRecord is the public product name. Packages, the Expo slug, and code identifiers stay property-control. The Expo URL scheme is `duerecord`. The app display name and UI copy say DueRecord.
 
 Each rule below is one checkable statement. A test in `apps/api/test/edge-cases.spec.ts` carries the same id and sentence. "Period" means one due instance of an Obligation, keyed by the obligation and a calendar due date. "Settled" means the period outcome is `paid` or `not_applicable`. "Non-voided sum" means the sum of `amount` over payments for that period whose status is `recorded`. "Write access" means an active PropertyMembership with role `owner` or `member`. "Today" means the current calendar date in the property's IANA timezone. A "candidate" due date is a date produced by the schedule in section 6 that is not a skipped pause date. A skipped pause date lies inside a pause interval and is after that interval's `lastScheduledDueDate`.
 
 The database stores money amounts on Obligation, Payment, and ObligationPeriodOutcome as integer centavos. The API wire format for those amounts is a decimal string such as "1234.50" plus a currency code. The currency is MXN only, and the wire value is never a float. `overpaidAmount` is the excess on that one period. It is not a balance, a credit, or an amount the next period can draw.
 
-Sections 10 through 13 were added on 21 Oct 2026. They are sections 9 through 12 of the product edge-case spec from that date. This file already uses section 9 for the OCR replace audit, so those rules start at section 10. Sections 1 through 8 are unchanged.
+Sections 10 through 13 were added on 21 Oct 2026. They are sections 9 through 12 of the product edge-case spec from that date. This file already uses section 9 for the OCR replace audit, so those rules start at section 10. Sections 1 through 8 are unchanged. Section 14 is the mobile notification links. It has no EC id.
 
 ## 1. Payments are void-only
 
@@ -157,3 +157,13 @@ Product spec section 12 (21 Oct 2026). A missing published row for the configure
 - **EC-13.1** The server fails at boot when the configured AVISO_VERSION has no published row, and it does not start listening. At runtime a missing current aviso returns 503 with error aviso_unavailable and logs an alert that contains no PII. POST /v1/me/consent returns that 503 now. GET /v1/me returning 503 is a tracked follow-up. That missing-aviso response is never 422.
 - **EC-13.2** On the phone, a 503 shows consent.unavailable (No pudimos cargar el Aviso de privacidad. Inténtalo de nuevo en unos minutos.) with Reintentar and Ahora no. The checkbox never unchecks in a loop, nothing is saved, and Ahora no signs the user out.
 - **EC-13.3** Only a 422 aviso_version_mismatch shows consent.updated. A 503 never shows consent.updated.
+
+## 14. Mobile notification links
+
+This section is the mobile client. It does not add an API test id.
+
+- A `duerecord://notificaciones/<uuid>` link, and the same path on an Expo Go `exp://…/--/` link, opens a stub screen. The nid is an 8-4-4-4-12 hex id. The path is exactly those two segments. `..`, an empty segment, a trailing slash, or a host or port opens Inicio.
+- The stub shows the same not-found copy for every nid: “Esta notificación ya no está disponible”, “Puede que se haya eliminado o que no tengas acceso.”, and “Ir a Inicio”. The call to action opens Inicio. The screen does not render the nid or any other text taken from the URL.
+- Without a session the link stops on sign-in. Ahora no and Cancelar drop it and open Inicio. There is no auth storage in this client. Tokens, when they land, use expo-secure-store and never AsyncStorage.
+- Query and fragment are removed before a route receives params. `property-control://` is not handled. The Expo Go prefix is registered only while running in Expo Go or a dev build, not in a store or TestFlight build.
+- Follow-up: fetch the notification through the API, check membership, and keep this generic not-found for a foreign or unknown nid. [Notification detail: fetch via API with membership check](https://github.com/VahagnCh/property-control/issues/13).
