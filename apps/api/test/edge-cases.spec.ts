@@ -123,7 +123,7 @@ describe("DueRecord edge-case rules", () => {
 
   it.todo("EC-9.1 When a saved field already has a persisted value, replace writes an audit with the server-side previous value, the new value, action replace, the suggestionId, and the actor. accept or edit returns 409 with error field_already_set and does not mark the suggestion accepted. reject leaves the value unchanged.");
 
-  it.todo("EC-9.2 A replace is audited when the record is saved, not before. On save, the payment create audit records source ocr_replace and the suggestionId, and it does not store a client-typed previous value. A request that contains clientPriorValue returns 422. A bulk accept-all returns 422.");
+  it.todo("EC-9.2 A replace is audited only when the record is saved, not before. The audit event name is ocr.replaced, not ocr_replace. Unsaved Reemplazar writes no audit. On save, that audit records ocr.replaced and the suggestionId, and it does not store a client-typed previous value. A request that contains clientPriorValue returns 422. A bulk accept-all returns 422.");
 
   it.todo("EC-10.1 The consent screen shows whenever consent.required is true. That covers first sign-in, any sign-in after Ahora no, and any sign-in after an aviso version change. The checkbox starts unchecked, and Continuar stays disabled until it is checked.");
 
@@ -180,5 +180,13 @@ describe("DueRecord edge-case rules", () => {
   it.todo("EC-13.2 On the phone, a 503 shows consent.unavailable (No pudimos cargar el Aviso de privacidad. Inténtalo de nuevo en unos minutos.) with Reintentar and Ahora no. The checkbox never unchecks in a loop, nothing is saved, and Ahora no signs the user out.");
 
   it.todo("EC-13.3 Only a 422 aviso_version_mismatch shows consent.updated. A 503 never shows consent.updated.");
+
+  it.todo("EC-14.1 A pending notification link is kept in memory only and is never persisted (brief §11.4). The held nid is AppShell state only. It is never written to SecureStore or AsyncStorage.");
+
+  it.todo("EC-14.2 Production, store, and TestFlight builds register and accept only duerecord://. A duerecord://notificaciones/<uuid> link opens a stub screen. The nid is an 8-4-4-4-12 hex id. The path is exactly those two segments. A dot-dot segment, an empty segment, a trailing slash, or a host or port opens Inicio. The same path on an Expo Go exp://…/--/ link is accepted only while running in Expo Go or a dev build.");
+
+  it.todo("EC-14.3 The stub shows the same not-found copy for every nid. notif.notFound.title is Esta notificación ya no está disponible. notif.notFound.body is Puede que se haya eliminado o que no tengas acceso. notif.notFound.cta is Ir a Inicio. The call to action opens Inicio. The screen does not render the nid or any other text taken from the URL.");
+
+  it.todo("EC-14.4 Without a session the link stops on sign-in. Ahora no and Cancelar drop it and open Inicio. There is no auth storage in this client. Tokens, when they land, use expo-secure-store and never AsyncStorage. Query and fragment are removed before a route receives params. property-control:// is not handled.");
 
 });

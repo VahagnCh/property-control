@@ -6,7 +6,7 @@ Each rule below is one checkable statement. A test in `apps/api/test/edge-cases.
 
 The database stores money amounts on Obligation, Payment, and ObligationPeriodOutcome as integer centavos. The API wire format for those amounts is a decimal string such as "1234.50" plus a currency code. The currency is MXN only, and the wire value is never a float. `overpaidAmount` is the excess on that one period. It is not a balance, a credit, or an amount the next period can draw.
 
-Sections 10 through 13 were added on 21 Oct 2026. They are sections 9 through 12 of the product edge-case spec from that date. This file already uses section 9 for the OCR replace audit, so those rules start at section 10. Sections 1 through 8 are unchanged. Section 14 is the mobile notification links. It has no EC id.
+Sections 10 through 13 were added on 21 Oct 2026. They are sections 9 through 12 of the product edge-case spec from that date. This file already uses section 9 for the OCR replace audit, so those rules start at section 10. Sections 1 through 8 are unchanged. Section 14 is the mobile notification links (brief §11.4).
 
 ## 1. Payments are void-only
 
@@ -108,7 +108,7 @@ Accept checks run in this order. The first match is the response, and an earlier
 Confirm decisions are per field: accept, replace, reject, or edit. There is no silent prefill at any confidence. accept or edit of a saved non-null value returns 409 field_already_set. replace is the only decision that overwrites it. A bulk accept-all shape returns 422. The API rejects clientPriorValue with 422 and does not store unsaved typed text. Only saved state is audited.
 
 - **EC-9.1** When a saved field already has a persisted value, replace writes an audit with the server-side previous value, the new value, action replace, the suggestionId, and the actor. accept or edit returns 409 with error field_already_set and does not mark the suggestion accepted. reject leaves the value unchanged.
-- **EC-9.2** A replace is audited when the record is saved, not before. On save, the payment create audit records source ocr_replace and the suggestionId, and it does not store a client-typed previous value. A request that contains clientPriorValue returns 422. A bulk accept-all returns 422.
+- **EC-9.2** A replace is audited only when the record is saved, not before. The audit event name is ocr.replaced, not ocr_replace. Unsaved Reemplazar writes no audit. On save, that audit records ocr.replaced and the suggestionId, and it does not store a client-typed previous value. A request that contains clientPriorValue returns 422. A bulk accept-all returns 422.
 
 ## 10. Express consent
 
@@ -160,10 +160,11 @@ Product spec section 12 (21 Oct 2026). A missing published row for the configure
 
 ## 14. Mobile notification links
 
-This section is the mobile client. It does not add an API test id.
+This section is the mobile client. Brief §11.4.
 
-- A `duerecord://notificaciones/<uuid>` link, and the same path on an Expo Go `exp://…/--/` link, opens a stub screen. The nid is an 8-4-4-4-12 hex id. The path is exactly those two segments. `..`, an empty segment, a trailing slash, or a host or port opens Inicio.
-- The stub shows the same not-found copy for every nid: “Esta notificación ya no está disponible”, “Puede que se haya eliminado o que no tengas acceso.”, and “Ir a Inicio”. The call to action opens Inicio. The screen does not render the nid or any other text taken from the URL.
-- Without a session the link stops on sign-in. Ahora no and Cancelar drop it and open Inicio. There is no auth storage in this client. Tokens, when they land, use expo-secure-store and never AsyncStorage.
-- Query and fragment are removed before a route receives params. `property-control://` is not handled. The Expo Go prefix is registered only while running in Expo Go or a dev build, not in a store or TestFlight build.
-- Follow-up: fetch the notification through the API, check membership, and keep this generic not-found for a foreign or unknown nid. [Notification detail: fetch via API with membership check](https://github.com/VahagnCh/property-control/issues/13).
+- **EC-14.1** A pending notification link is kept in memory only and is never persisted (brief §11.4). The held nid is AppShell state only. It is never written to SecureStore or AsyncStorage.
+- **EC-14.2** Production, store, and TestFlight builds register and accept only duerecord://. A duerecord://notificaciones/<uuid> link opens a stub screen. The nid is an 8-4-4-4-12 hex id. The path is exactly those two segments. A dot-dot segment, an empty segment, a trailing slash, or a host or port opens Inicio. The same path on an Expo Go exp://…/--/ link is accepted only while running in Expo Go or a dev build.
+- **EC-14.3** The stub shows the same not-found copy for every nid. notif.notFound.title is Esta notificación ya no está disponible. notif.notFound.body is Puede que se haya eliminado o que no tengas acceso. notif.notFound.cta is Ir a Inicio. The call to action opens Inicio. The screen does not render the nid or any other text taken from the URL.
+- **EC-14.4** Without a session the link stops on sign-in. Ahora no and Cancelar drop it and open Inicio. There is no auth storage in this client. Tokens, when they land, use expo-secure-store and never AsyncStorage. Query and fragment are removed before a route receives params. property-control:// is not handled.
+
+Follow-up: fetch the notification through the API, check membership, and keep this generic not-found for a foreign or unknown nid. [Notification detail: fetch via API with membership check](https://github.com/VahagnCh/property-control/issues/13).
