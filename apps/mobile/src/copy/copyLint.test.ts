@@ -82,7 +82,7 @@ describe('copy lint', () => {
 
     expect(app.expo.name).toBe('DueRecord');
     expect(app.expo.slug).toBe('property-control');
-    expect(app.expo.scheme).toBe('property-control');
+    expect(app.expo.scheme).toBe('duerecord');
     expect(app.expo.ios?.bundleIdentifier).toBeUndefined();
     expect(app.expo.android?.package).toBeUndefined();
 
@@ -134,6 +134,9 @@ describe('copy lint', () => {
       COPY['obligation.nextDueDate.invalid'],
       COPY['invite.unavailable'],
       COPY['invite.expired'],
+      COPY['notif.notFound.title'],
+      COPY['notif.notFound.body'],
+      COPY['notif.notFound.cta'],
       OCR_REPLACE_KEEP_LABEL,
       OCR_REPLACE_BUTTON_LABEL,
       OCR_REPLACE_TOAST,

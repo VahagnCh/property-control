@@ -1,3 +1,4 @@
+import { withDeviceLocalBlocked } from '../test/withDeviceLocalBlocked';
 import { mapNextDueDateServerError, nextDueDateWindow, validateNextDueDate } from './nextDueDate';
 
 const MEXICO_CITY = 'America/Mexico_City';
@@ -36,9 +37,8 @@ describe('nextDueDate input window', () => {
     });
   });
 
-  it('AC-OBL-02 covers leap day, midnight, a UTC device, and a non-default zone', () => {
-    expect(new Date().getTimezoneOffset()).toBe(0);
-
+  it('AC-OBL-02 covers leap day, midnight, and a non-default zone', () => {
+    withDeviceLocalBlocked(() => {
     const leapDay = new Date('2024-02-29T18:00:00.000Z');
     expect(nextDueDateWindow(leapDay, MEXICO_CITY)).toEqual({
       today: '2024-02-29',
@@ -147,6 +147,7 @@ describe('nextDueDate input window', () => {
     expect(validateNextDueDate('2104-06-16', late, MEXICO_CITY)).toEqual({
       ok: false,
       reason: 'too_future',
+    });
     });
   });
 
