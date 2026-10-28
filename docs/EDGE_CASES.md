@@ -112,8 +112,12 @@ Confirm decisions are per field: accept, replace, reject, or edit. There is no s
 
 This section is the mobile client. It does not add an API test id.
 
-- A `duerecord://notificaciones/<uuid>` link, and the same path on an Expo Go `exp://…/--/` link, opens a stub screen. The nid is an 8-4-4-4-12 hex id. The path is exactly those two segments. `..`, an empty segment, a trailing slash, or a host or port opens Inicio.
+- A `duerecord://notificaciones/<uuid>` link opens a stub screen. The same path on an Expo Go `exp://…/--/` link does too, only while the dev-prefix check allows `exp://`. The nid is an 8-4-4-4-12 hex id. The path is exactly those two segments. `..`, an empty segment, a trailing slash, or a host or port opens Inicio.
 - The stub shows the same not-found copy for every nid: “Esta notificación ya no está disponible”, “Puede que se haya eliminado o que no tengas acceso.”, and “Ir a Inicio”. The call to action opens Inicio. The screen does not render the nid or any other text taken from the URL.
 - Without a session the link stops on sign-in. Ahora no and Cancelar drop it and open Inicio. There is no auth storage in this client. Tokens, when they land, use expo-secure-store and never AsyncStorage.
 - Query and fragment are removed before a route receives params. `property-control://` is not handled. The Expo Go prefix is registered only while running in Expo Go or a dev build, not in a store or TestFlight build.
+- The React Navigation screen map does not register `notificaciones/:nid`. `getStateFromPath` does not route `notificaciones/Llama-al-5555` or a nid that is a uuid plus `%3Ftoken%3Dabc`. Notification routing stays in AppShell. A valid uuid still does not become a web route.
+- Parsing `exp://` and `exps://` uses the same Expo Go or dev-build check as prefix registration. A production build does not parse those links, whatever the host is. Production prefixes are only `duerecord://`.
+- The held nid is cleared when the stub opens and when Ahora no or Cancelar drops the link. Sign-in keeps it until then. It is not rendered.
+- The session flag is read once per mount. There is no auth subscription in this client yet.
 - Follow-up: fetch the notification through the API, check membership, and keep this generic not-found for a foreign or unknown nid. [Notification detail: fetch via API with membership check](https://github.com/VahagnCh/property-control/issues/13).

@@ -2,9 +2,11 @@ import {
   getStateFromPath as getStateFromPathDefault,
   type LinkingOptions,
 } from '@react-navigation/native';
-import Constants, { ExecutionEnvironment } from 'expo-constants';
 import * as Linking from 'expo-linking';
-import { APP_SCHEME } from './deepLink';
+import { allowsDevPrefix, currentDevPrefixEnv } from './devPrefix';
+import { APP_SCHEME, isNotificationId } from './deepLink';
+
+export { allowsDevPrefix };
 
 export type LinkingRuntime = {
   /** True for a debug bundle (`__DEV__`). False for a store or TestFlight release. */
@@ -13,11 +15,6 @@ export type LinkingRuntime = {
   /** `Linking.createURL('/')` when it is an Expo Go `exp://` prefix. Otherwise null. */
   expoGoPrefix: string | null;
 };
-
-/** Expo Go (`storeClient`) or a dev bundle. A store or TestFlight release is neither. */
-export function allowsDevPrefix(env: Pick<LinkingRuntime, 'dev' | 'executionEnvironment'>): boolean {
-  return env.dev || env.executionEnvironment === ExecutionEnvironment.StoreClient;
-}
 
 export function linkingPrefixes(env: LinkingRuntime): string[] {
   const prefixes = [`${APP_SCHEME}://`];
@@ -31,20 +28,76 @@ export function linkingPrefixes(env: LinkingRuntime): string[] {
   return [...prefixes, prefix];
 }
 
+type ParsedRoute = {
+  name?: string;
+  params?: object;
+  state?: { routes?: ParsedRoute[] };
+};
+
+function barePath(path: string): string {
+  return path.startsWith('/') ? path.slice(1) : path;
+}
+
+/**
+ * `notificaciones/<nid>` is only safe when nid is exactly a uuid.
+ * A slug, an extra segment, or a percent-encoded query (`%3Ftoken%3Dabc`) is not a route.
+ */
+function isInvalidNotificationPath(path: string): boolean {
+  const parts = barePath(path).split('/');
+  if (parts[0] !== 'notificaciones') {
+    return false;
+  }
+  if (parts.length !== 2) {
+    return true;
+  }
+  return !isNotificationId(parts[1] ?? '');
+}
+
+function routeHasInvalidNid(routes: ParsedRoute[] | undefined): boolean {
+  if (!routes) {
+    return false;
+  }
+  for (const route of routes) {
+    const params = route.params;
+    const hasNid = !!params && Object.prototype.hasOwnProperty.call(params, 'nid');
+    const nid = hasNid ? (params as { nid?: unknown }).nid : undefined;
+    if (route.name === 'Notificacion' || hasNid) {
+      const keys = params ? Object.keys(params) : [];
+      if (typeof nid !== 'string' || !isNotificationId(nid) || keys.some((key) => key !== 'nid')) {
+        return true;
+      }
+    }
+    if (routeHasInvalidNid(route.state?.routes)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Drops the query string and the fragment, then parses. Route params never come from the query. */
 export const getStateFromPath: typeof getStateFromPathDefault = (path, options) => {
   const withoutFragment = path.split('#')[0] ?? '';
   const withoutQuery = withoutFragment.split('?')[0] ?? '';
-  return getStateFromPathDefault(withoutQuery, options);
+  if (isInvalidNotificationPath(withoutQuery)) {
+    return undefined;
+  }
+  const state = getStateFromPathDefault(withoutQuery, options);
+  if (routeHasInvalidNid(state?.routes as ParsedRoute[] | undefined)) {
+    return undefined;
+  }
+  return state;
 };
 
+/**
+ * Tab paths only. Notification links are parsed by AppShell, not by this screen map,
+ * so `expo start --web` cannot route `notificaciones/:nid`.
+ */
 const screens = {
   Inicio: '',
   Propiedades: 'propiedades',
   Pagos: 'pagos',
   Mantenimiento: 'mantenimiento',
   Documentos: 'documentos',
-  Notificacion: 'notificaciones/:nid',
 } as const;
 
 export function createLinkingOptions(
@@ -70,8 +123,7 @@ function expoGoPrefix(): string | null {
 }
 
 function currentRuntime(): LinkingRuntime {
-  const dev = typeof __DEV__ !== 'undefined' && __DEV__;
-  const executionEnvironment = Constants.executionEnvironment;
+  const { dev, executionEnvironment } = currentDevPrefixEnv();
   return {
     dev,
     executionEnvironment,
