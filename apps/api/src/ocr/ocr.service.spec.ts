@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   GoneException,
   HttpException,
   InternalServerErrorException,
@@ -1475,6 +1476,41 @@ describe('OcrService', () => {
         statusCode: 422,
       });
     }
+  });
+
+  it('returns 404 for an unknown suggestion id and does not leak it', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    expect(suggestions.length).toBeGreaterThan(0);
+    const bodies = [
+      [{ suggestionId: FORGED, action: 'reject' as const }],
+      [
+        ...suggestions.map((row) => ({ suggestionId: row.id, action: 'reject' as const })),
+        { suggestionId: FORGED, action: 'reject' as const },
+      ],
+    ];
+    for (const body of bodies) {
+      try {
+        await service.confirm(PROPERTY, job.id, body, { actorUserId: 'user-a' });
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(NotFoundException);
+        expect(error).not.toBeInstanceOf(ForbiddenException);
+        expect(error).not.toBeInstanceOf(UnprocessableEntityException);
+        const response = (error as NotFoundException).getResponse();
+        expect((error as NotFoundException).getStatus()).toBe(404);
+        expect(response).toEqual({ statusCode: 404, error: 'not_found', message: 'Not found.' });
+        const serialized = JSON.stringify(response);
+        expect(serialized).not.toContain(FORGED);
+        expect(serialized).not.toContain('Cannot');
+        for (const row of suggestions) {
+          expect(serialized).not.toContain(row.id);
+        }
+      }
+    }
+    expect(service.getJob(PROPERTY, job.id).job.status).toBe('suggested');
+    expect(suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending')).toBe(true);
   });
 
   it('rejects a top-level clientPriorValue with 422', async () => {
