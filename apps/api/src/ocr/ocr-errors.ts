@@ -39,6 +39,7 @@ export const OCR_ERROR = {
   targetRequired: 'target_required',
   targetVoided: 'target_voided',
   targetStatusUnknown: 'target_status_unknown',
+  targetNotWritable: 'target_not_writable',
   fieldAlreadySet: 'field_already_set',
   fieldPathUnknown: 'field_path_unknown',
   invalidSourceKey: 'invalid_source_key',

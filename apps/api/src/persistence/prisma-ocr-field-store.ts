@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import type { OcrAuditAppend, OcrTargetLookup, SavedFieldQuery } from '../ocr/ocr-target-lookup.js';
@@ -7,11 +8,13 @@ type Db = Prisma.TransactionClient | PrismaClient;
 
 /**
  * Reads and writes OCR target fields inside `prisma.$transaction`.
+ * The transaction client lives in AsyncLocalStorage, one per confirm, so two
+ * overlapping confirms cannot see each other's transaction.
  * `savedValue` takes `FOR UPDATE` while a transaction is open so confirm can
  * re-check the value captured by `plan()`.
  */
 export class PrismaOcrFieldStore implements OcrTargetLookup {
-  private tx: Prisma.TransactionClient | null = null;
+  private readonly transactions = new AsyncLocalStorage<Prisma.TransactionClient>();
 
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -54,7 +57,7 @@ export class PrismaOcrFieldStore implements OcrTargetLookup {
   }
 
   async savedValue(input: SavedFieldQuery): Promise<unknown> {
-    return this.readField(input, this.tx !== null);
+    return this.readField(input, this.transactions.getStore() !== undefined);
   }
 
   async saveValue(input: SavedFieldQuery, value: unknown): Promise<void> {
@@ -78,19 +81,13 @@ export class PrismaOcrFieldStore implements OcrTargetLookup {
       if (result.count !== 1) {
         throw new Error('OCR target document was not updated.');
       }
+      return;
     }
+    throw new Error('OCR target field was not updated.');
   }
 
   runInTransaction<T>(work: () => Promise<T>): Promise<T> {
-    return this.prisma.$transaction(async (tx) => {
-      const previous = this.tx;
-      this.tx = tx;
-      try {
-        return await work();
-      } finally {
-        this.tx = previous;
-      }
-    });
+    return this.prisma.$transaction((tx) => this.transactions.run(tx, work));
   }
 
   async appendAudit(event: OcrAuditAppend): Promise<void> {
@@ -108,7 +105,7 @@ export class PrismaOcrFieldStore implements OcrTargetLookup {
   }
 
   private client(): Db {
-    return this.tx ?? this.prisma;
+    return this.transactions.getStore() ?? this.prisma;
   }
 
   private async readField(input: SavedFieldQuery, lock: boolean): Promise<unknown> {
