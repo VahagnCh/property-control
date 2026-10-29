@@ -2,22 +2,16 @@ import {
   getStateFromPath as getStateFromPathDefault,
   type LinkingOptions,
 } from '@react-navigation/native';
-import Constants, { ExecutionEnvironment } from 'expo-constants';
 import * as Linking from 'expo-linking';
 import { APP_SCHEME } from './deepLink';
+import { allowsDevPrefix, currentDevPrefixEnv, type DevPrefixEnv } from './devPrefix';
 
-export type LinkingRuntime = {
-  /** True for a debug bundle (`__DEV__`). False for a store or TestFlight release. */
-  dev: boolean;
-  executionEnvironment: string | null | undefined;
+export type LinkingRuntime = DevPrefixEnv & {
   /** `Linking.createURL('/')` when it is an Expo Go `exp://` prefix. Otherwise null. */
   expoGoPrefix: string | null;
 };
 
-/** Expo Go (`storeClient`) or a dev bundle. A store or TestFlight release is neither. */
-export function allowsDevPrefix(env: Pick<LinkingRuntime, 'dev' | 'executionEnvironment'>): boolean {
-  return env.dev || env.executionEnvironment === ExecutionEnvironment.StoreClient;
-}
+export { allowsDevPrefix };
 
 export function linkingPrefixes(env: LinkingRuntime): string[] {
   const prefixes = [`${APP_SCHEME}://`];
@@ -70,12 +64,10 @@ function expoGoPrefix(): string | null {
 }
 
 function currentRuntime(): LinkingRuntime {
-  const dev = typeof __DEV__ !== 'undefined' && __DEV__;
-  const executionEnvironment = Constants.executionEnvironment;
+  const env = currentDevPrefixEnv();
   return {
-    dev,
-    executionEnvironment,
-    expoGoPrefix: allowsDevPrefix({ dev, executionEnvironment }) ? expoGoPrefix() : null,
+    ...env,
+    expoGoPrefix: allowsDevPrefix(env) ? expoGoPrefix() : null,
   };
 }
 
