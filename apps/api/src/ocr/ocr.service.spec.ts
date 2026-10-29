@@ -1908,11 +1908,10 @@ describe('OcrService', () => {
         actorUserId: 'user-a',
         confidence: 0.7,
         edited: true,
-        previousValue: null,
-        newValue: 'Pago revisado',
       },
     ]);
     noDocumentText(bothResult.audits);
+    expect(JSON.stringify(bothResult.audits)).not.toContain('Pago revisado');
 
     const rejected = open();
     const rejectResult = await rejected.service.confirm(

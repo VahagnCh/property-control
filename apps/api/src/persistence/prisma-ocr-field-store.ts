@@ -99,6 +99,8 @@ export class PrismaOcrFieldStore implements OcrTargetLookup {
         action: event.action,
         entityType: event.entityType,
         entityId: event.entityId,
+        beforeState: event.beforeState ?? undefined,
+        afterState: event.afterState ?? undefined,
         metadata: event.metadata as Prisma.InputJsonValue,
       },
     });
