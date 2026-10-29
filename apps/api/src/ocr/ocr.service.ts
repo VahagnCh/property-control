@@ -94,7 +94,7 @@ export class OcrService {
       throw ocrCapacity('OCR job capacity is full.');
     }
 
-    const sourceKey = this.storage.buildOcrSourceKey(propertyId, documentId);
+    const sourceKey = this.storage.buildOcrSourceKey();
     const now = new Date(this.clock.now()).toISOString();
     const id = randomUUID();
     const record: JobRecord = {

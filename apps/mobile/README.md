@@ -11,7 +11,7 @@ pnpm install
 pnpm mobile:start
 ```
 
-Then press `a` for Android, `i` for iOS on macOS, or `w` for web, or scan the QR code with Expo Go. `pnpm mobile:android` and `pnpm mobile:ios` go straight to a device. From this directory the scripts are `pnpm start`, `pnpm android`, `pnpm ios`, and `pnpm web`.
+Then press `a` for Android, `i` for iOS on macOS, or `w` for web, or scan the QR code with Expo Go. The app is Expo SDK 58, which is the SDK the current App Store Expo Go opens. `pnpm mobile:android` and `pnpm mobile:ios` go straight to a device. From this directory the scripts are `pnpm start`, `pnpm android`, `pnpm ios`, and `pnpm web`.
 
 Type check:
 
