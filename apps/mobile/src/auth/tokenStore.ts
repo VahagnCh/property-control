@@ -36,3 +36,20 @@ export async function clearAuthTokens(): Promise<void> {
   await SecureStore.deleteItemAsync(ACCESS_KEY, options);
   await SecureStore.deleteItemAsync(REFRESH_KEY, options);
 }
+
+/**
+ * Session storage for the API client. Login screens are not built yet, so
+ * callers depend on this interface instead of a sign-in route.
+ * The production value is `secureTokenStore`, which uses expo-secure-store only.
+ */
+export interface TokenStore {
+  read(): Promise<AuthTokens | null>;
+  save(tokens: AuthTokens): Promise<void>;
+  clear(): Promise<void>;
+}
+
+export const secureTokenStore: TokenStore = {
+  read: readAuthTokens,
+  save: saveAuthTokens,
+  clear: clearAuthTokens,
+};

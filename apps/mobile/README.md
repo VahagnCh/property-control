@@ -1,6 +1,6 @@
 # @property-control/mobile
 
-Expo React Native + TypeScript client for DueRecord. This is the navigation shell: the five locked tabs with placeholder Spanish copy. There is no data fetching, no auth storage, and no real screen yet. The Expo display name is DueRecord. The package name stays `@property-control/mobile`, and the slug stays `property-control`. The URL scheme is `duerecord`. A notification link opens a stub that says the notification is no longer available. It does not show the id from the URL. Fetching that notification and checking membership is [issue 13](https://github.com/VahagnCh/property-control/issues/13).
+Expo React Native + TypeScript client for DueRecord. The navigation shell is five tabs with placeholder Spanish copy. `src/api` is the typed fetch client: app-config base URL, 15s timeout, SecureStore tokens, single-flight refresh, idempotency keys, and the health gate before a write. Screens do not call it yet. The Expo display name is DueRecord. The package name stays `@property-control/mobile`, and the slug stays `property-control`. The URL scheme is `duerecord`. A notification link opens a stub that says the notification is no longer available. It does not show the id from the URL. Fetching that notification and checking membership is [issue 13](https://github.com/VahagnCh/property-control/issues/13).
 
 ## Run
 
@@ -42,6 +42,8 @@ src/navigation/linking.ts         duerecord://, plus exp:// only in Expo Go or d
 src/navigation/tabs.tsx           the five-tab bottom navigator
 src/screens/PlaceholderScreen.tsx shared placeholder
 src/components/ScreenState.tsx    empty, loading, and error
+src/api/client.ts                 typed fetch, refresh, idempotency, health gate
+src/auth/tokenStore.ts            expo-secure-store behind TokenStore
 TESTING.md                        edge-case matrix
 ```
 

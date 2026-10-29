@@ -30,6 +30,9 @@ export const SCREEN_STATE_COPY = {
   retry: 'Reintentar',
 } as const;
 
+/** Shown while a write waits on GET /v1/health. Not a place for secrets or response text. */
+export const CONNECTING_LABEL = 'Conectando…';
+
 export function loadingAccessibilityLabel(context: string): string {
   return `${context}: ${SCREEN_STATE_COPY.loading}`;
 }
@@ -69,6 +72,11 @@ export const COPY = {
   'notif.notFound.title': 'Esta notificación ya no está disponible',
   'notif.notFound.body': 'Puede que se haya eliminado o que no tengas acceso.',
   'notif.notFound.cta': 'Ir a Inicio',
+  'common.notFound': 'No encontramos esto, o no tienes acceso.',
+  'common.error': 'No se pudo completar la acción. Inténtalo de nuevo.',
+  'common.connecting.failed': 'No pudimos conectar. Revisa tu conexión e inténtalo de nuevo.',
+  'idempotency.keyReused':
+    'Esa solicitud ya se usó con otros datos. Usa Reenviar para mandarla otra vez.',
 } as const;
 
 export type CopyKey = keyof typeof COPY;
