@@ -8,11 +8,16 @@ export type SubmitGate = {
   inFlight: boolean;
 };
 
+/**
+ * Guarded UUID. This does not use Math.random, and it does not import
+ * expo-crypto while globalThis.crypto.randomUUID is present.
+ */
 export function createIdempotencyKey(): string {
-  if (typeof globalThis.crypto?.randomUUID !== 'function') {
+  const randomUUID = globalThis.crypto?.randomUUID;
+  if (typeof randomUUID !== 'function') {
     throw new Error('crypto.randomUUID is not available');
   }
-  return globalThis.crypto.randomUUID();
+  return randomUUID.call(globalThis.crypto);
 }
 
 /**

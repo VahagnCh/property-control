@@ -1,4 +1,5 @@
-import { copyText, type CopyKey } from '../copy/userFacing';
+import { SCREEN_STATE_COPY, copyText, type CopyKey } from '../copy/userFacing';
+import { API_ERROR_CODES } from './contract';
 
 /**
  * Clients match `error`, never the English `message`, and never a URL.
@@ -21,25 +22,16 @@ const COPY_BY_CODE: Partial<Record<string, CopyKey>> = {
   idempotency_key_reused: 'idempotency.keyReused',
 };
 
-const HTTP_REASON = new Set([
-  'Bad Request',
-  'Unauthorized',
-  'Forbidden',
-  'Not Found',
-  'Conflict',
-  'Gone',
-  'Unprocessable Entity',
-  'Too Many Requests',
-  'Internal Server Error',
-]);
+const KNOWN_ERROR_CODES = new Set<string>(API_ERROR_CODES);
 
+/** Only codes from the API contract are kept. Anything else is `unknown`. */
 export function readErrorCode(body: unknown, status: number): string {
   if (status === 404) {
     return 'not_found';
   }
   if (body && typeof body === 'object' && 'error' in body) {
     const error = (body as { error?: unknown }).error;
-    if (typeof error === 'string' && error !== '' && !HTTP_REASON.has(error)) {
+    if (typeof error === 'string' && KNOWN_ERROR_CODES.has(error)) {
       return error;
     }
   }
@@ -67,7 +59,7 @@ export class ApiClientError extends Error {
   }
 }
 
-/** 409 idempotency_key_reused. Reenviar mints a new key; this does not. */
+/** 409 idempotency_key_reused. A later submit mints a new key; this 4xx is definite. */
 export class IdempotencyKeyReusedError extends ApiClientError {
   constructor() {
     super('idempotency_key_reused', 'idempotency.keyReused', 409);
@@ -76,9 +68,13 @@ export class IdempotencyKeyReusedError extends ApiClientError {
 }
 
 export class ConnectingFailedError extends ApiClientError {
-  constructor() {
+  readonly retryLabel = SCREEN_STATE_COPY.retry;
+  readonly idempotencyKey: string | null;
+
+  constructor(idempotencyKey: string | null) {
     super('connecting_failed', 'common.connecting.failed', null);
     this.name = 'ConnectingFailedError';
+    this.idempotencyKey = idempotencyKey;
   }
 }
 

@@ -75,39 +75,37 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe('API client', () => {
-  it('times out a request after 15 seconds', async () => {
-    jest.useFakeTimers();
-    try {
-      const { server, client } = setup();
-      server.route('GET', PROPERTY_PATH, () => ({ status: 200, hang: true }));
-      let status = 'pending';
-      let caught: unknown;
-      const pending = client.getProperty(PROPERTY_ID).then(
-        () => {
-          status = 'ok';
-        },
-        (error: unknown) => {
-          status = 'fail';
-          caught = error;
-        },
-      );
-      await flushMicrotasks();
-      await jest.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS - 1);
-      expect(status).toBe('pending');
-      await jest.advanceTimersByTimeAsync(1);
-      await pending;
-      expect(status).toBe('fail');
-      expect(caught).toMatchObject({ code: 'timeout', message: COPY['common.error'] });
-      expect(REQUEST_TIMEOUT_MS).toBe(15_000);
-    } finally {
-      jest.useRealTimers();
-    }
+  it('retries a GET once after a network error', async () => {
+    const { server, client } = setup();
+    let calls = 0;
+    server.route('GET', PROPERTY_PATH, () => {
+      calls += 1;
+      if (calls === 1) {
+        return { status: 200, networkError: true };
+      }
+      return { status: 200, body: propertyFixture };
+    });
+    await expect(client.getProperty(PROPERTY_ID)).resolves.toMatchObject({ id: PROPERTY_ID });
+    expect(calls).toBe(2);
+    expect(REQUEST_TIMEOUT_MS).toBe(15_000);
   });
 
-  it('surfaces an offline network error without retrying the write', async () => {
+  it('makes exactly one fetch when a write hits a network error', async () => {
     const { server, client } = setup();
     server.route('POST', PAYMENT_PATH, () => ({ status: 201, networkError: true }));
-    await expect(client.createPayment(PROPERTY_ID, paymentInput())).rejects.toMatchObject({ code: 'network' });
+    const error = await client.createPayment(PROPERTY_ID, paymentInput()).then(
+      () => {
+        throw new Error('expected a rejection');
+      },
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({
+      code: 'connecting_failed',
+      copyKey: 'common.connecting.failed',
+      message: COPY['common.connecting.failed'],
+      retryLabel: 'Reintentar',
+    });
+    expect((error as { idempotencyKey: string }).idempotencyKey).toEqual(expect.any(String));
     expect(server.calls('POST', PAYMENT_PATH)).toHaveLength(1);
     expect(server.calls('POST', REFRESH_PATH)).toHaveLength(0);
   });
@@ -237,41 +235,154 @@ describe('API client', () => {
       return { status: 200, networkError: true };
     });
 
-    await expect(client.getProperty(PROPERTY_ID)).rejects.toMatchObject({ code: 'sign_in_required' });
+    await expect(client.getProperty(PROPERTY_ID)).rejects.toMatchObject({
+      code: 'auth.unavailable',
+      copyKey: 'common.connecting.failed',
+    });
     expect(attempts).toBe(2);
-    expect(tokens.current()).toBeNull();
-    expect(events).toEqual(['sign-in-required']);
-
-    await expect(client.getProperty(PROPERTY_ID)).rejects.toMatchObject({ code: 'sign_in_required' });
-    expect(attempts).toBe(2);
-    expect(events).toEqual(['sign-in-required']);
+    expect(tokens.current()).toEqual({ accessToken: ACCESS, refreshToken: REFRESH });
+    expect(events).toEqual([]);
   });
 
-  it('reuses the idempotency key on Reintentar and mints a new key on Reenviar', async () => {
-    const minted: string[] = [];
+  it('does not clear the session when refresh returns 503 auth.unavailable', async () => {
+    const { server, client, tokens } = setup();
+    const events: string[] = [];
+    client.subscribe((event) => {
+      events.push(event.type);
+    });
+    server.route('GET', PROPERTY_PATH, () => ({
+      status: 401,
+      body: { statusCode: 401, error: 'token_expired', message: 'Token expired.' },
+    }));
+    server.route('POST', REFRESH_PATH, () => ({
+      status: 503,
+      body: { statusCode: 503, error: 'auth.unavailable', message: 'Access tokens are not configured.' },
+    }));
+    await expect(client.getProperty(PROPERTY_ID)).rejects.toMatchObject({
+      code: 'auth.unavailable',
+      copyKey: 'common.connecting.failed',
+    });
+    expect(server.calls('POST', REFRESH_PATH)).toHaveLength(1);
+    expect(tokens.current()).toEqual({ accessToken: ACCESS, refreshToken: REFRESH });
+    expect(events).toEqual([]);
+    expect((await client.getProperty(PROPERTY_ID).catch((error: Error) => error.message))).not.toContain(
+      'not configured',
+    );
+  });
+
+  it('reuses the same idempotency key when Reenviar follows a timeout of the same body', async () => {
+    jest.useFakeTimers();
+    try {
+      let minted = 0;
+      const { server, client } = setup({
+        randomUUID: () => {
+          minted += 1;
+          return `minted-key-${minted}-abcd`;
+        },
+      });
+      const keys: string[] = [];
+      let calls = 0;
+      server.route('POST', PAYMENT_PATH, (request) => {
+        calls += 1;
+        keys.push(request.headers['idempotency-key'] ?? '');
+        if (calls === 1) {
+          return { status: 201, hang: true };
+        }
+        const parsed = JSON.parse(request.bodyText ?? '{}') as { amount: string; paidAt: string };
+        return { status: 201, body: paymentCreated(parsed.amount, parsed.paidAt) };
+      });
+      let caught: { idempotencyKey?: string } | undefined;
+      const pending = client.createPayment(PROPERTY_ID, paymentInput()).then(
+        () => undefined,
+        (error: { idempotencyKey?: string }) => {
+          caught = error;
+        },
+      );
+      await flushMicrotasks();
+      await jest.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
+      await pending;
+      expect(caught?.idempotencyKey).toBe('minted-key-1-abcd');
+      await client.createPayment(PROPERTY_ID, paymentInput());
+      expect(keys).toEqual(['minted-key-1-abcd', 'minted-key-1-abcd']);
+      expect(minted).toBe(1);
+      expect(server.calls('GET', '/v1/health').every((call) => call.headers['idempotency-key'] === undefined)).toBe(
+        true,
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('mints a new idempotency key when the body changes', async () => {
+    let minted = 0;
     const { server, client } = setup({
       randomUUID: () => {
-        const key = `minted-key-${minted.length + 1}-abcd`;
-        minted.push(key);
-        return key;
+        minted += 1;
+        return `minted-key-${minted}-abcd`;
       },
     });
     const keys: string[] = [];
     server.route('POST', PAYMENT_PATH, (request) => {
       keys.push(request.headers['idempotency-key'] ?? '');
+      const parsed = JSON.parse(request.bodyText ?? '{}') as { amount: string; paidAt: string };
+      return { status: 201, body: paymentCreated(parsed.amount, parsed.paidAt) };
+    });
+    await client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '10.00'));
+    await client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '11.00'));
+    expect(keys).toEqual(['minted-key-1-abcd', 'minted-key-2-abcd']);
+    expect(minted).toBe(2);
+  });
+
+  it('reuses the idempotency key after a 5xx because the server did not store that attempt', async () => {
+    let minted = 0;
+    const { server, client } = setup({
+      randomUUID: () => {
+        minted += 1;
+        return `minted-key-${minted}-abcd`;
+      },
+    });
+    const keys: string[] = [];
+    let calls = 0;
+    server.route('POST', PAYMENT_PATH, (request) => {
+      calls += 1;
+      keys.push(request.headers['idempotency-key'] ?? '');
+      if (calls === 1) {
+        return { status: 503, body: { statusCode: 503, error: 'auth.unavailable', message: 'unavailable' } };
+      }
+      const parsed = JSON.parse(request.bodyText ?? '{}') as { amount: string; paidAt: string };
+      return { status: 201, body: paymentCreated(parsed.amount, parsed.paidAt) };
+    });
+    await expect(client.createPayment(PROPERTY_ID, paymentInput())).rejects.toMatchObject({ status: 503 });
+    await client.createPayment(PROPERTY_ID, paymentInput());
+    expect(keys).toEqual(['minted-key-1-abcd', 'minted-key-1-abcd']);
+    expect(minted).toBe(1);
+  });
+
+  it('mints a new idempotency key after a definite 4xx', async () => {
+    let minted = 0;
+    const { server, client } = setup({
+      randomUUID: () => {
+        minted += 1;
+        return `minted-key-${minted}-abcd`;
+      },
+    });
+    const keys: string[] = [];
+    let calls = 0;
+    server.route('POST', PAYMENT_PATH, (request) => {
+      calls += 1;
+      keys.push(request.headers['idempotency-key'] ?? '');
+      if (calls === 1) {
+        return {
+          status: 422,
+          body: { statusCode: 422, error: 'paid_at_out_of_range', message: 'paidAt is outside the allowed range.' },
+        };
+      }
       return { status: 201, body: paymentCreated('1234.50', '2026-10-29') };
     });
-    const again = { intent: 'reintentar' as const, key: 'reintentar-key-1' };
-
-    await client.createPayment(PROPERTY_ID, paymentInput(), again);
-    await client.createPayment(PROPERTY_ID, paymentInput(), again);
-    await client.createPayment(PROPERTY_ID, paymentInput(), { intent: 'reenviar' });
-    await client.createPayment(PROPERTY_ID, paymentInput(), { intent: 'reenviar' });
-
-    expect(keys).toEqual(['reintentar-key-1', 'reintentar-key-1', 'minted-key-1-abcd', 'minted-key-2-abcd']);
-    expect(minted).toHaveLength(2);
-    expect(server.calls('GET', '/v1/health').every((call) => call.headers['idempotency-key'] === undefined)).toBe(true);
-    expect(server.calls('GET', '/v1/health').length).toBeGreaterThan(0);
+    await expect(client.createPayment(PROPERTY_ID, paymentInput())).rejects.toMatchObject({ status: 422 });
+    await client.createPayment(PROPERTY_ID, paymentInput());
+    expect(keys[0]).not.toBe(keys[1]);
+    expect(minted).toBe(2);
   });
 
   it('keeps the same idempotency key when a write is retried after refresh', async () => {
@@ -286,8 +397,9 @@ describe('API client', () => {
       }
       return { status: 201, body: paymentCreated('1234.50', '2026-10-29') };
     });
-    await client.createPayment(PROPERTY_ID, paymentInput(), { intent: 'reintentar', key: 'reintentar-key-1' });
-    expect(keys).toEqual(['reintentar-key-1', 'reintentar-key-1']);
+    await client.createPayment(PROPERTY_ID, paymentInput());
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
   });
 
   it('maps 409 idempotency_key_reused to its own error', async () => {
@@ -494,6 +606,58 @@ describe('API client', () => {
     expect(copyKeyForApiError('edited_value_invalid', 422)).toBe('ocr.edit.invalid');
     expect(copyKeyForApiError('field_already_set', 409)).toBe('ocr.conflict');
     expect(copyKeyForApiError('not_a_real_code', 422)).toBe('common.error');
+  });
+
+  it('treats a 302 to a foreign host as a network error and does not leak the request', async () => {
+    const access = 'access-secret-7f3a';
+    const idem = 'idem-secret-7f3a';
+    const bodyMarker = 'body-secret-7f3a';
+    let textReads = 0;
+    const seen: Array<{ url: string; redirect?: RequestRedirect; authorization: string }> = [];
+    const client = createApiClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      env: 'test',
+      tokenStore: memoryStore({ accessToken: access, refreshToken: 'refresh-secret-7f3a' }),
+      randomUUID: () => idem,
+      fetchImpl: async (input, init) => {
+        const url = String(input);
+        if (url.endsWith('/v1/health')) {
+          return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+        }
+        seen.push({
+          url,
+          redirect: init?.redirect,
+          authorization: new Headers(init?.headers).get('authorization') ?? '',
+        });
+        return {
+          status: 302,
+          type: 'default',
+          url: 'https://evil.example/collect',
+          headers: new Headers({ location: 'https://evil.example/collect' }),
+          text: async () => {
+            textReads += 1;
+            return `leaked ${access} ${idem} ${bodyMarker}`;
+          },
+        } as Response;
+      },
+    });
+    const error = await client
+      .createPayment(PROPERTY_ID, { ...paymentInput(), obligationId: OBLIGATION_ID, notes: bodyMarker })
+      .then(
+        () => {
+          throw new Error('expected a rejection');
+        },
+        (caught: unknown) => caught,
+      );
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url.startsWith('http://127.0.0.1:4010/')).toBe(true);
+    expect(seen[0]?.redirect).toBe('manual');
+    expect(seen[0]?.authorization).toBe(`Bearer ${access}`);
+    expect(textReads).toBe(0);
+    expect((error as Error).message).not.toContain(access);
+    expect((error as Error).message).not.toContain(bodyMarker);
+    expect((error as Error).message).not.toContain('evil.example');
+    expect(JSON.stringify(error)).not.toContain('evil.example');
   });
 
   it('never writes tokens outside SecureStore', () => {

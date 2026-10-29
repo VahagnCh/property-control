@@ -76,6 +76,16 @@ describe('Trust checks', () => {
     expect(readApiBaseUrl('https://api.duerecord.invalid/', 'production')).toBe('https://api.duerecord.invalid');
     expect(readApiBaseUrl('http://127.0.0.1:4010', 'test')).toBe('http://127.0.0.1:4010');
     expect(readApiBaseUrl('http://10.0.2.2:3000', 'dev')).toBe('http://10.0.2.2:3000');
+    expect(() => readApiBaseUrl('https://api.duerecord.invalid/v1', 'production')).toThrow(/origin/);
+    expect(() => readApiBaseUrl('https://api.duerecord.invalid/?token=s3cret', 'production')).toThrow(/origin/);
+    expect(() => readApiBaseUrl('https://api.duerecord.invalid/#session', 'production')).toThrow(/origin/);
+    try {
+      readApiBaseUrl('https://api.duerecord.invalid/v1?token=s3cret#frag', 'production');
+      throw new Error('expected a path to be rejected');
+    } catch (error) {
+      expect((error as Error).message).not.toContain('s3cret');
+      expect((error as Error).message).not.toContain('/v1');
+    }
     expect(() => readApiBaseUrl('http://api.duerecord.invalid', 'production')).toThrow(/https/);
     expect(() => readApiBaseUrl('https://user:s3cret@api.duerecord.invalid', 'production')).toThrow(/credentials/);
 
@@ -111,6 +121,7 @@ describe('Trust checks', () => {
         },
       },
       fetchImpl: server.fetch,
+      randomUUID: () => idem,
     });
     const snapshots: string[] = [];
     server.route('GET', '/v1/health', () => {
@@ -138,7 +149,6 @@ describe('Trust checks', () => {
       .createPayment(
         PROPERTY_ID,
         { obligationId: bodyMarker, amount: '10.00', paidAt: '2026-10-29', notes: leakUrl },
-        { intent: 'reintentar', key: idem },
       )
       .then(
         () => {
@@ -190,7 +200,10 @@ describe('Trust checks', () => {
     const events: Array<{ type: string }> = [];
     let clearedBeforeEvent = false;
     client.subscribe((event) => {
-      clearedBeforeEvent = !memory.has('duerecord.auth.access') && !memory.has('duerecord.auth.refresh');
+      clearedBeforeEvent =
+        !memory.has('duerecord.auth.session') &&
+        !memory.has('duerecord.auth.access') &&
+        !memory.has('duerecord.auth.refresh');
       events.push(event);
     });
 
@@ -198,10 +211,11 @@ describe('Trust checks', () => {
     expect(server.calls('POST', REFRESH_PATH)).toHaveLength(1);
     expect(server.calls('GET', PROPERTY_PATH)).toHaveLength(1);
     expect(clearedBeforeEvent).toBe(true);
+    expect(memory.has('duerecord.auth.session')).toBe(false);
     expect(memory.has('duerecord.auth.access')).toBe(false);
     expect(memory.has('duerecord.auth.refresh')).toBe(false);
     expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith(
-      'duerecord.auth.access',
+      'duerecord.auth.session',
       expect.objectContaining({ keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY }),
     );
     expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith(
@@ -229,19 +243,18 @@ function dump(error: unknown): string {
   return `${error.name} ${error.message} ${fields.join(' ')}`;
 }
 
-function walkApp(dir: string, acc: string[] = []): string[] {
+function walkApp(dir: string, acc: string[] = [], root?: string): string[] {
+  const base = root ?? dir;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (
-      entry.name === 'node_modules' ||
-      entry.name === 'coverage' ||
-      entry.name === '.expo' ||
-      entry.name === 'testing'
-    ) {
+    if (entry.name === 'node_modules' || entry.name === 'coverage' || entry.name === '.expo') {
       continue;
     }
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      walkApp(full, acc);
+      if (path.relative(base, full) === path.join('src', 'api', 'testing')) {
+        continue;
+      }
+      walkApp(full, acc, base);
     } else if (/\.(ts|tsx|js|jsx)$/.test(entry.name) && !/\.test\.(ts|tsx)$/.test(entry.name)) {
       acc.push(full);
     }

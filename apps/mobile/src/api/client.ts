@@ -30,7 +30,11 @@ export const REQUEST_TIMEOUT_MS = 15_000;
 /** EC-11.2: a write calls GET /v1/health only after this long with no API response. */
 export const HEALTH_STALE_MS = 10 * 60 * 1000;
 
-export type IdempotencyIntent = { intent: 'reintentar'; key: string } | { intent: 'reenviar' };
+type PendingWrite = {
+  key: string;
+  fingerprint: string;
+  definiteFailure: boolean;
+};
 
 export type ConnectionSnapshot = {
   phase: 'idle' | 'connecting' | 'failed';
@@ -80,6 +84,7 @@ export class ApiClient {
   private refreshInFlight: Promise<void> | null = null;
   private healthInFlight: Promise<void> | null = null;
   private connectionSnapshot: ConnectionSnapshot = IDLE_CONNECTION;
+  private pendingWrite: PendingWrite | null = null;
   private readonly sessionListeners = new Set<(event: ApiClientEvent) => void>();
   private readonly connectionListeners = new Set<(snapshot: ConnectionSnapshot) => void>();
 
@@ -112,39 +117,51 @@ export class ApiClient {
   async request<T>(
     method: HttpMethod,
     path: string,
-    options?: { body?: unknown; idempotency?: IdempotencyIntent },
+    options?: { body?: unknown },
   ): Promise<T> {
     if (this.signedOut) {
       throw new SessionExpiredError();
     }
     const write = isWriteMethod(method) && path !== REFRESH_PATH;
     assertDecimalMoney(options?.body);
-    const idempotencyKey = write ? this.resolveKey(options?.idempotency) : null;
-    if (write) {
-      await this.ensureFresh();
+    const idempotencyKey = write ? this.keyForWrite(method, path, options?.body) : null;
+    const transport = write ? this.send.bind(this) : this.sendRead.bind(this);
+    try {
+      if (write) {
+        await this.ensureFresh();
+      }
+      if (this.signedOut) {
+        throw new SessionExpiredError();
+      }
+      const sent = {
+        method,
+        path,
+        body: options?.body,
+        auth: path !== HEALTH_PATH,
+        idempotencyKey,
+      };
+      const first = await transport(sent);
+      if (first.status !== 401 || path === HEALTH_PATH) {
+        if (write) {
+          this.noteWriteResponse(first);
+        }
+        return this.finish<T>(first);
+      }
+      await this.refresh();
+      const second = await transport(sent);
+      if (write) {
+        this.noteWriteResponse(second);
+      }
+      return this.finish<T>(second);
+    } catch (error) {
+      if (!write) {
+        throw error;
+      }
+      if (error instanceof ConnectingFailedError || isUnreachable(error)) {
+        throw new ConnectingFailedError(idempotencyKey);
+      }
+      throw error;
     }
-    if (this.signedOut) {
-      throw new SessionExpiredError();
-    }
-    const first = await this.send({
-      method,
-      path,
-      body: options?.body,
-      auth: path !== HEALTH_PATH,
-      idempotencyKey,
-    });
-    if (first.status !== 401 || path === HEALTH_PATH) {
-      return this.finish<T>(first);
-    }
-    await this.refresh();
-    const second = await this.send({
-      method,
-      path,
-      body: options?.body,
-      auth: true,
-      idempotencyKey,
-    });
-    return this.finish<T>(second);
   }
 
   getProperty(propertyId: string): Promise<PropertyResponse> {
@@ -154,7 +171,8 @@ export class ApiClient {
   /**
    * `paidAt` as a Date is the property-zone calendar date, including 23:59
    * and 00:01 in America/Mexico_City. A string is sent as that calendar date.
-   * Reintentar reuses `key`. Reenviar mints a new one.
+   * The idempotency key stays with this path and canonical body after a
+   * timeout, a network error, or a 5xx. A 2xx or a 4xx releases it.
    */
   async createPayment(
     propertyId: string,
@@ -169,7 +187,6 @@ export class ApiClient {
       reference?: string;
       notes?: string;
     },
-    idempotency?: IdempotencyIntent,
   ): Promise<PaymentCreateResponse> {
     const paidAt =
       typeof input.paidAt === 'string'
@@ -199,7 +216,7 @@ export class ApiClient {
     const response = await this.request<PaymentCreateResponse>(
       'POST',
       `/v1/properties/${encodeURIComponent(propertyId)}/payments`,
-      { body, idempotency },
+      { body },
     );
     return readPaymentResponse(response);
   }
@@ -226,7 +243,7 @@ export class ApiClient {
   private async healthOnce(): Promise<void> {
     this.publish({ phase: 'connecting', label: CONNECTING_LABEL, copyKey: null });
     try {
-      const response = await this.send({
+      const response = await this.sendRead({
         method: 'GET',
         path: HEALTH_PATH,
         auth: false,
@@ -239,7 +256,7 @@ export class ApiClient {
         (response.body as { status?: unknown }).status === 'ok';
       if (!ok) {
         this.publish({ phase: 'failed', label: null, copyKey: 'common.connecting.failed' });
-        throw new ConnectingFailedError();
+        throw new ConnectingFailedError(null);
       }
       this.publish(IDLE_CONNECTION);
     } catch (error) {
@@ -247,14 +264,15 @@ export class ApiClient {
         throw error;
       }
       this.publish({ phase: 'failed', label: null, copyKey: 'common.connecting.failed' });
-      throw new ConnectingFailedError();
+      throw new ConnectingFailedError(null);
     }
   }
 
   /**
    * One refresh for every caller that arrives while it is in flight.
-   * A 4xx is not retried. A network error is retried once, with the same
-   * refresh token. Failure clears the session and emits sign-in-required.
+   * A network error is retried once with the same refresh token.
+   * Only 400 and 401 clear the session. A 5xx, including auth.unavailable,
+   * leaves the tokens in place.
    */
   private refresh(): Promise<void> {
     if (this.signedOut) {
@@ -275,23 +293,21 @@ export class ApiClient {
       throw new SessionExpiredError();
     }
     const refreshToken = current.refreshToken;
-    const first = await this.postRefresh(refreshToken);
-    if (first === 'ok') {
+    let outcome = await this.postRefresh(refreshToken);
+    if (outcome === 'network') {
+      outcome = await this.postRefresh(refreshToken);
+    }
+    if (outcome === 'ok') {
       return;
     }
-    if (first !== 'network') {
+    if (outcome === 'rejected') {
       await this.endSession();
       throw new SessionExpiredError();
     }
-    const second = await this.postRefresh(refreshToken);
-    if (second === 'ok') {
-      return;
-    }
-    await this.endSession();
-    throw new SessionExpiredError();
+    throw new ApiClientError('auth.unavailable', 'common.connecting.failed', 503);
   }
 
-  private async postRefresh(refreshToken: string): Promise<'ok' | 'http' | 'network'> {
+  private async postRefresh(refreshToken: string): Promise<'ok' | 'rejected' | 'unavailable' | 'network'> {
     try {
       const response = await this.send({
         method: 'POST',
@@ -305,15 +321,15 @@ export class ApiClient {
         await this.tokenStore.save(next);
         return 'ok';
       }
-      if (response.status >= 400 && response.status < 500) {
-        return 'http';
+      if (response.status === 400 || response.status === 401) {
+        return 'rejected';
       }
-      return 'http';
+      return 'unavailable';
     } catch (error) {
-      if (error instanceof ApiClientError && error.code === 'network') {
+      if (isUnreachable(error)) {
         return 'network';
       }
-      return 'http';
+      return 'unavailable';
     }
   }
 
@@ -330,12 +346,40 @@ export class ApiClient {
     }
   }
 
-  private resolveKey(intent: IdempotencyIntent | undefined): string {
-    const key = intent?.intent === 'reintentar' ? intent.key : this.randomUUID();
+  /**
+   * EC-11.7. The key is the path plus a canonical body hash.
+   * Timeout, network error, and 5xx keep it: the server does not store a 5xx
+   * under the key, so a later Reintentar is a fresh attempt with the same key.
+   * A definite 2xx or 4xx releases it. Writes are not retried automatically.
+   */
+  private keyForWrite(method: HttpMethod, path: string, body: unknown): string {
+    const fingerprint = canonicalJson({ method, path, body: body ?? null });
+    const pending = this.pendingWrite;
+    if (pending && pending.fingerprint === fingerprint && !pending.definiteFailure) {
+      return pending.key;
+    }
+    const key = this.randomUUID();
     if (!IDEMPOTENCY_KEY.test(key)) {
       throw new ApiClientError('idempotency_key_invalid', 'common.error', 400);
     }
+    this.pendingWrite = { key, fingerprint, definiteFailure: false };
     return key;
+  }
+
+  private noteWriteResponse(response: WireResponse): void {
+    if (!this.pendingWrite) {
+      return;
+    }
+    if (response.status >= 200 && response.status < 300) {
+      this.pendingWrite = null;
+      return;
+    }
+    if (response.status >= 500) {
+      return;
+    }
+    if (response.status >= 400) {
+      this.pendingWrite = { ...this.pendingWrite, definiteFailure: true };
+    }
   }
 
   private finish<T>(response: WireResponse): T {
@@ -347,6 +391,18 @@ export class ApiClient {
       throw new IdempotencyKeyReusedError();
     }
     throw new ApiClientError(code, copyKeyForApiError(code, response.status), response.status);
+  }
+
+  /** GETs retry once after a timeout or network error. Writes do not. */
+  private async sendRead(input: SendInput): Promise<WireResponse> {
+    try {
+      return await this.send(input);
+    } catch (error) {
+      if (!isUnreachable(error)) {
+        throw error;
+      }
+      return await this.send(input);
+    }
   }
 
   private async send(input: SendInput): Promise<WireResponse> {
@@ -370,10 +426,14 @@ export class ApiClient {
       headers,
       body: input.body === undefined ? undefined : JSON.stringify(input.body),
       signal: timeout.signal,
+      redirect: 'manual',
     });
     pending.catch(() => undefined);
     try {
       const response = await Promise.race([pending, timeout.promise]);
+      if (isRedirect(response) || !responseStaysOnOrigin(response.url, this.baseUrl)) {
+        throw new ApiClientError('network', 'common.error', null);
+      }
       this.lastResponseAt = this.now();
       const text = await response.text();
       return { status: response.status, body: parseJson(text) };
@@ -443,6 +503,40 @@ function readPaymentResponse(body: PaymentCreateResponse): PaymentCreateResponse
     currency: 'MXN',
   };
   return { payment, warnings: Array.isArray(body.warnings) ? body.warnings : [] };
+}
+
+function isUnreachable(error: unknown): boolean {
+  return error instanceof ApiClientError && (error.code === 'network' || error.code === 'timeout');
+}
+
+function isRedirect(response: { status: number; type?: string }): boolean {
+  return response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400);
+}
+
+function responseStaysOnOrigin(responseUrl: string | undefined, baseUrl: string): boolean {
+  if (!responseUrl) {
+    return true;
+  }
+  try {
+    return new URL(responseUrl).origin === new URL(baseUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === undefined) {
+    return 'null';
+  }
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
 }
 
 function isAbortError(error: unknown): boolean {

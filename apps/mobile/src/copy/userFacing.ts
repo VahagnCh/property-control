@@ -78,8 +78,7 @@ export const COPY = {
   'common.notFound': 'No encontramos esto, o no tienes acceso.',
   'common.error': 'No se pudo completar la acción. Inténtalo de nuevo.',
   'common.connecting.failed': 'No pudimos conectar. Revisa tu conexión e inténtalo de nuevo.',
-  'idempotency.keyReused':
-    'Esa solicitud ya se usó con otros datos. Usa Reenviar para mandarla otra vez.',
+  'idempotency.keyReused': 'Esa solicitud ya se usó con otros datos. Revísala e inténtalo de nuevo.',
 } as const;
 
 export type CopyKey = keyof typeof COPY;

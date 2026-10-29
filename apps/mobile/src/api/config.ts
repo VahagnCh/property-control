@@ -31,15 +31,11 @@ export function readApiBaseUrl(value: unknown, env: ApiRuntime): string {
   if (url.username !== '' || url.password !== '') {
     throw new Error('API base URL must not include credentials.');
   }
-  if (url.protocol === 'https:') {
-    return stripSlash(value.trim());
+  if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+    throw new Error('API base URL must be an origin with no path, query, or fragment.');
   }
-  if (url.protocol === 'http:' && env !== 'production') {
-    return stripSlash(value.trim());
+  if (url.protocol === 'https:' || (url.protocol === 'http:' && env !== 'production')) {
+    return url.origin;
   }
   throw new Error('API base URL must use https.');
-}
-
-function stripSlash(value: string): string {
-  return value.endsWith('/') ? value.slice(0, -1) : value;
 }

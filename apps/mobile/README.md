@@ -58,6 +58,6 @@ Two things to keep right when real screens arrive:
 - **Pagos** records a payment the person already made somewhere else. The screen never offers to pay a bill or link an account. Saving works without a comprobante; evidence is optional and encouraged, not required.
 - **Documentos** will hold the OCR review sheet (D-OCR). It shows each suggested field with its value, lets the person edit, and applies only what they confirm. Nothing is written to an obligation or a payment before that. The microcopy says so: "Revisa y confirma antes de guardar. Nada se aplica solo." See [docs/OCR.md](../../docs/OCR.md).
 
-Writes will be online-first through an outbox, with an `Idempotency-Key` on payment and evidence creates so a retry cannot duplicate a row. The server wins a conflict.
+Payments are online-only. A write that cannot reach the API shows the connecting failure and Reintentar. An `Idempotency-Key` on the write stays with that body so the tap does not create a second row. The server wins a conflict.
 
 The Mobile React Native write-up (due 3 Oct, see [docs/ROADMAP.md](../../docs/ROADMAP.md)) decides the state management, API client, and outbox details. This shell is deliberately thin so that write-up is not boxed in.

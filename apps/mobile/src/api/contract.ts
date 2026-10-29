@@ -54,6 +54,11 @@ export const API_ERROR_CODES = [
   'evidence.too_large',
   'not_implemented',
   'amount_invalid',
+  'auth.email_invalid',
+  'auth.code_invalid',
+  'auth.refresh_invalid',
+  'auth.refresh_reused',
+  'auth.unavailable',
 ] as const;
 
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
@@ -64,9 +69,9 @@ export const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{8,128}$/;
 export const HEALTH_PATH = '/v1/health';
 
 /**
- * Trust mints refresh tokens. This API does not. Login routes are not built,
- * so the client posts the stored refresh token here until Trust publishes
- * the path. The path is not a secret.
+ * `POST /v1/auth/refresh` as documented for email-code sessions.
+ * The request body is `{ refreshToken }`. The response includes
+ * `accessToken` and `refreshToken`. Login screens are not in this client yet.
  */
 export const REFRESH_PATH = '/v1/auth/refresh';
 
