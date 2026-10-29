@@ -34,7 +34,7 @@ Resolution order:
 2. Verify the access JWT against Trust's JWKS. A missing, invalid, or expired token is **401**.
 3. A bad request is **400**. A payload over the limit is **413**. Those beat membership and consent.
 4. Resolve the local `User` by `trust_sub = jwt.sub`. Upsert on first sight is fine. Load the membership where `property_id = :propertyId AND user_id = :userId AND status = 'active' AND deleted_at IS NULL`, and the property is not soft-deleted. No membership, or a missing or soft-deleted property, is **404** `not_found`, even when that caller also lacks consent. The API does not reveal which properties exist.
-5. A viewer write is **403** `viewer`. A viewer without consent who writes is `viewer`, not `consent_required`.
+5. A viewer write is **403** `forbidden`. A viewer without consent who writes is `forbidden`, not `consent_required`.
 6. A write without the current consent is **403** `consent_required`. Reads skip steps 5 and 6. A non-member read is still 404.
 
 `POST /v1/properties` has no membership check. The order is 401, then 400 or 413, then 403 `consent_required`. `POST /v1/invites/accept` stays on the invite checks in [EDGE_CASES.md](EDGE_CASES.md) section 8 after the token: an unknown token, or acceptance from the wrong account, is 404 before any used, revoked, superseded, or expired state is revealed.

@@ -19,6 +19,7 @@ import {
 import { configureApp } from '../src/configure-app.js';
 import { AVISO_TEXT } from '../src/consent/aviso-text.js';
 import { duplicateWarningMessage } from '../src/payments/ledger.js';
+import { redactedTextState } from '../src/ocr/audit-text.js';
 import { AvisoVersionConflictError, publishAvisoVersion } from '../src/persistence/seed-data.js';
 import { database } from '../src/persistence/database.js';
 
@@ -34,6 +35,7 @@ describe.skipIf(!enabled)('payment periods, void, and duplicates', () => {
   const avisoVersion = process.env.AVISO_VERSION?.trim() || '2026-10-21';
   const avisoUrl = process.env.AVISO_URL?.trim() || 'https://example.com/aviso';
   const tokens = new Map<string, string>();
+  const extraIds: string[] = [];
   let app: INestApplication;
   let db: PrismaClient;
   let ownerDb: PrismaClient;
@@ -87,7 +89,7 @@ describe.skipIf(!enabled)('payment periods, void, and duplicates', () => {
   });
 
   afterAll(async () => {
-    const ids = [ownerId, otherId, viewerId];
+    const ids = [ownerId, otherId, viewerId, ...extraIds];
     if (ownerDb) {
       await ownerDb.$transaction(async (tx) => {
         await tx.$queryRaw`SELECT set_config('session_replication_role', 'replica', true)`;
@@ -250,10 +252,38 @@ describe.skipIf(!enabled)('payment periods, void, and duplicates', () => {
       .set(auth(tokens, ownerId))
       .set('Idempotency-Key', 'unvoid-attempt')
       .send({ status: 'recorded' });
-    expect(undone.status).toBe(422);
-    expect((await db.payment.findUnique({ where: { id: paymentId } }))?.status).toBe('voided');
+    expect(undone.status).toBe(409);
+    expect(undone.body.error).toBe('payment_voided');
+    const noted = await request(server)
+      .patch(`/v1/properties/${propertyId}/payments/${paymentId}`)
+      .set(auth(tokens, ownerId))
+      .set('Idempotency-Key', 'unvoid-notes')
+      .send({ notes: 'Cambiar la nota' });
+    const amount = await request(server)
+      .patch(`/v1/properties/${propertyId}/payments/${paymentId}`)
+      .set(auth(tokens, ownerId))
+      .set('Idempotency-Key', 'unvoid-amount')
+      .send({ amount: '1.00' });
+    expect(noted.status).toBe(409);
+    expect(amount.status).toBe(409);
+    expect(noted.body.error).toBe('payment_voided');
+    expect(amount.body.error).toBe('payment_voided');
+    const replayNotes = await request(server)
+      .patch(`/v1/properties/${propertyId}/payments/${paymentId}`)
+      .set(auth(tokens, ownerId))
+      .set('Idempotency-Key', 'unvoid-notes')
+      .send({ notes: 'Cambiar la nota' });
+    expect(replayNotes.status).toBe(409);
+    expect(replayNotes.body).toEqual(noted.body);
+    const row = await db.payment.findUnique({ where: { id: paymentId } });
+    expect(row?.status).toBe('voided');
+    expect(row?.voidReason).toBe('Captura duplicada');
+    expect(row?.notes).toBeNull();
+    expect(row?.amount).toBe(8000n);
+    expect(await db.auditEvent.count({ where: { entityId: paymentId, action: 'payment.updated' } })).toBe(0);
     const audit = await db.auditEvent.findFirst({ where: { entityId: paymentId, action: 'payment.voided' } });
-    expect(audit?.metadata).toMatchObject({ voidReason: 'Captura duplicada' });
+    expect(audit?.afterState).toEqual(redactedTextState('Captura duplicada'));
+    expect(JSON.stringify(audit)).not.toContain('Captura duplicada');
   });
 
   it('warns about a near duplicate and does not warn again on replay', async () => {
@@ -311,6 +341,81 @@ describe.skipIf(!enabled)('payment periods, void, and duplicates', () => {
     expect(early.body.error).toBe('paid_at_out_of_range');
   });
 
+  it('lets two members reuse one key and rejects that key after the store row expires', async () => {
+    const server = app.getHttpServer();
+    const memberId = randomUUID();
+    extraIds.push(memberId);
+    await db.user.create({ data: { id: memberId, trustSub: memberId } });
+    await db.consent.create({
+      data: { id: randomUUID(), userId: memberId, avisoVersion, acceptedAt: new Date() },
+    });
+    await db.propertyMembership.create({
+      data: { id: randomUUID(), propertyId, userId: memberId, role: 'member', status: 'active' },
+    });
+    tokens.set(memberId, signAccessToken(jwt, { sub: memberId, sid: randomUUID(), now: new Date() }));
+    const body = { obligationId, amount: '15.00', periodDueDate: due.current, paidAt: new Date().toISOString() };
+    const first = await request(server)
+      .post(`/v1/properties/${propertyId}/payments`)
+      .set(auth(tokens, ownerId))
+      .set('Idempotency-Key', 'shared-member-key')
+      .send(body);
+    const second = await request(server)
+      .post(`/v1/properties/${propertyId}/payments`)
+      .set(auth(tokens, memberId))
+      .set('Idempotency-Key', 'shared-member-key')
+      .send(body);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+    expect(first.body.payment.id).not.toBe(second.body.payment.id);
+    const ownerReplay = await request(server)
+      .post(`/v1/properties/${propertyId}/payments`)
+      .set(auth(tokens, ownerId))
+      .set('Idempotency-Key', 'shared-member-key')
+      .send(body);
+    expect(ownerReplay.status).toBe(200);
+    expect(ownerReplay.body.payment.id).toBe(first.body.payment.id);
+    expect(ownerReplay.body.payment.id).not.toBe(second.body.payment.id);
+
+    const expiring = await pay(server, 'expire-this-key', {
+      amount: '16.00',
+      periodDueDate: due.current,
+      paidAt: new Date().toISOString(),
+    });
+    expect(expiring.status, JSON.stringify(expiring.body)).toBe(201);
+    await db.idempotencyKey.updateMany({
+      where: { userId: ownerId, key: 'expire-this-key' },
+      data: { expiresAt: new Date(Date.now() - 60_000) },
+    });
+    const afterExpiry = await pay(server, 'expire-this-key', {
+      amount: '16.00',
+      periodDueDate: due.current,
+      paidAt: expiring.body.payment.paidAt,
+    });
+    expect(afterExpiry.status, JSON.stringify(afterExpiry.body)).toBe(409);
+    expect(afterExpiry.body.error).toBe('idempotency_key_reused');
+    expect(await db.payment.count({ where: { idempotencyKey: 'expire-this-key' } })).toBe(1);
+
+    const hidden = await request(server)
+      .patch(`/v1/properties/${propertyId}`)
+      .set(auth(tokens, otherId))
+      .set('Idempotency-Key', 'idor-property')
+      .send({ name: 'Ajena' });
+    const hiddenObligation = await request(server)
+      .patch(`/v1/properties/${propertyId}/obligations/${obligationId}`)
+      .set(auth(tokens, otherId))
+      .set('Idempotency-Key', 'idor-obligation')
+      .send({ title: 'Ajena' });
+    const hiddenPayment = await request(server)
+      .patch(`/v1/properties/${propertyId}/payments/${first.body.payment.id as string}`)
+      .set(auth(tokens, otherId))
+      .set('Idempotency-Key', 'idor-payment')
+      .send({ notes: 'Ajena' });
+    expect(hidden.status).toBe(404);
+    expect(hiddenObligation.status).toBe(404);
+    expect(hiddenPayment.status).toBe(404);
+    expect(JSON.stringify(hidden.body)).not.toContain('Ajena');
+  });
+
   it('rejects a bad timezone, an oversized body, and whitespace in an aviso version', async () => {
     const server = app.getHttpServer();
     const zone = await request(server)
@@ -338,20 +443,6 @@ describe.skipIf(!enabled)('payment periods, void, and duplicates', () => {
         },
       }),
     ).rejects.toThrow(/aviso_versions_text_not_blank/);
-    const later = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    await expect(
-      db.membershipInvite.create({
-        data: {
-          propertyId,
-          emailHmac: 'b'.repeat(64),
-          role: 'member',
-          tokenHash: createHash('sha256').update(randomUUID()).digest('hex'),
-          invitedByUserId: ownerId,
-          createdAt: later,
-          expiresAt: new Date(later.getTime() + 6 * 24 * 60 * 60 * 1000),
-        },
-      }),
-    ).rejects.toThrow(/membership_invites_expires_within_7_days/);
   });
 
   function pay(server: Parameters<typeof request>[0], key: string, body: Record<string, unknown>) {

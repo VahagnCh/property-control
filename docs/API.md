@@ -368,7 +368,7 @@ For a normal route the order is:
 2. **401** for a missing, invalid, or expired token.
 3. **400** for a bad request, or **413** when the payload is too large.
 4. **404** `not_found` for a non-member or an unknown resource, including when that caller also lacks consent.
-5. **403** `viewer` for a viewer write. A viewer without consent who writes is `viewer`, not `consent_required`.
+5. **403** `forbidden` for a viewer write. A viewer without consent who writes is `forbidden`, not `consent_required`.
 6. **403** `consent_required` on writes only, after the checks above.
 
 Reads skip steps 5 and 6. A non-member read is still 404.
@@ -454,7 +454,7 @@ Test hosting is Render, Neon, Cloudflare R2, and Resend. The code stays provider
 
 ## Idempotency
 
-Required on property, obligation, and payment creates and updates, and on `POST .../payments/:paymentId/void`, `POST .../evidence`, and `POST .../evidence/upload-url`. Create uniqueness for a payment or an evidence row is `(property_id, idempotency_key)` on that table. User-scoped keys live in `idempotency_keys` by user, method, and route. A replay returns the stored status and body and does not write again. The same key with a different body is **409** `idempotency_key_reused`. A 5xx is not stored. Use a UUID or another high-entropy string.
+Required on property, obligation, and payment creates and updates, and on `POST .../payments/:paymentId/void`, `POST .../evidence`, and `POST .../evidence/upload-url`. Create uniqueness for a payment is `(property_id, recorded_by_user_id, idempotency_key)`. Evidence stays `(property_id, idempotency_key)`. The same payment key from another member is a separate payment. User-scoped keys live in `idempotency_keys` by user, method, and route. A replay returns the stored status and body and does not write again. The same key with a different body is **409** `idempotency_key_reused`. A 5xx is not stored. Use a UUID or another high-entropy string.
 
 ## Role matrix
 

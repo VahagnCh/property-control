@@ -334,7 +334,7 @@ model Payment {
   evidence       Evidence[]
   periodOutcomes ObligationPeriodOutcome[]
 
-  @@unique([propertyId, idempotencyKey])
+  @@unique([propertyId, recordedByUserId, idempotencyKey], map: "payments_property_user_idempotency_key")
   @@index([obligationId, periodDueDate])
   @@index([propertyId, paidAt])
   @@map("payments")

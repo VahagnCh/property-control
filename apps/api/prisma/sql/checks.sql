@@ -160,7 +160,7 @@ ALTER TABLE membership_invites
   DROP CONSTRAINT IF EXISTS membership_invites_expires_within_7_days;
 ALTER TABLE membership_invites
   ADD CONSTRAINT membership_invites_expires_within_7_days CHECK (
-    expires_at <= now() + interval '7 days'
+    expires_at <= created_at + interval '7 days'
   );
 
 ALTER TABLE refresh_tokens

@@ -56,7 +56,7 @@ const FIELDS = new Map<string, FieldRule>([
  * free-text field are length + hash in audit states, never the body.
  */
 export function isMultilineAuditField(fieldPath: string): boolean {
-  return FIELDS.get(fieldPath)?.multiline === true || fieldPath === 'description';
+  return FIELDS.get(fieldPath)?.multiline === true || fieldPath === 'description' || fieldPath === 'voidReason';
 }
 
 const FORBIDDEN_PATHS = new Set(['__proto__', 'constructor', 'prototype']);

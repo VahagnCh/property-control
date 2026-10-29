@@ -1194,7 +1194,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
             invitedByUserId: fixture.userId,
             createdAt: created,
             sentAt: created,
-            expiresAt: new Date(Date.now() + 8 * 24 * 60 * 60 * 1000),
+            expiresAt: new Date(created.getTime() + 8 * 24 * 60 * 60 * 1000),
           },
         }),
       ).rejects.toThrow(/membership_invites_expires_within_7_days/);

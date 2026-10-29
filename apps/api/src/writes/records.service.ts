@@ -1,13 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Prisma, type PrismaClient } from '@prisma/client';
-import { assertIdempotencyKey, IdempotencyKeyInvalidException, type IdempotencyStore } from '../auth/idempotency-keys.js';
+import { assertIdempotencyKey, IdempotencyKeyInvalidException, IdempotencyKeyReusedException, type IdempotencyStore } from '../auth/idempotency-keys.js';
 import { notFoundException } from '../common/not-found.js';
+import { OCR_ERROR, ocrUnauthorized } from '../ocr/ocr-errors.js';
 import { assertNextDueDateInRange } from '../obligations/next-due-date.js';
 import { sealAuditText } from '../ocr/audit-text.js';
 import type { OcrConfirmAudit } from '../ocr/ocr.types.js';
@@ -103,9 +105,9 @@ export class RecordsService {
     route: string,
     body: unknown,
   ): Promise<IdempotentResult> {
-    const input = parsePropertyCreate(asObject(body));
     await this.ensureUser(userId);
     return this.write(userId, key, route, body, async () => {
+      const input = parsePropertyCreate(asObject(body));
       const row = await this.transaction(async (tx) => {
         const id = randomUUID();
         const created = await tx.property.create({
@@ -133,7 +135,11 @@ export class RecordsService {
           entityId: id,
           beforeState: null,
           afterState: null,
-          metadata: { name: created.name, timezone: created.timezone },
+          metadata: {
+          name: created.name,
+          timezone: created.timezone,
+          addressLine: created.addressLine,
+        },
         });
         return created;
       });
@@ -167,9 +173,9 @@ export class RecordsService {
     route: string,
     body: unknown,
   ): Promise<IdempotentResult> {
-    const patch = parsePropertyPatch(asObject(body));
     await this.ensureUser(userId);
     return this.write(userId, key, route, body, async () => {
+      const patch = parsePropertyPatch(asObject(body));
       const row = await this.transaction(async (tx) => {
         await this.assertWriter(tx, userId, propertyId);
         const before = await tx.property.findFirst({ where: { id: propertyId, deletedAt: null } });
@@ -188,7 +194,11 @@ export class RecordsService {
           entityId: propertyId,
           beforeState: null,
           afterState: null,
-          metadata: { name: { before: before.name, after: updated.name } },
+          metadata: {
+            name: { before: before.name, after: updated.name },
+            timezone: { before: before.timezone, after: updated.timezone },
+            addressLine: { before: before.addressLine, after: updated.addressLine },
+          },
         });
         return updated;
       });
@@ -303,6 +313,17 @@ export class RecordsService {
           afterState: notes.afterState,
           metadata: {
             title: { before: before.title, after: updated.title },
+            isActive: { before: before.isActive, after: updated.isActive },
+            recurrence: { before: before.recurrence, after: updated.recurrence },
+            dueDay: { before: before.dueDay, after: updated.dueDay },
+            scheduleAnchor: {
+              before: before.scheduleAnchor ? dateOnly(before.scheduleAnchor) : null,
+              after: updated.scheduleAnchor ? dateOnly(updated.scheduleAnchor) : null,
+            },
+            nextDueDate: {
+              before: before.nextDueDate ? dateOnly(before.nextDueDate) : null,
+              after: updated.nextDueDate ? dateOnly(updated.nextDueDate) : null,
+            },
             expectedAmount: {
               before: before.expectedAmount === null ? null : centavosToWireAmount(before.expectedAmount),
               after: updated.expectedAmount === null ? null : centavosToWireAmount(updated.expectedAmount),
@@ -354,7 +375,12 @@ export class RecordsService {
             method: input.method,
             reference: input.reference,
           },
-        );
+        ).catch((error: unknown) => {
+          if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+            throw new IdempotencyKeyReusedException();
+          }
+          throw error;
+        });
         if (result.payment.propertyId !== propertyId) {
           throw notFoundException();
         }
@@ -388,10 +414,10 @@ export class RecordsService {
     route: string,
     body: unknown,
   ): Promise<IdempotentResult> {
-    const raw = asObject(body);
-    rejectUnknown(raw, ['voidReason']);
     await this.ensureUser(userId);
     return this.write(userId, key, route, body, async () => {
+      const raw = asObject(body);
+      rejectUnknown(raw, ['voidReason']);
       const row = await this.transaction(async (tx) => {
         const property = await this.assertWriter(tx, userId, propertyId);
         const existing = await tx.payment.findFirst({ where: { id: paymentId, propertyId } });
@@ -404,15 +430,19 @@ export class RecordsService {
           { paymentId, actorUserId: userId, reason, now: new Date() },
         );
         const updated = await tx.payment.findUniqueOrThrow({ where: { id: paymentId } });
+        const sealed = sealAuditText('voidReason', {
+          previousValue: null,
+          newValue: reason,
+        } as unknown as OcrConfirmAudit);
         await this.audit(tx, {
           propertyId,
           actorUserId: userId,
           action: 'payment.voided',
           entityType: 'payment',
           entityId: paymentId,
-          beforeState: null,
-          afterState: null,
-          metadata: { voidReason: reason, timezone: property.timezone },
+          beforeState: sealed.beforeState,
+          afterState: sealed.afterState,
+          metadata: { timezone: property.timezone, ...sealed.metadata },
         });
         return updated;
       });
@@ -453,6 +483,13 @@ export class RecordsService {
         if (!before) {
           throw notFoundException();
         }
+        if (before.status === 'voided') {
+          throw new ConflictException({
+            statusCode: 409,
+            error: 'payment_voided',
+            message: 'A voided payment cannot be changed.',
+          });
+        }
         const patch = parsePaymentPatch(raw);
         const updated = await tx.payment.update({ where: { id: paymentId }, data: patch });
         const notes = notesState(before.notes, updated.notes);
@@ -464,7 +501,10 @@ export class RecordsService {
           entityId: paymentId,
           beforeState: notes.beforeState,
           afterState: notes.afterState,
-          metadata: { method: { before: before.method, after: updated.method } },
+          metadata: {
+            method: { before: before.method, after: updated.method },
+            reference: { before: before.reference, after: updated.reference },
+          },
         });
         return updated;
       });
@@ -481,14 +521,16 @@ export class RecordsService {
   ): Promise<IdempotentResult> {
     const idempotencyKey = requireKey(key);
     const now = new Date();
-    const method = route.split(' ')[0] ?? 'POST';
+    const space = route.indexOf(' ');
+    const method = (space === -1 ? route : route.slice(0, space)).trim().toUpperCase();
+    const path = (space === -1 ? '' : route.slice(space + 1)).toLowerCase();
     return runIdempotent(
       this.keys,
       {
         userId,
         key: idempotencyKey,
         method,
-        route,
+        route: `${method} ${path}`,
         requestHash: requestHash(body),
         now,
         expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
@@ -498,11 +540,13 @@ export class RecordsService {
   }
 
   private async ensureUser(userId: string): Promise<void> {
-    await this.requireDb().user.upsert({
-      where: { id: userId },
-      create: { id: userId, trustSub: userId },
-      update: {},
-    });
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+      throw ocrUnauthorized(OCR_ERROR.tokenInvalid, 'Invalid access token.');
+    }
+    const user = await this.requireDb().user.findUnique({ where: { id: userId }, select: { id: true } });
+    if (!user) {
+      throw ocrUnauthorized(OCR_ERROR.tokenInvalid, 'Invalid access token.');
+    }
   }
 
   private async assertWriter(
