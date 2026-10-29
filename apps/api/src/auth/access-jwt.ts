@@ -1,15 +1,25 @@
-import { createSign, createVerify, generateKeyPairSync } from 'node:crypto';
+import { createPrivateKey, createPublicKey, createSign, createVerify, generateKeyPairSync } from 'node:crypto';
 
 /** Trust brief §4.2 / §4.6. */
 export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 export const ACCESS_TOKEN_ISS = 'api.duerecord.mx';
 export const ACCESS_TOKEN_AUD = 'duerecord-app';
 export const ACCESS_TOKEN_SKEW_SECONDS = 60;
+/** Raw P-256 signature is r||s, 32 bytes each. */
+export const ES256_SIGNATURE_BYTES = 64;
 
-export interface AuthJwtConfig {
+export interface AuthJwtPublicKey {
   kid: string;
   publicKeyPem: string;
+}
+
+export interface AuthJwtConfig extends AuthJwtPublicKey {
   privateKeyPem: string;
+}
+
+export interface AuthJwtMaterial {
+  current: AuthJwtConfig;
+  publicKeys: AuthJwtPublicKey[];
 }
 
 export interface AccessTokenClaims {
@@ -26,14 +36,50 @@ export type AccessJwtResult =
   | { ok: false; reason: 'invalid' | 'expired' };
 
 /** Env only. Missing keys means the process does not mint or accept access tokens. */
-export function loadAuthJwt(env: NodeJS.ProcessEnv = process.env): AuthJwtConfig | null {
+export function loadAuthJwt(env: NodeJS.ProcessEnv = process.env): AuthJwtMaterial | null {
   const privateKeyPem = pemFromEnv(env.AUTH_JWT_PRIVATE_KEY);
   const publicKeyPem = pemFromEnv(env.AUTH_JWT_PUBLIC_KEY);
   const kid = env.AUTH_JWT_KID?.trim() || 'primary';
-  if (!privateKeyPem || !publicKeyPem) {
+  if (!privateKeyPem && !publicKeyPem && !pemFromEnv(env.AUTH_JWT_PREVIOUS_PUBLIC_KEY)) {
     return null;
   }
-  return { kid, privateKeyPem, publicKeyPem };
+  if (!privateKeyPem || !publicKeyPem) {
+    throw new Error('AUTH_JWT_PRIVATE_KEY and AUTH_JWT_PUBLIC_KEY must both be set.');
+  }
+  const current: AuthJwtConfig = { kid, privateKeyPem, publicKeyPem };
+  const publicKeys: AuthJwtPublicKey[] = [{ kid, publicKeyPem }];
+  const previousPem = pemFromEnv(env.AUTH_JWT_PREVIOUS_PUBLIC_KEY);
+  if (previousPem) {
+    publicKeys.push({
+      kid: env.AUTH_JWT_PREVIOUS_KID?.trim() || `${kid}-previous`,
+      publicKeyPem: previousPem,
+    });
+  }
+  return { current, publicKeys };
+}
+
+/**
+ * Fail boot when a configured key is not P-256 or the private key does not
+ * match the public key. Missing keys are allowed; minting then fails closed.
+ */
+export function assertAuthJwtConfig(env: NodeJS.ProcessEnv = process.env): void {
+  const material = loadAuthJwt(env);
+  if (!material) {
+    return;
+  }
+  assertP256Private(material.current.privateKeyPem);
+  for (const key of material.publicKeys) {
+    assertP256Public(key.publicKeyPem);
+  }
+  const probe = signAccessToken(material.current, {
+    sub: 'boot',
+    sid: 'boot',
+    now: new Date('2026-01-01T00:00:00.000Z'),
+  });
+  const verified = verifyAccessToken(material.publicKeys, probe, new Date('2026-01-01T00:00:00.000Z'));
+  if (!verified.ok) {
+    throw new Error('AUTH_JWT_PRIVATE_KEY does not match AUTH_JWT_PUBLIC_KEY.');
+  }
 }
 
 export function generateAuthJwtKeys(kid = 'test'): AuthJwtConfig {
@@ -72,25 +118,43 @@ export function signAccessToken(
  * signature is checked, so a public key cannot be used as an HMAC secret.
  */
 export function verifyAccessToken(
-  config: Pick<AuthJwtConfig, 'kid' | 'publicKeyPem'>,
+  config: AuthJwtPublicKey | readonly AuthJwtPublicKey[],
   token: string,
   now: Date,
 ): AccessJwtResult {
+  const keys = Array.isArray(config) ? config : [config];
   const parts = token.split('.');
   if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
     return { ok: false, reason: 'invalid' };
   }
   const [encodedHeader, encodedPayload, encodedSignature] = parts as [string, string, string];
   const header = decodeJson(encodedHeader);
-  if (!header || header.alg !== 'ES256' || header.kid !== config.kid) {
+  if (!header || header.alg !== 'ES256' || typeof header.kid !== 'string') {
     return { ok: false, reason: 'invalid' };
   }
-  const signature = Buffer.from(encodedSignature, 'base64url');
+  const key = keys.find((item) => item.kid === header.kid);
+  if (!key) {
+    return { ok: false, reason: 'invalid' };
+  }
+  let signature: Buffer;
+  try {
+    signature = Buffer.from(encodedSignature, 'base64url');
+  } catch {
+    return { ok: false, reason: 'invalid' };
+  }
+  if (signature.length !== ES256_SIGNATURE_BYTES) {
+    return { ok: false, reason: 'invalid' };
+  }
   const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const verified = createVerify('SHA256').update(signingInput).verify(
-    { key: config.publicKeyPem, dsaEncoding: 'ieee-p1363' },
-    signature,
-  );
+  let verified = false;
+  try {
+    verified = createVerify('SHA256').update(signingInput).verify(
+      { key: key.publicKeyPem, dsaEncoding: 'ieee-p1363' },
+      signature,
+    );
+  } catch {
+    return { ok: false, reason: 'invalid' };
+  }
   if (!verified) {
     return { ok: false, reason: 'invalid' };
   }
@@ -137,6 +201,20 @@ function decodeJson(segment: string): Record<string, unknown> | null {
 
 function b64url(value: string): string {
   return Buffer.from(value).toString('base64url');
+}
+
+function assertP256Private(pem: string): void {
+  const key = createPrivateKey(pem);
+  if (key.asymmetricKeyType !== 'ec' || key.asymmetricKeyDetails?.namedCurve !== 'prime256v1') {
+    throw new Error('AUTH_JWT_PRIVATE_KEY must be a P-256 key.');
+  }
+}
+
+function assertP256Public(pem: string): void {
+  const key = createPublicKey(pem);
+  if (key.asymmetricKeyType !== 'ec' || key.asymmetricKeyDetails?.namedCurve !== 'prime256v1') {
+    throw new Error('AUTH_JWT public key must be a P-256 key.');
+  }
 }
 
 function pemFromEnv(value: string | undefined): string {

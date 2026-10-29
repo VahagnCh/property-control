@@ -6,6 +6,7 @@ import { PrismaIdempotencyKeys } from '../src/auth/idempotency-keys.js';
 import { PrismaRateLimits, authSubjectHmac, bucketKey } from '../src/auth/rate-limit.js';
 import { PrismaRefreshTokens } from '../src/auth/prisma-refresh-tokens.js';
 import { authCodeHmac } from '../src/auth/auth-codes.js';
+import { PrismaAuthAudit, PrismaAuthCodes, PrismaAuthSessions, PrismaAuthUsers } from '../src/auth/prisma-auth-store.js';
 import { hashToken } from '../src/auth/refresh-tokens.js';
 import { keyedHmac } from '../src/auth/server-secret.js';
 import { TEST_SERVER_SECRET } from './test-server-secret.js';
@@ -1230,6 +1231,73 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       expect(Object.values(row ?? {})).not.toContain(email);
     } finally {
       await prisma.authCode.delete({ where: { id: created.id } });
+    }
+  });
+
+  it('claims a code once and keeps the same user id in a new store', async () => {
+    const codes = new PrismaAuthCodes(prisma);
+    const emailHmac = keyedHmac('stable-login@example.com', 'pepper', 'auth-email');
+    const codeHmac = authCodeHmac('424242', 'pepper');
+    const now = new Date();
+    await codes.insert({
+      id: randomUUID(),
+      emailHmac,
+      codeHmac,
+      expiresAt: new Date(now.getTime() + 60_000),
+      usedAt: null,
+      attempts: 0,
+      createdAt: now,
+    });
+    const users = new PrismaAuthUsers(prisma);
+    const sessions = new PrismaAuthSessions(prisma);
+    const audit = new PrismaAuthAudit(prisma);
+    let userId = '';
+    let sid = '';
+    try {
+      expect(await codes.claimMatching(emailHmac, codeHmac, now)).not.toBeNull();
+      expect(await new PrismaAuthCodes(prisma).claimMatching(emailHmac, codeHmac, now)).toBeNull();
+      const wrong = await codes.insert({
+        id: randomUUID(),
+        emailHmac,
+        codeHmac: authCodeHmac('111111', 'pepper'),
+        expiresAt: new Date(now.getTime() + 60_000),
+        usedAt: null,
+        attempts: 0,
+        createdAt: new Date(now.getTime() + 1),
+      });
+      void wrong;
+      const latest = await codes.findLatest(emailHmac);
+      const failed = latest ? await codes.recordFailure(latest.id) : null;
+      expect(failed?.attempts).toBe(1);
+      userId = (await users.findOrCreate(emailHmac)).id;
+      expect((await new PrismaAuthUsers(prisma).findOrCreate(emailHmac)).id).toBe(userId);
+      sid = randomUUID();
+      await sessions.open(sid, userId);
+      expect(await new PrismaAuthSessions(prisma).isRevoked(sid)).toBe(false);
+      await sessions.revoke(sid, now);
+      expect(await new PrismaAuthSessions(prisma).isRevoked(sid)).toBe(true);
+      await audit.append({
+        action: 'auth.login.succeeded',
+        userId,
+        sessionId: sid,
+        emailHmac,
+        now,
+      });
+      const row = await prisma.auditEvent.findFirst({ where: { action: 'auth.login.succeeded', entityId: sid } });
+      const serialized = JSON.stringify(row);
+      expect(serialized).not.toContain('stable-login@example.com');
+      expect(serialized).not.toContain('424242');
+      expect(serialized).not.toContain('111111');
+      expect(row?.metadata).toMatchObject({ emailHmac });
+    } finally {
+      await purgeAppendOnly({ userId });
+      if (sid) {
+        await prisma.authSession.deleteMany({ where: { id: sid } });
+      }
+      await prisma.authCode.deleteMany({ where: { emailHmac } });
+      if (userId) {
+        await prisma.user.deleteMany({ where: { id: userId } });
+      }
     }
   });
 });

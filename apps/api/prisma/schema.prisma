@@ -198,6 +198,7 @@ model User {
   consents               Consent[]
   refreshTokens          RefreshToken[]
   idempotencyKeys        IdempotencyKey[]
+  authSessions           AuthSession[]
 
   @@map("users")
 }
@@ -731,6 +732,20 @@ model AuthCode {
 
   @@index([emailHmac, createdAt])
   @@map("auth_codes")
+}
+
+/// One login session. `id` is the access-token `sid` and the refresh family id.
+/// A revoked row rejects that access token even if the JWT has not expired.
+model AuthSession {
+  id        String    @id @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("auth_sessions")
 }
 
 /// Postgres counter for 429 Retry-After. There is no Redis.

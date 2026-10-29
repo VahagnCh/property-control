@@ -70,6 +70,15 @@ export class PrismaRateLimits {
     private readonly secret: string,
   ) {}
 
+  async retryIfBlocked(input: { subject: string; purpose: string; now: Date }): Promise<number | null> {
+    const key = bucketKey({ subject: authSubjectHmac(input.subject, this.secret), purpose: input.purpose });
+    const row = await this.prisma.rateLimit.findUnique({ where: { bucketKey: key } });
+    if (!row?.blockedUntil || row.blockedUntil <= input.now) {
+      return null;
+    }
+    return Math.max(1, Math.ceil((row.blockedUntil.getTime() - input.now.getTime()) / 1000));
+  }
+
   async record(input: AuthAttemptInput): Promise<RateLimitDecision> {
     const stored = storedAttempt(input, this.secret);
     return this.prisma.$transaction(async (tx) => {
@@ -119,6 +128,8 @@ export class PrismaRateLimits {
     });
   }
 }
+
+export const AUTH_RATE = Symbol('AUTH_RATE');
 
 export function authSubjectHmac(subject: string, secret: string): string {
   return keyedHmac(subject, secret, 'auth-subject');

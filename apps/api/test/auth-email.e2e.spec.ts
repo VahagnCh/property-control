@@ -11,7 +11,7 @@ import { AUTH_ACCEPTED_BODY, AUTH_CODE_STORE, MemoryAuthCodes } from '../src/aut
 import { AuthModule } from '../src/auth/auth.module.js';
 import { Es256AccessTokenVerifier } from '../src/auth/es256-access-token.verifier.js';
 import { PropertyMembershipGuard } from '../src/auth/property-membership.guard.js';
-import { AUTH_CLOCK, AUTH_JWT, SESSION_DIRECTORY, SessionDirectory } from '../src/auth/session-directory.js';
+import { AUTH_CLOCK, AUTH_JWT, SESSION_DIRECTORY, MemorySessionDirectory } from '../src/auth/session-directory.js';
 import { AppModule } from '../src/app.module.js';
 import { configureApp } from '../src/configure-app.js';
 
@@ -35,7 +35,7 @@ class PropertyProbeModule {}
 
 describe('email code auth', () => {
   const keys = generateAuthJwtKeys('test-kid');
-  const sessions = new SessionDirectory();
+  const sessions = new MemorySessionDirectory();
   const sender = new FakeAuthEmailSender();
   const clock = { current: new Date('2026-10-29T15:00:00.000Z') };
   const verifier = new Es256AccessTokenVerifier(keys, sessions, () => clock.current);
@@ -438,10 +438,62 @@ describe('email code auth', () => {
   });
 });
 
+describe('short JWT signature on an OCR route', () => {
+  it('returns 401 instead of 500', async () => {
+    const keys = generateAuthJwtKeys('ocr-kid');
+    const previousOcr = process.env.OCR_STUB_ENABLED;
+    const previousPrivate = process.env.AUTH_JWT_PRIVATE_KEY;
+    const previousPublic = process.env.AUTH_JWT_PUBLIC_KEY;
+    const previousKid = process.env.AUTH_JWT_KID;
+    process.env.OCR_STUB_ENABLED = '1';
+    process.env.AUTH_JWT_PRIVATE_KEY = keys.privateKeyPem;
+    process.env.AUTH_JWT_PUBLIC_KEY = keys.publicKeyPem;
+    process.env.AUTH_JWT_KID = keys.kid;
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const app = moduleRef.createNestApplication({ bodyParser: false });
+    configureApp(app);
+    await app.init();
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const header = Buffer.from(JSON.stringify({ alg: 'ES256', typ: 'JWT', kid: keys.kid })).toString('base64url');
+      const payload = Buffer.from(
+        JSON.stringify({
+          sub: 'user-1',
+          sid: '11111111-1111-4111-8111-111111111111',
+          iat: now,
+          exp: now + 900,
+          iss: 'api.duerecord.mx',
+          aud: 'duerecord-app',
+        }),
+      ).toString('base64url');
+      const signature = Buffer.alloc(8).toString('base64url');
+      const response = await request(app.getHttpServer())
+        .post('/v1/properties/11111111-1111-4111-8111-111111111111/documents/22222222-2222-4222-8222-222222222222/ocr-jobs')
+        .set('Authorization', `Bearer ${header}.${payload}.${signature}`)
+        .expect(401);
+      expect(response.body.error).toBe('token_invalid');
+    } finally {
+      await app.close();
+      restore('OCR_STUB_ENABLED', previousOcr);
+      restore('AUTH_JWT_PRIVATE_KEY', previousPrivate);
+      restore('AUTH_JWT_PUBLIC_KEY', previousPublic);
+      restore('AUTH_JWT_KID', previousKid);
+    }
+  });
+});
+
+function restore(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}
+
 describe('unknown property', () => {
   it('returns 404, not 403, for a valid access token with no membership', async () => {
     const keys = generateAuthJwtKeys('probe-kid');
-    const sessions = new SessionDirectory();
+    const sessions = new MemorySessionDirectory();
     const now = new Date('2026-10-29T12:00:00.000Z');
     const verifier = new Es256AccessTokenVerifier(keys, sessions, () => now);
     const moduleRef = await Test.createTestingModule({

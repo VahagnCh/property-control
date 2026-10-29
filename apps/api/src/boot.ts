@@ -1,3 +1,4 @@
+import { assertAuthJwtConfig } from './auth/access-jwt.js';
 import { serverSecret } from './auth/server-secret.js';
 import { loadAvisoConfig } from './consent/aviso-config.js';
 
@@ -10,6 +11,7 @@ export async function prepareBoot(
   avisoPublished: (version: string) => Promise<boolean>,
 ): Promise<void> {
   serverSecret(env);
+  assertAuthJwtConfig(env);
   const { avisoVersion } = loadAvisoConfig(env);
   const published = await avisoPublished(avisoVersion);
   if (!published) {

@@ -4,6 +4,7 @@ import {
   ACCESS_TOKEN_AUD,
   ACCESS_TOKEN_ISS,
   ACCESS_TOKEN_TTL_SECONDS,
+  assertAuthJwtConfig,
   generateAuthJwtKeys,
   signAccessToken,
   verifyAccessToken,
@@ -81,6 +82,41 @@ describe('ES256 access tokens', () => {
       ok: false,
       reason: 'invalid',
     });
+  });
+
+  it('rejects a short signature without throwing', () => {
+    const token = signAccessToken(keys, { sub: 'user-1', sid: 'session-1', now: NOW });
+    const [header, payload] = token.split('.');
+    const short = Buffer.alloc(8).toString('base64url');
+    expect(verifyAccessToken(keys, `${header}.${payload}.${short}`, NOW)).toEqual({
+      ok: false,
+      reason: 'invalid',
+    });
+  });
+
+  it('accepts a token signed by the previous public key', () => {
+    const current = generateAuthJwtKeys('current');
+    const previous = generateAuthJwtKeys('previous');
+    const oldToken = signAccessToken(previous, { sub: 'user-1', sid: 'session-1', now: NOW });
+    const fresh = signAccessToken(current, { sub: 'user-1', sid: 'session-1', now: NOW });
+    const keysForVerify = [
+      { kid: current.kid, publicKeyPem: current.publicKeyPem },
+      { kid: previous.kid, publicKeyPem: previous.publicKeyPem },
+    ];
+    expect(verifyAccessToken(keysForVerify, oldToken, NOW).ok).toBe(true);
+    expect(verifyAccessToken(keysForVerify, fresh, NOW).ok).toBe(true);
+  });
+
+  it('rejects a key pair that does not match', () => {
+    const left = generateAuthJwtKeys('left');
+    const right = generateAuthJwtKeys('right');
+    expect(() =>
+      assertAuthJwtConfig({
+        AUTH_JWT_PRIVATE_KEY: left.privateKeyPem,
+        AUTH_JWT_PUBLIC_KEY: right.publicKeyPem,
+        AUTH_JWT_KID: 'left',
+      }),
+    ).toThrow(/does not match/);
   });
 
   it('rejects a tampered ES256 signature', () => {

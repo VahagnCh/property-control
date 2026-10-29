@@ -135,7 +135,7 @@ class PrismaRefreshTx {
   async revokeFamily(familyId: string, now: Date): Promise<void> {
     await this.tx.refreshToken.updateMany({
       where: { familyId, revokedAt: null },
-      data: { revokedAt: now },
+      data: { revokedAt: now, graceRefreshToken: null },
     });
   }
 }

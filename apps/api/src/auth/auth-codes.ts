@@ -44,6 +44,11 @@ export interface AuthCodeStore {
   invalidateActive(emailHmac: string, now: Date): Promise<void>;
   insert(row: AuthCodeRow): Promise<void>;
   findLatest(emailHmac: string): Promise<AuthCodeRow | null>;
+  /**
+   * One claim. Succeeds only when this hmac is still unused, under the
+   * attempt cap, and unexpired.
+   */
+  claimMatching(emailHmac: string, codeHmac: string, now: Date): Promise<AuthCodeRow | null>;
   recordFailure(id: string): Promise<AuthCodeRow | null>;
   markUsed(id: string, now: Date): Promise<void>;
 }
@@ -66,6 +71,22 @@ export class MemoryAuthCodes implements AuthCodeStore {
 
   async insert(row: AuthCodeRow): Promise<void> {
     this.rows.push({ ...row });
+  }
+
+  async claimMatching(emailHmac: string, codeHmac: string, now: Date): Promise<AuthCodeRow | null> {
+    const row = this.rows.find(
+      (item) =>
+        item.emailHmac === emailHmac &&
+        item.codeHmac === codeHmac &&
+        !item.usedAt &&
+        item.attempts < 5 &&
+        item.expiresAt > now,
+    );
+    if (!row) {
+      return null;
+    }
+    row.usedAt = now;
+    return { ...row };
   }
 
   async findLatest(emailHmac: string): Promise<AuthCodeRow | null> {

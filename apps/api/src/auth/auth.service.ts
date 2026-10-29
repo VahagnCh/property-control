@@ -10,22 +10,39 @@ import {
   RESEND_COOLDOWN_MS,
   VERIFY_FAILURES_BEFORE_LIMIT,
   authCodeHmac,
-  authCodesMatch,
   normalizeAuthEmail,
   randomAuthCode,
   type AuthCodeStore,
 } from './auth-codes.js';
+import { AUTH_AUDIT, MemoryAuthAudit, type AuthAuditLog } from './auth-audit.js';
 import { MemoryIdempotencyKeys, assertIdempotencyKey } from './idempotency-keys.js';
-import { MemoryRateLimits } from './rate-limit.js';
-import { MemoryRefreshTokens } from './refresh-tokens.js';
+import { AUTH_RATE, MemoryRateLimits, type RateLimitDecision } from './rate-limit.js';
+import { MemoryRefreshTokens, type RefreshTokenRow, type RotateResult } from './refresh-tokens.js';
 import { keyedHmac, serverSecret } from './server-secret.js';
-import { AUTH_CLOCK, AUTH_JWT, SESSION_DIRECTORY, type SessionDirectory } from './session-directory.js';
+import {
+  AUTH_CLOCK,
+  AUTH_JWT,
+  AUTH_LIMITS,
+  AUTH_USERS,
+  AUTH_REFRESH,
+  SESSION_DIRECTORY,
+  authLimitsFromEnv,
+  type AuthLimits,
+  type SessionDirectory,
+} from './session-directory.js';
 
 const CODE_ROUTE = 'POST /v1/auth/code';
-const EMAIL_SEND_LIMIT = 5;
-const EMAIL_SEND_WINDOW_MS = 60 * 60 * 1000;
-const IP_SEND_LIMIT = 5;
 const VERIFY_WINDOW_MS = CODE_TTL_MS;
+
+interface RefreshStore {
+  issue(input: { userId: string; rawToken: string; now: Date }): Promise<RefreshTokenRow>;
+  rotate(input: { rawToken: string; now: Date; nextRawToken: string }): Promise<RotateResult>;
+  revokeFamily(familyId: string, now: Date): Promise<void>;
+}
+
+export interface AuthUsers {
+  findOrCreate(emailHmac: string): Promise<{ id: string }>;
+}
 
 export interface AuthHttpResult {
   status: number;
@@ -37,14 +54,10 @@ interface AuthUser {
   id: string;
 }
 
-export class MemoryAuthUsers {
+export class MemoryAuthUsers implements AuthUsers {
   private readonly byHmac = new Map<string, AuthUser>();
 
-  findByEmailHmac(emailHmac: string): Promise<AuthUser | null> {
-    return Promise.resolve(this.byHmac.get(emailHmac) ?? null);
-  }
-
-  create(emailHmac: string): Promise<AuthUser> {
+  findOrCreate(emailHmac: string): Promise<AuthUser> {
     const existing = this.byHmac.get(emailHmac);
     if (existing) {
       return Promise.resolve(existing);
@@ -59,11 +72,13 @@ export class MemoryAuthUsers {
 export class AuthService {
   private readonly codes: AuthCodeStore;
   private readonly sender: AuthEmailSender;
-  private readonly users = new MemoryAuthUsers();
+  private readonly users: AuthUsers;
   private readonly idempotency = new MemoryIdempotencyKeys();
-  private refreshTokens: MemoryRefreshTokens | null = null;
-  private rateLimits: MemoryRateLimits | null = null;
-  private readonly dummyCodeHmac: string;
+  private readonly limitsConfig: AuthLimits;
+  private readonly audit: AuthAuditLog;
+  private refreshTokens: RefreshStore | null = null;
+  private rateLimits: RateStore | null = null;
+  private readonly clock: () => Date;
 
   constructor(
     @Inject(SESSION_DIRECTORY) private readonly sessions: SessionDirectory,
@@ -71,14 +86,21 @@ export class AuthService {
     @Optional() @Inject(AUTH_CODE_STORE) codes?: AuthCodeStore,
     @Optional() @Inject(AUTH_JWT) private readonly jwt: AuthJwtConfig | null = null,
     @Optional() @Inject(AUTH_CLOCK) clock?: () => Date,
+    @Optional() @Inject(AUTH_LIMITS) limits?: AuthLimits,
+    @Optional() @Inject(AUTH_USERS) users?: AuthUsers,
+    @Optional() @Inject(AUTH_REFRESH) refreshTokens?: RefreshStore,
+    @Optional() @Inject(AUTH_AUDIT) audit?: AuthAuditLog,
+    @Optional() @Inject(AUTH_RATE) rates?: RateStore | null,
   ) {
     this.sender = sender ?? new FakeAuthEmailSender();
     this.codes = codes ?? new MemoryAuthCodes();
     this.clock = clock ?? (() => new Date());
-    this.dummyCodeHmac = authCodeHmac('000000', 'dummy-pepper');
+    this.limitsConfig = limits ?? authLimitsFromEnv();
+    this.users = users ?? new MemoryAuthUsers();
+    this.refreshTokens = refreshTokens ?? null;
+    this.rateLimits = rates ?? null;
+    this.audit = audit ?? new MemoryAuthAudit();
   }
-
-  private readonly clock: () => Date;
 
   async requestCode(input: { email: unknown; idempotencyKey?: string; ip: string }): Promise<AuthHttpResult> {
     if (typeof input.email !== 'string') {
@@ -87,6 +109,9 @@ export class AuthService {
     const email = normalizeAuthEmail(input.email);
     if (email.length < 3 || email.length > 320 || !email.includes('@')) {
       return errorResult(400, 'auth.email_invalid', 'Email is required.');
+    }
+    if (!this.sender.configured) {
+      return errorResult(503, 'auth.unavailable', 'Login email is not configured.');
     }
     const now = this.clock();
     const emailHmac = keyedHmac(email, this.secret(), 'auth-email');
@@ -113,7 +138,12 @@ export class AuthService {
       attempts: 0,
       createdAt: now,
     });
-    await this.sender.sendLoginCode({ to: email, code });
+    try {
+      await this.sender.sendLoginCode({ to: email, code });
+    } catch {
+      await this.codes.invalidateActive(emailHmac, now);
+      return this.finish(reserved.id, errorResult(503, 'auth.unavailable', 'Login email is not configured.'));
+    }
     return this.finish(reserved.id, accepted());
   }
 
@@ -124,6 +154,20 @@ export class AuthService {
     const email = normalizeAuthEmail(input.email);
     const now = this.clock();
     const emailHmac = keyedHmac(email, this.secret(), 'auth-email');
+    const ipDecision = await this.limits().record({
+      subject: input.ip || 'unknown',
+      purpose: 'auth.verify.ip',
+      success: false,
+      now,
+      limit: this.limitsConfig.verifyIpLimit,
+      windowMs: this.limitsConfig.windowMs,
+    });
+    if (!ipDecision.allowed) {
+      return rateLimited(ipDecision.retryAfterSeconds);
+    }
+    if (!this.jwt) {
+      return errorResult(503, 'auth.unavailable', 'Access tokens are not configured.');
+    }
     const blockedFor = await this.limits().retryIfBlocked({
       subject: emailHmac,
       purpose: 'auth.verify',
@@ -132,12 +176,10 @@ export class AuthService {
     if (blockedFor !== null) {
       return rateLimited(blockedFor);
     }
-    const row = await this.codes.findLatest(emailHmac);
     const presented = authCodeHmac(input.code, this.secret());
-    const stored = row?.codeHmac ?? this.dummyCodeHmac;
-    const hmacOk = authCodesMatch(presented, stored);
-    const live = Boolean(row && !row.usedAt && row.expiresAt > now && row.attempts < VERIFY_FAILURES_BEFORE_LIMIT);
-    if (!live || !hmacOk || !row) {
+    const claimed = await this.codes.claimMatching(emailHmac, presented, now);
+    if (!claimed) {
+      const row = await this.codes.findLatest(emailHmac);
       if (row && !row.usedAt && row.expiresAt > now) {
         await this.codes.recordFailure(row.id);
       }
@@ -149,17 +191,28 @@ export class AuthService {
         limit: VERIFY_FAILURES_BEFORE_LIMIT - 1,
         windowMs: VERIFY_WINDOW_MS,
       });
+      await this.audit.append({
+        action: 'auth.login.failed',
+        userId: null,
+        sessionId: null,
+        emailHmac,
+        now,
+      });
       if (!decision.allowed) {
         return rateLimited(decision.retryAfterSeconds);
       }
       return errorResult(401, 'auth.code_invalid', 'The code is not valid.');
     }
-    if (!this.jwt) {
-      return errorResult(503, 'auth.unavailable', 'Access tokens are not configured.');
-    }
-    await this.codes.markUsed(row.id, now);
-    const user = (await this.users.findByEmailHmac(emailHmac)) ?? (await this.users.create(emailHmac));
-    return this.issuePair(user.id, now);
+    const user = await this.users.findOrCreate(emailHmac);
+    const issued = await this.issuePair(user.id, now);
+    await this.audit.append({
+      action: 'auth.login.succeeded',
+      userId: user.id,
+      sessionId: issued.sessionId,
+      emailHmac,
+      now,
+    });
+    return issued.result;
   }
 
   async refresh(input: { refreshToken: unknown }): Promise<AuthHttpResult> {
@@ -173,7 +226,14 @@ export class AuthService {
       return this.pair(result.token.userId, result.token.familyId, result.refreshToken, now);
     }
     if (result.outcome === 'reused') {
-      this.sessions.revoke(result.familyId);
+      await this.sessions.revoke(result.familyId, now);
+      await this.audit.append({
+        action: 'auth.refresh.reuse_detected',
+        userId: null,
+        sessionId: result.familyId,
+        emailHmac: null,
+        now,
+      });
       return errorResult(401, 'auth.refresh_reused', 'The session was revoked.');
     }
     return errorResult(401, 'auth.refresh_invalid', 'The refresh token is not valid.');
@@ -184,15 +244,23 @@ export class AuthService {
       return errorResult(401, 'token_invalid', 'Invalid access token.');
     }
     const now = this.clock();
-    this.sessions.revoke(sid);
+    await this.sessions.revoke(sid, now);
     await this.tokens().revokeFamily(sid, now);
+    await this.audit.append({
+      action: 'auth.logout',
+      userId: null,
+      sessionId: sid,
+      emailHmac: null,
+      now,
+    });
     return { status: 204, body: null };
   }
 
-  private async issuePair(userId: string, now: Date): Promise<AuthHttpResult> {
+  private async issuePair(userId: string, now: Date): Promise<{ result: AuthHttpResult; sessionId: string }> {
     const refreshToken = newRefreshToken();
     const issued = await this.tokens().issue({ userId, rawToken: refreshToken, now });
-    return this.pair(userId, issued.familyId, refreshToken, now);
+    await this.sessions.open(issued.familyId, userId);
+    return { result: this.pair(userId, issued.familyId, refreshToken, now), sessionId: issued.familyId };
   }
 
   private pair(userId: string, sid: string, refreshToken: string, now: Date): AuthHttpResult {
@@ -258,27 +326,27 @@ export class AuthService {
   }
 
   private async limitSends(emailHmac: string, ip: string, now: Date): Promise<AuthHttpResult | null> {
-    const email = await this.limits().record({
-      subject: emailHmac,
-      purpose: 'auth.code.email',
-      success: true,
-      now,
-      limit: EMAIL_SEND_LIMIT,
-      windowMs: EMAIL_SEND_WINDOW_MS,
-    });
-    if (!email.allowed) {
-      return rateLimited(email.retryAfterSeconds);
-    }
     const address = await this.limits().record({
       subject: ip || 'unknown',
       purpose: 'auth.code.ip',
       success: true,
       now,
-      limit: IP_SEND_LIMIT,
-      windowMs: EMAIL_SEND_WINDOW_MS,
+      limit: this.limitsConfig.ipSendLimit,
+      windowMs: this.limitsConfig.windowMs,
     });
     if (!address.allowed) {
       return rateLimited(address.retryAfterSeconds);
+    }
+    const email = await this.limits().record({
+      subject: emailHmac,
+      purpose: 'auth.code.email',
+      success: true,
+      now,
+      limit: this.limitsConfig.emailSendLimit,
+      windowMs: this.limitsConfig.windowMs,
+    });
+    if (!email.allowed) {
+      return rateLimited(email.retryAfterSeconds);
     }
     return null;
   }
@@ -287,12 +355,16 @@ export class AuthService {
     return serverSecret();
   }
 
-  private limits(): MemoryRateLimits {
-    this.rateLimits ??= new MemoryRateLimits(this.secret());
-    return this.rateLimits;
+  private limits(): RateStore {
+    if (this.rateLimits) {
+      return this.rateLimits;
+    }
+    const created = new MemoryRateLimits(this.secret());
+    this.rateLimits = created;
+    return created;
   }
 
-  private tokens(): MemoryRefreshTokens {
+  private tokens(): RefreshStore {
     this.refreshTokens ??= new MemoryRefreshTokens(this.secret());
     return this.refreshTokens;
   }
@@ -316,6 +388,18 @@ function errorResult(status: number, error: string, message: string): AuthHttpRe
 
 function asBody(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+}
+
+interface RateStore {
+  record(input: {
+    subject: string;
+    purpose: string;
+    success: boolean;
+    now: Date;
+    limit: number;
+    windowMs: number;
+  }): Promise<RateLimitDecision>;
+  retryIfBlocked(input: { subject: string; purpose: string; now: Date }): Promise<number | null>;
 }
 
 function newRefreshToken(): string {
