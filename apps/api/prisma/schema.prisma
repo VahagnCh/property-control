@@ -683,9 +683,11 @@ model RefreshToken {
 /// Idempotency for multi-instance writes. Distinct from `idempotency_records`,
 /// which stays property-scoped. Scope is user or email HMAC, plus method and
 /// route, plus the key. The same key on another route is a new request. A
-/// different request hash on the same scope is 422. Expired rows may be replaced.
-/// `userId` is nullable. `emailHmac` is the keyed HMAC for a later auth-code
-/// route; the plain email is never stored. Exactly one of the two is set.
+/// different request hash on the same scope is 409 idempotency_key_reused.
+/// Stored responses are 2xx and 4xx. A 5xx is not stored, so the same key can
+/// try again. Expired rows may be replaced.
+/// `userId` is nullable. `emailHmac` is the keyed HMAC for auth-code
+/// idempotency; the plain email is never stored. Exactly one of the two is set.
 /// The key is 8–128 characters of [A-Za-z0-9_-], so a UUID v4 is valid.
 model IdempotencyKey {
   id             String   @id @default(uuid()) @db.Uuid

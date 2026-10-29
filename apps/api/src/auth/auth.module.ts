@@ -16,7 +16,11 @@ import { PrismaRefreshTokens } from './prisma-refresh-tokens.js';
 import { AUTH_RATE, PrismaRateLimits } from './rate-limit.js';
 import { serverSecret } from './server-secret.js';
 import { FailClosedPropertyAccess, PROPERTY_ACCESS } from './property-access.js';
+import { PrismaPropertyAccess } from './prisma-property-access.js';
 import { PropertyMembershipGuard } from './property-membership.guard.js';
+import { ConsentRequiredGuard } from './consent-required.guard.js';
+import { CONSENT_GATE, FixedConsentGate, PrismaConsentGate, avisoVersionFromEnv } from '../consent/consent.gate.js';
+import { database } from '../persistence/database.js';
 import { AUTH_AUDIT, MemoryAuthAudit } from './auth-audit.js';
 import {
   AUTH_CLOCK,
@@ -36,6 +40,7 @@ import {
     AuthService,
     AccessTokenGuard,
     PropertyMembershipGuard,
+    ConsentRequiredGuard,
     {
       provide: SESSION_DIRECTORY,
       useFactory: () => {
@@ -83,6 +88,13 @@ import {
     { provide: AUTH_CLOCK, useValue: () => new Date() },
     { provide: AUTH_JWT, useFactory: () => loadAuthJwt()?.current ?? null },
     {
+      provide: CONSENT_GATE,
+      useFactory: () => {
+        const db = database();
+        return db ? new PrismaConsentGate(db, avisoVersionFromEnv()) : new FixedConsentGate(false);
+      },
+    },
+    {
       provide: ACCESS_TOKEN_VERIFIER,
       useFactory: (sessions: SessionDirectory) => {
         const jwt = loadAuthJwt();
@@ -93,11 +105,16 @@ import {
       },
       inject: [SESSION_DIRECTORY],
     },
-    { provide: PROPERTY_ACCESS, useClass: FailClosedPropertyAccess },
+    { provide: PROPERTY_ACCESS, useFactory: () => {
+      const db = database();
+      return db ? new PrismaPropertyAccess(db) : new FailClosedPropertyAccess();
+    } },
   ],
   exports: [
     AccessTokenGuard,
     PropertyMembershipGuard,
+    ConsentRequiredGuard,
+    CONSENT_GATE,
     ACCESS_TOKEN_VERIFIER,
     PROPERTY_ACCESS,
     AUTH_EMAIL,

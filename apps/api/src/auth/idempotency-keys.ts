@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { BadRequestException, UnprocessableEntityException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { Mutex } from '../persistence/mutex.js';
 
@@ -21,6 +21,17 @@ export type ReserveResult =
   | { outcome: 'reserved'; id: string }
   | { outcome: 'replay'; responseStatus: number; responseBody: unknown }
   | { outcome: 'in_progress' };
+
+/** 2xx and 4xx are stored. 5xx is released so the same key can try again. */
+export function isReplayableStatus(status: number): boolean {
+  return status >= 200 && status < 500;
+}
+
+export interface IdempotencyStore {
+  reserve(input: IdempotencyInput): Promise<ReserveResult>;
+  complete(id: string, responseStatus: number, responseBody: unknown): Promise<void>;
+  release(id: string): Promise<void>;
+}
 
 interface StoredKey {
   id: string;
@@ -46,7 +57,7 @@ export function assertIdempotencyKey(key: string): void {
   }
 }
 
-export class MemoryIdempotencyKeys {
+export class MemoryIdempotencyKeys implements IdempotencyStore {
   private readonly rows = new Map<string, StoredKey>();
   private readonly mutex = new Mutex();
 
@@ -60,6 +71,9 @@ export class MemoryIdempotencyKeys {
   }
 
   complete(id: string, responseStatus: number, responseBody: unknown): Promise<void> {
+    if (!isReplayableStatus(responseStatus)) {
+      return this.release(id);
+    }
     return this.mutex.run(async () => {
       const row = [...this.rows.values()].find((item) => item.id === id);
       if (!row || row.responseStatus !== null) {
@@ -69,9 +83,19 @@ export class MemoryIdempotencyKeys {
       row.responseBody = responseBody;
     });
   }
+
+  release(id: string): Promise<void> {
+    return this.mutex.run(async () => {
+      for (const [key, row] of this.rows) {
+        if (row.id === id && row.responseStatus === null) {
+          this.rows.delete(key);
+        }
+      }
+    });
+  }
 }
 
-export class PrismaIdempotencyKeys {
+export class PrismaIdempotencyKeys implements IdempotencyStore {
   constructor(private readonly prisma: PrismaClient) {}
 
   async reserve(input: IdempotencyInput): Promise<ReserveResult> {
@@ -88,10 +112,18 @@ export class PrismaIdempotencyKeys {
   }
 
   async complete(id: string, responseStatus: number, responseBody: unknown): Promise<void> {
+    if (!isReplayableStatus(responseStatus)) {
+      await this.release(id);
+      return;
+    }
     await this.prisma.idempotencyKey.updateMany({
       where: { id, responseStatus: null },
       data: { responseStatus, responseBody: responseBody as Prisma.InputJsonValue },
     });
+  }
+
+  async release(id: string): Promise<void> {
+    await this.prisma.idempotencyKey.deleteMany({ where: { id, responseStatus: null } });
   }
 }
 
@@ -165,9 +197,9 @@ function decision(
   requestHash: string,
 ): ReserveResult {
   if (existing.requestHash !== requestHash) {
-    throw new UnprocessableEntityException({
-      statusCode: 422,
-      error: 'idempotency_key_mismatch',
+    throw new ConflictException({
+      statusCode: 409,
+      error: 'idempotency_key_reused',
       message: 'This idempotency key was already used with a different request.',
     });
   }

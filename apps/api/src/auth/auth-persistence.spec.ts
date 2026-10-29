@@ -1,4 +1,4 @@
-import { BadRequestException, UnprocessableEntityException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { TEST_SERVER_SECRET } from '../../test/test-server-secret.js';
 import { MemoryIdempotencyKeys } from './idempotency-keys.js';
@@ -124,9 +124,15 @@ describe('idempotency keys', () => {
       responseStatus: 201,
       responseBody: { id: 'consent-1' },
     });
-    await expect(keys.reserve({ ...input, requestHash: 'hash-b' })).rejects.toBeInstanceOf(
-      UnprocessableEntityException,
-    );
+    await expect(keys.reserve({ ...input, requestHash: 'hash-b' })).rejects.toBeInstanceOf(ConflictException);
+    try {
+      await keys.reserve({ ...input, requestHash: 'hash-b' });
+    } catch (error) {
+      expect((error as ConflictException).getResponse()).toMatchObject({
+        statusCode: 409,
+        error: 'idempotency_key_reused',
+      });
+    }
   });
 
   it('accepts a UUID v4 and the length boundaries, and rejects a short or illegal key', async () => {

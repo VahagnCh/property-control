@@ -1,7 +1,7 @@
 import { Inject, Injectable, type NestMiddleware } from '@nestjs/common';
 import { json, urlencoded, type NextFunction, type Request, type Response } from 'express';
 import { ACCESS_TOKEN_VERIFIER, verifyBearer, type AccessTokenVerifier } from '../auth/access-token.verifier.js';
-import { earlyRequestStatus, isOcrPath, pathOnly } from '../common/path-safety.js';
+import { earlyRequestStatus, isLiveRecordPath, isOcrPath, pathOnly } from '../common/path-safety.js';
 import { OCR_ERROR, ocrBody } from './ocr-errors.js';
 import { OCR_RUNTIME, ocrDisabledBody, type OcrRuntime } from './ocr-runtime.js';
 
@@ -24,7 +24,7 @@ export class RequestGuardMiddleware implements NestMiddleware {
 
   use(req: Request, res: Response, next: NextFunction): void {
     const url = pathOnly(req.originalUrl ?? req.url);
-    if ((isOcrPath(url) && this.runtime.enabled) || isAuthBearerPath(url)) {
+    if ((isOcrPath(url) && this.runtime.enabled) || isAuthBearerPath(url) || isLiveRecordPath(req.method, url)) {
       void this.requireBearer(req, res, next, url);
       return;
     }

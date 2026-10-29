@@ -37,7 +37,7 @@ Resolution order:
 5. A viewer write is **403** `viewer`. A viewer without consent who writes is `viewer`, not `consent_required`.
 6. A write without the current consent is **403** `consent_required`. Reads skip steps 5 and 6. A non-member read is still 404.
 
-`POST /v1/properties` has no membership check. While it is stubbed the response is 501. When it is live the order is 401, then 400 or 413, then 403 `consent_required`. `POST /v1/invites/accept` stays on the invite checks in [EDGE_CASES.md](EDGE_CASES.md) section 8 after the token: an unknown token, or acceptance from the wrong account, is 404 before any used, revoked, superseded, or expired state is revealed.
+`POST /v1/properties` has no membership check. The order is 401, then 400 or 413, then 403 `consent_required`. `POST /v1/invites/accept` stays on the invite checks in [EDGE_CASES.md](EDGE_CASES.md) section 8 after the token: an unknown token, or acceptance from the wrong account, is 404 before any used, revoked, superseded, or expired state is revealed.
 
 TODO: Retirar consentimiento leads into account deletion before public launch. Withdrawal is not implemented.
 

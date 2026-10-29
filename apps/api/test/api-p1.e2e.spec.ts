@@ -14,6 +14,7 @@ import {
   type AccessTokenVerifier,
 } from '../src/auth/access-token.verifier.js';
 import { PROPERTY_ACCESS, type PropertyAccess } from '../src/auth/property-access.js';
+import { CONSENT_GATE, FixedConsentGate } from '../src/consent/consent.gate.js';
 import { AppModule } from '../src/app.module.js';
 import { configureApp } from '../src/configure-app.js';
 import { HEALTH_PROBE } from '../src/health/live-health.controller.js';
@@ -26,20 +27,44 @@ const UUID_B = '22222222-2222-4222-8222-222222222222';
 const GUARDED_ROUTES = [
   'GET /v1/auth/session',
   'POST /v1/auth/logout',
+  'GET /v1/properties',
+  'POST /v1/properties',
+  'GET /v1/properties/:propertyId',
+  'PATCH /v1/properties/:propertyId',
+  'GET /v1/properties/:propertyId/obligations',
+  'POST /v1/properties/:propertyId/obligations',
+  'GET /v1/properties/:propertyId/obligations/:obligationId',
+  'PATCH /v1/properties/:propertyId/obligations/:obligationId',
+  'GET /v1/properties/:propertyId/payments',
+  'POST /v1/properties/:propertyId/payments',
+  'GET /v1/properties/:propertyId/payments/:paymentId',
+  'PATCH /v1/properties/:propertyId/payments/:paymentId',
   'GET /v1/properties/:propertyId/documents/:documentId/ocr-jobs',
   'GET /v1/properties/:propertyId/ocr-jobs/:ocrJobId',
   'POST /v1/properties/:propertyId/documents/:documentId/ocr-jobs',
   'POST /v1/properties/:propertyId/ocr-jobs/:ocrJobId/confirm',
 ];
 
+const LIVE_ROUTES = new Set([
+  'GET /v1/properties',
+  'POST /v1/properties',
+  'GET /v1/properties/:id',
+  'PATCH /v1/properties/:id',
+  'GET /v1/properties/:id/obligations',
+  'POST /v1/properties/:id/obligations',
+  'GET /v1/properties/:id/obligations/:id',
+  'PATCH /v1/properties/:id/obligations/:id',
+  'GET /v1/properties/:id/payments',
+  'POST /v1/properties/:id/payments',
+  'GET /v1/properties/:id/payments/:id',
+  'PATCH /v1/properties/:id/payments/:id',
+]);
+
 const LIST_MODULES: Record<string, string> = {
-  'GET /v1/properties': 'properties',
   'GET /v1/home/action-items': 'home',
   'GET /v1/properties/:id/memberships': 'memberships',
   'GET /v1/properties/:id/invites': 'invites',
-  'GET /v1/properties/:id/obligations': 'obligations',
   'GET /v1/properties/:id/obligations/:id/period-outcomes': 'obligation-period-outcomes',
-  'GET /v1/properties/:id/payments': 'payments',
   'GET /v1/properties/:id/evidence': 'evidence',
   'GET /v1/properties/:id/maintenance-tasks': 'maintenance',
   'GET /v1/properties/:id/documents': 'documents',
@@ -161,6 +186,10 @@ function isOcr(path: string): boolean {
   return path.includes('/ocr-jobs');
 }
 
+function isLive(route: string): boolean {
+  return LIVE_ROUTES.has(canonical(route));
+}
+
 function isListTemplate(route: string): boolean {
   return Object.hasOwn(LIST_MODULES, canonical(route));
 }
@@ -244,6 +273,7 @@ async function boot(options?: {
   }
   if (options?.access) {
     builder = builder.overrideProvider(PROPERTY_ACCESS).useValue(options.access);
+    builder = builder.overrideProvider(CONSENT_GATE).useValue(new FixedConsentGate(true));
   }
   const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication({ bodyParser: false, logger: false });
@@ -366,7 +396,7 @@ describe('API P1', () => {
     const server = app.getHttpServer();
     const targets = routes.filter((route) => {
       const path = route.split(/\s+/)[1] ?? '';
-      if (isOcr(path) || path.startsWith('/v1/auth') || path === '/health' || path === '/v1/health' || isListTemplate(route)) {
+      if (isOcr(path) || path.startsWith('/v1/auth') || path === '/health' || path === '/v1/health' || isListTemplate(route) || isLive(route)) {
         return false;
       }
       return true;
@@ -425,8 +455,9 @@ describe('API P1', () => {
           body: method === 'GET' ? undefined : '{}',
           contentType: method === 'GET' ? undefined : 'application/json',
         });
-        const open =
-          isListTemplate(route) || template === '/health'
+        const open = isLive(route)
+          ? 401
+          : isListTemplate(route) || template === '/health'
             ? 200
             : template === '/v1/health'
               ? 503
@@ -458,16 +489,16 @@ describe('API P1', () => {
 
       if (method === 'GET') continue;
       const empty = await send(server, method, concrete, { body: '', contentType: 'application/json' });
-      expect(empty.status, `${family} empty ${route}`).toBe(501);
+      expect(empty.status, `${family} empty ${route}`).toBe(isLive(route) ? 401 : 501);
       expectNoSecret(empty.body);
       const malformed = await send(server, method, concrete, { body: '{', contentType: 'application/json' });
-      expect(malformed.status, `${family} malformed json ${route}`).toBe(ocr ? 501 : 400);
+      expect(malformed.status, `${family} malformed json ${route}`).toBe(isLive(route) ? 401 : ocr ? 501 : 400);
       expectNoSecret(malformed.body);
       const oversized = await send(server, method, concrete, {
         body: `{"pad":"${'x'.repeat(40_000)}"}`,
         contentType: 'application/json',
       });
-      expect(oversized.status, `${family} oversized ${route}`).toBe(ocr ? 501 : 413);
+      expect(oversized.status, `${family} oversized ${route}`).toBe(isLive(route) ? 401 : ocr ? 501 : 413);
       expectNoSecret(oversized.body);
     }
     expect([...seen].sort()).toEqual([...FAMILIES].sort());
@@ -535,7 +566,7 @@ describe('API P1 guarded OCR', () => {
     expectNoSecret(other.body);
   });
 
-  it('TS-5.5 leaves non-OCR writes at 501 because AccessTokenGuard is not attached there', async () => {
+  it('TS-5.5 a viewer payment create is 403; void and evidence upload stay 501', async () => {
     const server = app.getHttpServer();
     const payment = await send(server, 'POST', `/v1/properties/${UUID}/payments`, {
       token: 'Bearer valid-viewer',
@@ -552,7 +583,8 @@ describe('API P1 guarded OCR', () => {
       body: '{}',
       contentType: 'application/json',
     });
-    expect(payment.status).toBe(501);
+    expect(payment.status).toBe(403);
+    expect(payment.body.error).toBe('forbidden');
     expect(voided.status).toBe(501);
     expect(upload.status).toBe(501);
     expectNoSecret(payment.body);

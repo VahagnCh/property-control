@@ -678,7 +678,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
     const fixture = await createFixture(prisma);
     const version = `aviso-${randomUUID()}`;
     try {
-      await prisma.avisoVersion.create({
+      await owner.avisoVersion.create({
         data: {
           version,
           url: 'https://example.com/aviso',
@@ -786,10 +786,10 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
         });
         throw new Error('expected an idempotency mismatch');
       } catch (error) {
-        expect(error).toBeInstanceOf(UnprocessableEntityException);
-        expect((error as UnprocessableEntityException).getResponse()).toMatchObject({
-          statusCode: 422,
-          error: 'idempotency_key_mismatch',
+        expect(error).toBeInstanceOf(ConflictException);
+        expect((error as ConflictException).getResponse()).toMatchObject({
+          statusCode: 409,
+          error: 'idempotency_key_reused',
         });
       }
     } finally {
@@ -845,8 +845,8 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       AVISO_URL: 'https://example.com/aviso',
     };
     await purgeAppendOnly({ avisoVersion: 'seed-v1' });
-    await seedDatabase(prisma, env);
-    await seedDatabase(prisma, env);
+    await seedDatabase(owner, env);
+    await seedDatabase(owner, env);
     const obligation = await prisma.obligation.findUnique({ where: { id: DEMO_OBLIGATION_ID } });
     expect(obligation?.title).toBe('CFE');
     expect(obligation?.expectedAmount).toBe(85000n);
@@ -963,13 +963,18 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       prisma.avisoVersion.create({
         data: { version, url: 'https://example.com/aviso', text: '', textSha256: textSha256('') },
       }),
+    ).rejects.toThrow(/permission denied/i);
+    await expect(
+      owner.avisoVersion.create({
+        data: { version, url: 'https://example.com/aviso', text: '', textSha256: textSha256('') },
+      }),
     ).rejects.toThrow(/aviso_versions_text_not_empty/);
     await expect(
-      prisma.avisoVersion.create({
+      owner.avisoVersion.create({
         data: { version, url: 'https://example.com/aviso', text, textSha256: 'a'.repeat(64) },
       }),
     ).rejects.toThrow(/aviso_versions_text_sha256_matches/);
-    await prisma.avisoVersion.create({
+    await owner.avisoVersion.create({
       data: { version, url: 'https://example.com/aviso', text, textSha256: textSha256(text) },
     });
     const stored = await prisma.avisoVersion.findUnique({ where: { version } });
@@ -1069,7 +1074,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
     const fixture = await createFixture(prisma);
     const version = `aviso-${randomUUID()}`;
     try {
-      await prisma.avisoVersion.create({
+      await owner.avisoVersion.create({
         data: { version, url: 'https://example.com/aviso', text: 'Texto.', textSha256: textSha256('Texto.') },
       });
       await prisma.consent.create({
@@ -1129,7 +1134,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
     const version = `aviso-${randomUUID()}`;
     const email = 'Invitee@Example.com';
     try {
-      await prisma.avisoVersion.create({
+      await owner.avisoVersion.create({
         data: { version, url: 'https://example.com/old', text: 'old text', textSha256: textSha256('old text') },
       });
       await expect(

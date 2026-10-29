@@ -8,8 +8,11 @@ export interface ResolvedMembership {
 }
 
 export interface PropertyAccess {
-  resolve(input: { userId: string; propertyId: string }): ResolvedMembership | null;
-  documentBelongsToProperty(propertyId: string, documentId: string): boolean;
+  resolve(input: {
+    userId: string;
+    propertyId: string;
+  }): ResolvedMembership | null | Promise<ResolvedMembership | null>;
+  documentBelongsToProperty(propertyId: string, documentId: string): boolean | Promise<boolean>;
 }
 
 /** Fail closed. Unknown properties, documents, and memberships stay unknown. */

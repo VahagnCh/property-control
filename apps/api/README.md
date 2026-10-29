@@ -80,13 +80,11 @@ Set `OCR_STUB_ENABLED` to `1`, `true`, `yes`, or `on` or every OCR route stays *
 
 ## Auth
 
-`src/auth/access-token.guard.ts` is attached to the OCR routes. A missing, invalid, or expired token is **401**. The default verifier rejects every token, so the routes fail closed until a verifier is supplied. The membership guard returns **404** when the property, the document, or the membership is unknown, and **403** when a viewer attempts an OCR write. Trust mints access and refresh tokens; this API only validates them and enforces `PropertyMembership`. It never mints a token. See [docs/TRUST.md](../../docs/TRUST.md).
-
-Non-OCR routes are still open stubs. A path id that is not a UUID is **400** on those routes; a UUID still reaches the **501** placeholder. There is no payment `DELETE`.
+`src/auth/access-token.guard.ts` is attached to the OCR routes and to property, obligation, and payment create, list, get, and update. A missing, invalid, or expired token is **401**. The default verifier rejects every token, so those routes fail closed until a verifier is supplied. The membership guard returns **404** when the property, the document, or the membership is unknown, and **403** when a viewer attempts a write. OCR writes and these record writes return **403** `consent_required` when the current aviso has not been accepted. Reads do not require consent. Delete, void, resume, and the other modules stay **501**. There is no payment `DELETE`.
 
 ## Prisma
 
-`prisma/schema.prisma` covers the locked entities. The init migration includes [`prisma/sql/checks.sql`](prisma/sql/checks.sql): the reminder partial unique indexes, the money and date checks, `gen_random_uuid()` defaults, and append-only triggers. A later migration stores money as BIGINT, scopes idempotency keys by method and route, and rejects `UPDATE`, `DELETE`, and `TRUNCATE` on `consents`, `audit_events`, and `aviso_versions`. No extension is created. Nest HTTP uses Prisma for `GET /v1/health` (`SELECT 1`, 2 second timeout) and not for the other routes. Those stay in memory or **501**.
+`prisma/schema.prisma` covers the locked entities. The init migration includes [`prisma/sql/checks.sql`](prisma/sql/checks.sql): the reminder partial unique indexes, the money and date checks, `gen_random_uuid()` defaults, and append-only triggers. A later migration stores money as BIGINT, scopes idempotency keys by method and route, and rejects `UPDATE`, `DELETE`, and `TRUNCATE` on `consents`, `audit_events`, and `aviso_versions`. No extension is created. Nest HTTP uses Prisma for `GET /v1/health` and for property, obligation, and payment create, list, get, and update. Those writes run in one database transaction with their audit row. Other routes stay **501**. Publishing `aviso_versions` is owner-only; the app role can insert `consents`.
 
 `DATABASE_URL` is the pooled connection. Tests and the API use the non-owner role `property_control_app`. `DIRECT_URL` is the owner connection used for migrations and for test cleanup of append-only tables and payments. The role is created by [`prisma/bootstrap-app-role.sh`](prisma/bootstrap-app-role.sh) before `prisma migrate deploy`, because `CREATE ROLE` cannot run inside the migration transaction. The script requires `APP_ROLE_PASSWORD` and has no default. Production sets that password outside this repository. Point both URLs at Postgres 15 or newer. Unit tests pass with neither variable set. The integration file runs when both are set. `SERVER_SECRET` must be base64 that decodes to at least 32 bytes. Boot refuses to listen without it, and without a published row for `AVISO_VERSION`. The secret is never logged.
 
@@ -106,4 +104,4 @@ The seed upserts fixed demo ids: user `demo`, property Casa in `America/Mexico_C
 pnpm api:test
 ```
 
-`src/ocr/ocr.service.spec.ts` holds the suggest-then-confirm rule. `test/app.e2e.spec.ts` checks health, the empty scaffold list, the 501 on a payment create, that `content-url` returns no URL, and the OCR round trip. Changing the OCR apply path should break a test.
+`src/ocr/ocr.service.spec.ts` holds the suggest-then-confirm rule. `test/app.e2e.spec.ts` checks health, that property and payment reads require a token, that void stays 501, that `content-url` returns no URL, and the OCR round trip. Changing the OCR apply path should break a test.

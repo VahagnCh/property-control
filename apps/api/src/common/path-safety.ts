@@ -52,6 +52,46 @@ export function isOcrPath(urlPath: string): boolean {
   return /\/ocr-jobs(?:\/|$)/.test(urlPath);
 }
 
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+
+/**
+ * Live property, obligation, and payment reads and writes.
+ * Stubbed suffixes (void, resume, delete) are not included, so they stay 501
+ * before the token is read.
+ */
+export function isLiveRecordPath(method: string, urlPath: string): boolean {
+  const verb = method.toUpperCase();
+  const path = pathOnly(urlPath);
+  if (path === '/v1/properties' && (verb === 'GET' || verb === 'POST')) {
+    return true;
+  }
+  if (new RegExp(`^/v1/properties/${UUID}$`, 'i').test(path) && (verb === 'GET' || verb === 'PATCH')) {
+    return true;
+  }
+  if (
+    new RegExp(`^/v1/properties/${UUID}/obligations$`, 'i').test(path) &&
+    (verb === 'GET' || verb === 'POST')
+  ) {
+    return true;
+  }
+  if (
+    new RegExp(`^/v1/properties/${UUID}/obligations/${UUID}$`, 'i').test(path) &&
+    (verb === 'GET' || verb === 'PATCH')
+  ) {
+    return true;
+  }
+  if (new RegExp(`^/v1/properties/${UUID}/payments$`, 'i').test(path) && (verb === 'GET' || verb === 'POST')) {
+    return true;
+  }
+  if (
+    new RegExp(`^/v1/properties/${UUID}/payments/${UUID}$`, 'i').test(path) &&
+    (verb === 'GET' || verb === 'PATCH')
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * True when the raw URL contains a traversal sequence, including encodings
  * that only become `..`, a slash, or a NUL after one or more decodes.
