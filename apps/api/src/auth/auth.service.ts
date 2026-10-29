@@ -8,14 +8,16 @@ import {
   CODE_TTL_MS,
   MemoryAuthCodes,
   RESEND_COOLDOWN_MS,
+  VERIFY_EMAIL_IP_LIMIT,
   VERIFY_FAILURES_BEFORE_LIMIT,
+  authCodeCompare,
   authCodeHmac,
   normalizeAuthEmail,
   randomAuthCode,
   type AuthCodeStore,
 } from './auth-codes.js';
 import { AUTH_AUDIT, MemoryAuthAudit, type AuthAuditLog } from './auth-audit.js';
-import { MemoryIdempotencyKeys, assertIdempotencyKey } from './idempotency-keys.js';
+import { MemoryIdempotencyKeys, assertIdempotencyKey, type IdempotencyStore } from './idempotency-keys.js';
 import { AUTH_RATE, MemoryRateLimits, type RateLimitDecision } from './rate-limit.js';
 import { MemoryRefreshTokens, type RefreshTokenRow, type RotateResult } from './refresh-tokens.js';
 import { keyedHmac, serverSecret } from './server-secret.js';
@@ -33,6 +35,7 @@ import {
 
 const CODE_ROUTE = 'POST /v1/auth/code';
 const VERIFY_WINDOW_MS = CODE_TTL_MS;
+export const AUTH_IDEMPOTENCY = Symbol('AUTH_IDEMPOTENCY');
 
 interface RefreshStore {
   issue(input: { userId: string; rawToken: string; now: Date }): Promise<RefreshTokenRow>;
@@ -73,7 +76,7 @@ export class AuthService {
   private readonly codes: AuthCodeStore;
   private readonly sender: AuthEmailSender;
   private readonly users: AuthUsers;
-  private readonly idempotency = new MemoryIdempotencyKeys();
+  private readonly idempotency: IdempotencyStore;
   private readonly limitsConfig: AuthLimits;
   private readonly audit: AuthAuditLog;
   private refreshTokens: RefreshStore | null = null;
@@ -91,6 +94,7 @@ export class AuthService {
     @Optional() @Inject(AUTH_REFRESH) refreshTokens?: RefreshStore,
     @Optional() @Inject(AUTH_AUDIT) audit?: AuthAuditLog,
     @Optional() @Inject(AUTH_RATE) rates?: RateStore | null,
+    @Optional() @Inject(AUTH_IDEMPOTENCY) idempotency?: IdempotencyStore,
   ) {
     this.sender = sender ?? new FakeAuthEmailSender();
     this.codes = codes ?? new MemoryAuthCodes();
@@ -100,6 +104,7 @@ export class AuthService {
     this.refreshTokens = refreshTokens ?? null;
     this.rateLimits = rates ?? null;
     this.audit = audit ?? new MemoryAuthAudit();
+    this.idempotency = idempotency ?? new MemoryIdempotencyKeys();
   }
 
   async requestCode(input: { email: unknown; idempotencyKey?: string; ip: string }): Promise<AuthHttpResult> {
@@ -128,9 +133,10 @@ export class AuthService {
       return this.finish(reserved.id, limited);
     }
     const code = randomAuthCode();
+    const rowId = randomUUID();
     await this.codes.invalidateActive(emailHmac, now);
     await this.codes.insert({
-      id: randomUUID(),
+      id: rowId,
       emailHmac,
       codeHmac: authCodeHmac(code, this.secret()),
       expiresAt: new Date(now.getTime() + CODE_TTL_MS),
@@ -141,9 +147,11 @@ export class AuthService {
     try {
       await this.sender.sendLoginCode({ to: email, code });
     } catch {
-      await this.codes.invalidateActive(emailHmac, now);
+      await this.codes.deleteById(rowId);
+      await this.undoSends(emailHmac, input.ip, now);
       return this.finish(reserved.id, errorResult(503, 'auth.unavailable', 'Login email is not configured.'));
     }
+    await this.limits().resetBucket({ subject: emailHmac, purpose: 'auth.verify' });
     return this.finish(reserved.id, accepted());
   }
 
@@ -168,29 +176,37 @@ export class AuthService {
     if (!this.jwt) {
       return errorResult(503, 'auth.unavailable', 'Access tokens are not configured.');
     }
-    const blockedFor = await this.limits().retryIfBlocked({
+    const perAddress = await this.limits().record({
+      subject: `${emailHmac}\u001e${input.ip || 'unknown'}`,
+      purpose: 'auth.verify.email_ip',
+      success: false,
+      now,
+      limit: VERIFY_EMAIL_IP_LIMIT,
+      windowMs: VERIFY_WINDOW_MS,
+    });
+    if (!perAddress.allowed) {
+      return rateLimited(perAddress.retryAfterSeconds);
+    }
+    const emailDecision = await this.limits().record({
       subject: emailHmac,
       purpose: 'auth.verify',
+      success: false,
       now,
+      limit: VERIFY_FAILURES_BEFORE_LIMIT - 1,
+      windowMs: VERIFY_WINDOW_MS,
     });
-    if (blockedFor !== null) {
-      return rateLimited(blockedFor);
+    if (!emailDecision.allowed) {
+      return rateLimited(emailDecision.retryAfterSeconds);
+    }
+    if (!/^\d{6}$/.test(input.code)) {
+      return errorResult(401, 'auth.code_invalid', 'The code is not valid.');
+    }
+    const reservedAttempt = await this.codes.reserveAttempt(emailHmac, now);
+    if (!reservedAttempt) {
+      return errorResult(401, 'auth.code_invalid', 'The code is not valid.');
     }
     const presented = authCodeHmac(input.code, this.secret());
-    const claimed = await this.codes.claimMatching(emailHmac, presented, now);
-    if (!claimed) {
-      const row = await this.codes.findLatest(emailHmac);
-      if (row && !row.usedAt && row.expiresAt > now) {
-        await this.codes.recordFailure(row.id);
-      }
-      const decision = await this.limits().record({
-        subject: emailHmac,
-        purpose: 'auth.verify',
-        success: false,
-        now,
-        limit: VERIFY_FAILURES_BEFORE_LIMIT - 1,
-        windowMs: VERIFY_WINDOW_MS,
-      });
+    if (!authCodeCompare.authCodesMatch(presented, reservedAttempt.codeHmac)) {
       await this.audit.append({
         action: 'auth.login.failed',
         userId: null,
@@ -198,9 +214,10 @@ export class AuthService {
         emailHmac,
         now,
       });
-      if (!decision.allowed) {
-        return rateLimited(decision.retryAfterSeconds);
-      }
+      return errorResult(401, 'auth.code_invalid', 'The code is not valid.');
+    }
+    const claimed = await this.codes.claimUnused(reservedAttempt.id, now);
+    if (!claimed) {
       return errorResult(401, 'auth.code_invalid', 'The code is not valid.');
     }
     const user = await this.users.findOrCreate(emailHmac);
@@ -239,7 +256,7 @@ export class AuthService {
     return errorResult(401, 'auth.refresh_invalid', 'The refresh token is not valid.');
   }
 
-  async logout(sid: string | undefined): Promise<AuthHttpResult> {
+  async logout(sid: string | undefined, userId?: string | null): Promise<AuthHttpResult> {
     if (!sid) {
       return errorResult(401, 'token_invalid', 'Invalid access token.');
     }
@@ -248,7 +265,7 @@ export class AuthService {
     await this.tokens().revokeFamily(sid, now);
     await this.audit.append({
       action: 'auth.logout',
-      userId: null,
+      userId: userId ?? null,
       sessionId: sid,
       emailHmac: null,
       now,
@@ -351,6 +368,26 @@ export class AuthService {
     return null;
   }
 
+  private async undoSends(emailHmac: string, ip: string, now: Date): Promise<void> {
+    const windowMs = this.limitsConfig.windowMs;
+    await this.limits().undo({
+      subject: emailHmac,
+      purpose: 'auth.code.email',
+      success: true,
+      now,
+      limit: this.limitsConfig.emailSendLimit,
+      windowMs,
+    });
+    await this.limits().undo({
+      subject: ip || 'unknown',
+      purpose: 'auth.code.ip',
+      success: true,
+      now,
+      limit: this.limitsConfig.ipSendLimit,
+      windowMs,
+    });
+  }
+
   private secret(): string {
     return serverSecret();
   }
@@ -400,6 +437,15 @@ interface RateStore {
     windowMs: number;
   }): Promise<RateLimitDecision>;
   retryIfBlocked(input: { subject: string; purpose: string; now: Date }): Promise<number | null>;
+  resetBucket(input: { subject: string; purpose: string }): Promise<void>;
+  undo(input: {
+    subject: string;
+    purpose: string;
+    success: boolean;
+    now: Date;
+    limit: number;
+    windowMs: number;
+  }): Promise<void>;
 }
 
 function newRefreshToken(): string {

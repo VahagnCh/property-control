@@ -2,13 +2,18 @@ import { createHash, randomUUID } from 'node:crypto';
 import { ConflictException, ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { generateAuthJwtKeys } from '../src/auth/access-jwt.js';
+import { FakeAuthEmailSender } from '../src/auth/auth-email.js';
+import * as authCodes from '../src/auth/auth-codes.js';
+import { AuthService } from '../src/auth/auth.service.js';
+import { MemorySessionDirectory } from '../src/auth/session-directory.js';
 import { PrismaIdempotencyKeys } from '../src/auth/idempotency-keys.js';
 import { PrismaRateLimits, authSubjectHmac, bucketKey } from '../src/auth/rate-limit.js';
 import { PrismaRefreshTokens } from '../src/auth/prisma-refresh-tokens.js';
 import { authCodeHmac } from '../src/auth/auth-codes.js';
 import { PrismaAuthAudit, PrismaAuthCodes, PrismaAuthSessions, PrismaAuthUsers } from '../src/auth/prisma-auth-store.js';
 import { hashToken } from '../src/auth/refresh-tokens.js';
-import { keyedHmac } from '../src/auth/server-secret.js';
+import { keyedHmac, serverSecret } from '../src/auth/server-secret.js';
 import { TEST_SERVER_SECRET } from './test-server-secret.js';
 import { PrismaConsentRepository } from '../src/consent/prisma-consent.repository.js';
 import { ConsentService } from '../src/consent/consent.service.js';
@@ -1234,6 +1239,67 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
     }
   });
 
+  it('reserves at most five verify compares when many IPs race the correct code', async () => {
+    const email = `race-${randomUUID()}@example.com`;
+    const pepper = serverSecret();
+    const emailHmac = keyedHmac(email, pepper, 'auth-email');
+    const started = new Date();
+    const codes = new GatedAuthCodes(prisma);
+    const sender = new FakeAuthEmailSender();
+    const service = new AuthService(
+      new MemorySessionDirectory(),
+      sender,
+      codes,
+      generateAuthJwtKeys('race'),
+      () => new Date(),
+      { emailSendLimit: 20, ipSendLimit: 100, verifyIpLimit: 100, windowMs: 60 * 60 * 1000 },
+      new PrismaAuthUsers(prisma),
+      undefined,
+      new PrismaAuthAudit(prisma),
+      new PrismaRateLimits(prisma, pepper),
+    );
+    const compare = vi.spyOn(authCodes.authCodeCompare, 'authCodesMatch');
+    try {
+      await service.requestCode({ email, ip: '198.51.100.200' });
+      const correct = sender.sent.at(-1)?.code ?? '';
+      expect(correct).toMatch(/^\d{6}$/);
+      const firstWave = Array.from({ length: 5 }, (_, index) =>
+        service.verifyCode({ email, code: '000000', ip: `203.0.113.${index + 1}` }),
+      );
+      await vi.waitFor(
+        () => {
+          expect(codes.waiting).toBe(4);
+        },
+        { timeout: 15_000, interval: 20 },
+      );
+      const rest = [
+        service.verifyCode({ email, code: correct, ip: '203.0.113.80' }),
+        ...Array.from({ length: 15 }, (_, index) =>
+          service.verifyCode({ email, code: '111111', ip: `203.0.113.${100 + index}` }),
+        ),
+      ];
+      codes.release();
+      const results = await Promise.all([...firstWave, ...rest]);
+      expect(results.some((result) => result.status === 200)).toBe(false);
+      expect(compare.mock.calls.length).toBeLessThanOrEqual(5);
+      const row = await prisma.authCode.findFirst({ where: { emailHmac } });
+      expect(row?.attempts ?? 0).toBeLessThanOrEqual(5);
+      expect(codes.compares).toBeLessThanOrEqual(5);
+    } finally {
+      compare.mockRestore();
+      codes.release();
+      await prisma.authCode.deleteMany({ where: { emailHmac } });
+      await prisma.authCodeAttempt.deleteMany({ where: { attemptedAt: { gte: started } } });
+      await prisma.rateLimit.deleteMany({ where: { updatedAt: { gte: started } } });
+      await ownerClient.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT set_config('session_replication_role', 'replica', true)`;
+        await tx.auditEvent.deleteMany({
+          where: { action: 'auth.login.failed', createdAt: { gte: started } },
+        });
+      });
+    }
+  });
+
   it('claims a code once and keeps the same user id in a new store', async () => {
     const codes = new PrismaAuthCodes(prisma);
     const emailHmac = keyedHmac('stable-login@example.com', 'pepper', 'auth-email');
@@ -1431,6 +1497,33 @@ function oneField(fieldPath: string, suggestedValue: string): OcrExtractor {
       ],
     }),
   };
+}
+
+class GatedAuthCodes extends PrismaAuthCodes {
+  compares = 0;
+  waiting = 0;
+  release: () => void = () => undefined;
+  private readonly open: Promise<void>;
+
+  constructor(prisma: PrismaClient) {
+    super(prisma);
+    this.open = new Promise((resolve) => {
+      this.release = resolve;
+    });
+  }
+
+  override async reserveAttempt(emailHmac: string, now: Date) {
+    const row = await super.reserveAttempt(emailHmac, now);
+    if (!row) {
+      return null;
+    }
+    this.compares += 1;
+    if (this.compares <= 4) {
+      this.waiting += 1;
+      await this.open;
+    }
+    return row;
+  }
 }
 
 class PrismaConsentAudit implements ConsentAuditLog {

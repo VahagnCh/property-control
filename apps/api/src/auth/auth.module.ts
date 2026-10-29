@@ -9,7 +9,8 @@ import {
 import { AUTH_EMAIL, authEmailSenderFromEnv } from './auth-email.js';
 import { AUTH_CODE_STORE, MemoryAuthCodes } from './auth-codes.js';
 import { AuthController } from './auth.controller.js';
-import { AuthService, MemoryAuthUsers } from './auth.service.js';
+import { AuthService, AUTH_IDEMPOTENCY, MemoryAuthUsers } from './auth.service.js';
+import { MemoryIdempotencyKeys, PrismaIdempotencyKeys } from './idempotency-keys.js';
 import { Es256AccessTokenVerifier } from './es256-access-token.verifier.js';
 import { PrismaAuthAudit, PrismaAuthCodes, PrismaAuthSessions, PrismaAuthUsers } from './prisma-auth-store.js';
 import { PrismaRefreshTokens } from './prisma-refresh-tokens.js';
@@ -80,6 +81,13 @@ import {
       },
     },
     { provide: AUTH_LIMITS, useFactory: () => authLimitsFromEnv() },
+    {
+      provide: AUTH_IDEMPOTENCY,
+      useFactory: () => {
+        const db = authDatabase();
+        return db ? new PrismaIdempotencyKeys(db) : new MemoryIdempotencyKeys();
+      },
+    },
     { provide: AUTH_CLOCK, useValue: () => new Date() },
     { provide: AUTH_JWT, useFactory: () => loadAuthJwt()?.current ?? null },
     {
@@ -110,7 +118,13 @@ export class AuthModule {}
 let authPrisma: PrismaClient | undefined;
 
 function authDatabase(): PrismaClient | null {
-  if (process.env.NODE_ENV === 'test' || !process.env.DATABASE_URL) {
+  if (process.env.NODE_ENV === 'test') {
+    return null;
+  }
+  if (!process.env.DATABASE_URL) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('DATABASE_URL is required in production.');
+    }
     return null;
   }
   authPrisma ??= new PrismaClient();

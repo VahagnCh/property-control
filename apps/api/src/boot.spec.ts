@@ -91,4 +91,15 @@ describe('prepareBoot', () => {
     );
     expect(hits).toEqual([]);
   });
+
+  it('rejects the Resend onboarding sender in production when an API key is set', async () => {
+    const env = publishedEnv(validSecret);
+    env.NODE_ENV = 'production';
+    env.RESEND_API_KEY = 're_test';
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/AUTH_EMAIL_FROM/);
+    env.AUTH_EMAIL_FROM = 'DueRecord <onboarding@resend.dev>';
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/AUTH_EMAIL_FROM/);
+    env.AUTH_EMAIL_FROM = 'DueRecord <hello@example.com>';
+    await expect(prepareBoot(env, async () => true)).resolves.toBeUndefined();
+  });
 });

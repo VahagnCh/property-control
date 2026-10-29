@@ -20,6 +20,19 @@ export function authEmailFromEnv(env: NodeJS.ProcessEnv = process.env): string {
   return env.AUTH_EMAIL_FROM?.trim() || 'DueRecord <onboarding@resend.dev>';
 }
 
+export function assertProductionEmailFrom(env: NodeJS.ProcessEnv): void {
+  if (env.NODE_ENV !== 'production') {
+    return;
+  }
+  if (!env.RESEND_API_KEY?.trim()) {
+    return;
+  }
+  const from = env.AUTH_EMAIL_FROM?.trim() ?? '';
+  if (from.length === 0 || from.includes('onboarding@resend.dev')) {
+    throw new Error('AUTH_EMAIL_FROM must be a verified sender when RESEND_API_KEY is set.');
+  }
+}
+
 /** Production never falls back to the fake. No key means auth/code fails closed. */
 export function authEmailSenderFromEnv(env: NodeJS.ProcessEnv = process.env): AuthEmailSender {
   const apiKey = env.RESEND_API_KEY?.trim() ?? '';

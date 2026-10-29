@@ -22,6 +22,11 @@ export type ReserveResult =
   | { outcome: 'replay'; responseStatus: number; responseBody: unknown }
   | { outcome: 'in_progress' };
 
+export interface IdempotencyStore {
+  reserve(input: IdempotencyInput): Promise<ReserveResult>;
+  complete(id: string, responseStatus: number, responseBody: unknown): Promise<void>;
+}
+
 interface StoredKey {
   id: string;
   userId: string | null;

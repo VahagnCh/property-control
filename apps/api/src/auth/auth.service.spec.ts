@@ -1,6 +1,7 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { generateAuthJwtKeys } from './access-jwt.js';
 import { MemoryAuthAudit } from './auth-audit.js';
+import * as authCodes from './auth-codes.js';
 import { MemoryAuthCodes } from './auth-codes.js';
 import { FakeAuthEmailSender } from './auth-email.js';
 import { AuthService } from './auth.service.js';
@@ -129,5 +130,105 @@ describe('login email', () => {
     const { service } = harness({ sender: new UnconfiguredAuthEmailSender() });
     const result = await service.requestCode({ email: 'e@example.com', ip: '198.51.100.50' });
     expect(result).toMatchObject({ status: 503, body: { error: 'auth.unavailable' } });
+  });
+
+  it('compares a presented code with authCodesMatch', async () => {
+    const spy = vi.spyOn(authCodes.authCodeCompare, 'authCodesMatch');
+    const { service, sender } = harness({
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    await service.requestCode({ email: 'match@example.com', ip: '198.51.100.80' });
+    const code = sender.sent[0]?.code ?? '';
+    const wrong = await service.verifyCode({ email: 'match@example.com', code: '000000', ip: '198.51.100.81' });
+    expect(wrong.status).toBe(401);
+    expect(spy).toHaveBeenCalled();
+    spy.mockClear();
+    const ok = await service.verifyCode({ email: 'match@example.com', code, ip: '198.51.100.82' });
+    expect(ok.status).toBe(200);
+    expect(spy).toHaveBeenCalled();
+    const skipped = await service.verifyCode({ email: 'match@example.com', code: '12', ip: '198.51.100.83' });
+    expect(skipped.status).toBe(401);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it('stops one IP after three wrong verifies without locking the email', async () => {
+    const { service, sender } = harness({
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    await service.requestCode({ email: 'lock@example.com', ip: '203.0.113.1' });
+    const code = sender.sent[0]?.code ?? '';
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const wrong = await service.verifyCode({
+        email: 'lock@example.com',
+        code: '000000',
+        ip: '203.0.113.9',
+      });
+      expect(wrong.status).toBe(401);
+    }
+    const blocked = await service.verifyCode({ email: 'lock@example.com', code, ip: '203.0.113.9' });
+    expect(blocked.status).toBe(429);
+    const other = await service.verifyCode({ email: 'lock@example.com', code, ip: '203.0.113.10' });
+    expect(other.status).toBe(200);
+  });
+
+  it('retries a code after Resend returns 500 without starting the cooldown', async () => {
+    let calls = 0;
+    const sender = new ResendAuthEmailSender({
+      apiKey: 're_test',
+      from: 'DueRecord <verified@example.com>',
+      fetchImpl: (async () => {
+        calls += 1;
+        if (calls === 1) {
+          return new Response('no', { status: 500 });
+        }
+        return new Response('{}', { status: 200 });
+      }) as typeof fetch,
+    });
+    const { service, clock } = harness({
+      sender: sender as unknown as FakeAuthEmailSender,
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    const first = await service.requestCode({ email: 'retry@example.com', ip: '198.51.100.70' });
+    expect(first.status).toBe(503);
+    const second = await service.requestCode({ email: 'retry@example.com', ip: '198.51.100.71' });
+    expect(second.status).toBe(202);
+    expect(calls).toBe(2);
+    for (let index = 0; index < 4; index += 1) {
+      clock.current = new Date(clock.current.getTime() + 61_000);
+      const sent = await service.requestCode({
+        email: 'retry@example.com',
+        ip: `198.51.100.${72 + index}`,
+      });
+      expect(sent.status).toBe(202);
+    }
+    expect(calls).toBe(6);
+  });
+
+  it('lets a delivered code clear an email that already hit the verify cap', async () => {
+    const { service, sender, clock } = harness({
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    await service.requestCode({ email: 'reset@example.com', ip: '203.0.113.1' });
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const wrong = await service.verifyCode({
+        email: 'reset@example.com',
+        code: '000000',
+        ip: `203.0.113.${attempt + 2}`,
+      });
+      expect(wrong.status).toBe(401);
+    }
+    const blocked = await service.verifyCode({
+      email: 'reset@example.com',
+      code: '000000',
+      ip: '203.0.113.20',
+    });
+    expect(blocked.status).toBe(429);
+    clock.current = new Date(clock.current.getTime() + 61_000);
+    const resent = await service.requestCode({ email: 'reset@example.com', ip: '203.0.113.21' });
+    expect(resent.status).toBe(202);
+    const code = sender.sent.at(-1)?.code ?? '';
+    const ok = await service.verifyCode({ email: 'reset@example.com', code, ip: '203.0.113.22' });
+    expect(ok.status).toBe(200);
   });
 });
