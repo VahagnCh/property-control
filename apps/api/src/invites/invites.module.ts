@@ -16,8 +16,9 @@ import {
  * restarts those 7 days. Accept is not property-scoped: the token identifies
  * the property. Accept checks, in order: unknown token or the wrong account
  * is 404 before any token state is revealed; used, revoked, superseded, or
- * expired is 410; an invitee who is already a member is 409. A non-owner
- * invite action is 403. Acceptance requires the invited email.
+ * expired is 410; an invitee who is already a member is 409. A non-member
+ * or an unknown property is 404. A member who is not the owner is 403.
+ * Acceptance requires the invited email.
  */
 @Controller('properties/:propertyId/invites')
 export class InvitesController {
