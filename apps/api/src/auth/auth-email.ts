@@ -1,4 +1,3 @@
-import { normalizeAuthEmail } from './auth-codes.js';
 import { UnconfiguredAuthEmailSender, ResendAuthEmailSender } from './resend-auth-email.js';
 
 /** Login mail. Production uses Resend. Tests and local dev use the fake when no key is set. */
@@ -27,9 +26,17 @@ export function isDefaultAuthEmailFrom(env: NodeJS.ProcessEnv = process.env): bo
   return from.length === 0 || from.includes('onboarding@resend.dev');
 }
 
+const NON_PRODUCTION_APP_ENVS = new Set(['staging', 'development', 'test']);
+
+/** Trim, then lower-case. Allow-list checks use this exact form on both sides. */
+export function normalizeAllowListEmail(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 /**
  * Addresses that may receive a code while the sandbox sender is in use.
  * Null means the variable is unset, so every valid address may be sent.
+ * Entries are trim + lower-case, and comparison is exact.
  */
 export function authEmailAllowList(env: NodeJS.ProcessEnv = process.env): Set<string> | null {
   const raw = env.AUTH_EMAIL_ALLOWED_RECIPIENTS?.trim() ?? '';
@@ -39,16 +46,22 @@ export function authEmailAllowList(env: NodeJS.ProcessEnv = process.env): Set<st
   return new Set(
     raw
       .split(',')
-      .map((item) => normalizeAuthEmail(item))
+      .map((item) => normalizeAllowListEmail(item))
       .filter((item) => item.length > 0),
   );
+}
+
+/** Missing or unknown APP_ENV is production, so the sandbox sender cannot slip through. */
+export function appEnvIsProduction(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.APP_ENV?.trim() ?? '';
+  return !NON_PRODUCTION_APP_ENVS.has(value);
 }
 
 export function assertAuthEmailFrom(env: NodeJS.ProcessEnv): void {
   if (!isDefaultAuthEmailFrom(env)) {
     return;
   }
-  if (env.APP_ENV?.trim() === 'production') {
+  if (appEnvIsProduction(env)) {
     throw new Error('AUTH_EMAIL_FROM must be a verified sender when APP_ENV is production.');
   }
   const allowList = authEmailAllowList(env);

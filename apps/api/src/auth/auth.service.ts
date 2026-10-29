@@ -1,7 +1,13 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Injectable, Optional, Inject } from '@nestjs/common';
 import { signAccessToken, type AuthJwtConfig } from './access-jwt.js';
-import { AUTH_EMAIL, FakeAuthEmailSender, authEmailAllowList, type AuthEmailSender } from './auth-email.js';
+import {
+  AUTH_EMAIL,
+  FakeAuthEmailSender,
+  authEmailAllowList,
+  normalizeAllowListEmail,
+  type AuthEmailSender,
+} from './auth-email.js';
 import {
   AUTH_ACCEPTED_BODY,
   AUTH_CODE_STORE,
@@ -119,7 +125,7 @@ export class AuthService {
       return errorResult(503, 'auth.unavailable', 'Login email is not configured.');
     }
     const allowList = authEmailAllowList();
-    if (allowList && !allowList.has(email)) {
+    if (allowList && !allowList.has(normalizeAllowListEmail(input.email))) {
       return accepted();
     }
     const now = this.clock();

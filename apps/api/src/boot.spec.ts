@@ -116,4 +116,19 @@ describe('prepareBoot', () => {
     env.AUTH_EMAIL_ALLOWED_RECIPIENTS = 'person@example.com';
     await expect(prepareBoot(env, async () => true)).resolves.toBeUndefined();
   });
+
+  it('treats a missing or unknown APP_ENV as production for the onboarding sender', async () => {
+    const env = publishedEnv(validSecret);
+    env.NODE_ENV = 'production';
+    env.AUTH_EMAIL_FROM = 'DueRecord <onboarding@resend.dev>';
+    env.AUTH_EMAIL_ALLOWED_RECIPIENTS = 'person@example.com';
+    delete env.APP_ENV;
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/AUTH_EMAIL_FROM/);
+    env.APP_ENV = '   ';
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/AUTH_EMAIL_FROM/);
+    env.APP_ENV = 'preview';
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/AUTH_EMAIL_FROM/);
+    env.APP_ENV = 'staging';
+    await expect(prepareBoot(env, async () => true)).resolves.toBeUndefined();
+  });
 });
