@@ -1,6 +1,7 @@
 import { act, render, screen } from '@testing-library/react-native';
 import * as ExpoLinking from 'expo-linking';
 import { ReactNode } from 'react';
+import { COPY } from '../copy/userFacing';
 import App from '../../App';
 
 const UUID = '11111111-1111-4111-8111-111111111111';
@@ -37,7 +38,7 @@ describe('App linking entry', () => {
     );
     const view = render(<App />);
 
-    expect(await screen.findByText('Inicia sesión para abrir esta notificación.')).toBeTruthy();
+    expect(await screen.findByText(COPY['notif.signIn.body'])).toBeTruthy();
     expect(JSON.stringify(screen.toJSON())).not.toContain(UUID);
     expect(JSON.stringify(screen.toJSON())).not.toContain('sekret-access');
     expect(JSON.stringify(screen.toJSON())).not.toContain('access_token');

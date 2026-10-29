@@ -87,7 +87,7 @@ Calendar, reports, and settings are later. Settings enter from the profile avata
 
 ## Monorepo
 
-pnpm workspaces. Node 20.19 or newer (22 is what `.nvmrc` pins).
+pnpm workspaces. Node 22.13 or newer (`.nvmrc` pins 22). Expo SDK 58 requires that Node line.
 
 ```text
 .

@@ -53,11 +53,45 @@ describe('invite accept and manage', () => {
     ).toEqual({ status: 200, error: null });
   });
 
-  it('returns 403 unless the actor is an owner', () => {
+  it('returns 404 for a non-member and for an unknown property', () => {
+    expect(decideInviteManage(null)).toEqual({ status: 404, error: 'not_found' });
+  });
+
+  it('returns 403 when a member is not the owner', () => {
     expect(decideInviteManage('member')).toEqual({ status: 403, error: 'forbidden' });
     expect(decideInviteManage('viewer')).toEqual({ status: 403, error: 'forbidden' });
-    expect(decideInviteManage(null)).toEqual({ status: 403, error: 'forbidden' });
+  });
+
+  it('allows the owner', () => {
     expect(decideInviteManage('owner')).toEqual({ status: 200, error: null });
+  });
+
+  it('returns 401 before 404 when the token fails', () => {
+    for (const token of ['token_missing', 'token_invalid', 'token_expired'] as const) {
+      expect(decideInviteManage(null, { token })).toEqual({ status: 401, error: token });
+    }
+  });
+
+  it('returns 400 before 404 when the request is invalid', () => {
+    expect(decideInviteManage(null, { request: 'bad_request' })).toEqual({
+      status: 400,
+      error: 'bad_request',
+    });
+    expect(decideInviteManage(null, { request: 'payload_too_large' })).toEqual({
+      status: 413,
+      error: 'payload_too_large',
+    });
+  });
+
+  it('returns 501 before 401, and consent only after the owner check', () => {
+    expect(
+      decideInviteManage(null, { stubbed: true, token: 'token_missing', request: 'bad_request' }),
+    ).toEqual({ status: 501, error: 'not_implemented' });
+    expect(decideInviteManage('member', { consent: false })).toEqual({ status: 403, error: 'forbidden' });
+    expect(decideInviteManage('owner', { consent: false })).toEqual({
+      status: 403,
+      error: 'consent_required',
+    });
   });
 
   it('stores an HMAC of the email, not the address', () => {

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { notFoundException } from '../common/not-found.js';
+import { evidenceSourceKey, storageEnvFromConfig } from './storage-key.js';
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -22,9 +23,11 @@ interface PrivateFile {
 export class PropertyFileIds {
   private readonly files = new Map<string, PrivateFile>();
 
+  constructor(private readonly config: NodeJS.ProcessEnv = process.env) {}
+
   issue(propertyId: string): IssuedFile {
     const fileId = randomUUID();
-    const sourceKey = `properties/${propertyId}/evidence/${randomUUID()}/${randomUUID()}`;
+    const sourceKey = evidenceSourceKey(storageEnvFromConfig(this.config));
     this.files.set(fileId, { fileId, propertyId, sourceKey });
     return { fileId };
   }
