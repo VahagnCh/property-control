@@ -303,6 +303,139 @@ describe('email code auth', () => {
     });
     await request(server).get('/v1/auth/session').set('Authorization', `Bearer ${expired}`).expect(401);
   });
+
+  it('rejects a missing or malformed Authorization header and a tampered signature', async () => {
+    at('2026-10-30T00:00:00.000Z');
+    const server = app.getHttpServer();
+    await request(server).get('/v1/auth/session').expect(401);
+    await request(server).get('/v1/auth/session').set('Authorization', 'Bearer').expect(401);
+    await request(server).get('/v1/auth/session').set('Authorization', 'Bearer ').expect(401);
+    await request(server).get('/v1/auth/session').set('Authorization', 'Token abc').expect(401);
+    const minted = signAccessToken(keys, { sub: 'user-1', sid: 'sid-1', now: clock.current });
+    const parts = minted.split('.');
+    const signature = parts[2] ?? '';
+    const flipped = signature.slice(0, -1) + (signature.endsWith('a') ? 'b' : 'a');
+    const tampered = await request(server)
+      .get('/v1/auth/session')
+      .set('Authorization', `Bearer ${parts[0]}.${parts[1]}.${flipped}`)
+      .expect(401);
+    expect(tampered.body.error).toMatch(/token_/);
+    expect(JSON.stringify(tampered.body)).not.toContain(minted);
+  });
+
+  it('returns the same refresh token inside the 30 second grace', async () => {
+    at('2026-10-30T01:00:00.000Z');
+    const server = app.getHttpServer();
+    await request(server)
+      .post('/v1/auth/code')
+      .set('X-Forwarded-For', '203.0.113.80')
+      .send({ email: 'grace@example.com' })
+      .expect(202);
+    const code = sender.sent.at(-1)?.code ?? '';
+    const verified = await request(server)
+      .post('/v1/auth/verify')
+      .send({ email: 'grace@example.com', code })
+      .expect(200);
+    const original = verified.body.refreshToken as string;
+    const rotated = await request(server).post('/v1/auth/refresh').send({ refreshToken: original }).expect(200);
+    at('2026-10-30T01:00:10.000Z');
+    const grace = await request(server).post('/v1/auth/refresh').send({ refreshToken: original }).expect(200);
+    expect(grace.body.refreshToken).toBe(rotated.body.refreshToken);
+    expect(JSON.stringify(grace.body)).not.toContain(code);
+    await request(server)
+      .get('/v1/auth/session')
+      .set('Authorization', `Bearer ${grace.body.accessToken as string}`)
+      .expect(200);
+  });
+
+  it('expires a refresh token after 30 idle days without revoking the family', async () => {
+    at('2026-10-30T02:00:00.000Z');
+    const server = app.getHttpServer();
+    await request(server)
+      .post('/v1/auth/code')
+      .set('X-Forwarded-For', '203.0.113.90')
+      .send({ email: 'idle@example.com' })
+      .expect(202);
+    const code = sender.sent.at(-1)?.code ?? '';
+    const verified = await request(server)
+      .post('/v1/auth/verify')
+      .send({ email: 'idle@example.com', code })
+      .expect(200);
+    const refreshToken = verified.body.refreshToken as string;
+    at(new Date(clock.current.getTime() + 30 * 24 * 60 * 60 * 1000 + 1000).toISOString());
+    const expired = await request(server).post('/v1/auth/refresh').send({ refreshToken }).expect(401);
+    expect(expired.body.error).toBe('auth.refresh_invalid');
+    expect(JSON.stringify(expired.body)).not.toContain(refreshToken);
+    expect(JSON.stringify(expired.body)).not.toContain(code);
+    const again = await request(server).post('/v1/auth/refresh').send({ refreshToken }).expect(401);
+    expect(again.body.error).toBe('auth.refresh_invalid');
+  });
+
+  it('stops a refresh at the 90 day absolute cap', async () => {
+    const start = new Date('2026-11-01T00:00:00.000Z');
+    at(start.toISOString());
+    const server = app.getHttpServer();
+    await request(server)
+      .post('/v1/auth/code')
+      .set('X-Forwarded-For', '203.0.113.91')
+      .send({ email: 'absolute@example.com' })
+      .expect(202);
+    const code = sender.sent.at(-1)?.code ?? '';
+    const verified = await request(server)
+      .post('/v1/auth/verify')
+      .send({ email: 'absolute@example.com', code })
+      .expect(200);
+    let refreshToken = verified.body.refreshToken as string;
+    for (const day of [29, 58, 87]) {
+      at(new Date(start.getTime() + day * 24 * 60 * 60 * 1000).toISOString());
+      const rotated = await request(server).post('/v1/auth/refresh').send({ refreshToken }).expect(200);
+      refreshToken = rotated.body.refreshToken as string;
+    }
+    at(new Date(start.getTime() + 90 * 24 * 60 * 60 * 1000 + 1000).toISOString());
+    const capped = await request(server).post('/v1/auth/refresh').send({ refreshToken }).expect(401);
+    expect(capped.body.error).toBe('auth.refresh_invalid');
+    expect(JSON.stringify(capped.body)).not.toContain(refreshToken);
+    expect(JSON.stringify(capped.body)).not.toContain(code);
+  });
+
+  it('does not write the code or refresh token to logs or error bodies', async () => {
+    at('2026-12-01T00:00:00.000Z');
+    const server = app.getHttpServer();
+    await request(server)
+      .post('/v1/auth/code')
+      .set('X-Forwarded-For', '203.0.113.95')
+      .send({ email: 'quiet@example.com' })
+      .expect(202);
+    const code = sender.sent.at(-1)?.code ?? '';
+    const verified = await request(server)
+      .post('/v1/auth/verify')
+      .send({ email: 'quiet@example.com', code })
+      .expect(200);
+    const refreshToken = verified.body.refreshToken as string;
+    const captured: string[] = [];
+    const methods = ['log', 'info', 'warn', 'error', 'debug'] as const;
+    const originals = methods.map((method) => console[method]);
+    for (const method of methods) {
+      console[method] = (...args: unknown[]) => {
+        captured.push(args.map((arg) => String(arg)).join(' '));
+      };
+    }
+    try {
+      const wrong = await request(server)
+        .post('/v1/auth/verify')
+        .send({ email: 'quiet@example.com', code: '000000' })
+        .expect(401);
+      const reused = await request(server).post('/v1/auth/refresh').send({ refreshToken: 'rt_not-a-real-token' }).expect(401);
+      const text = `${JSON.stringify(wrong.body)} ${JSON.stringify(reused.body)} ${captured.join('\n')}`;
+      expect(text).not.toContain(code);
+      expect(text).not.toContain(refreshToken);
+      expect(text).not.toContain('quiet@example.com');
+    } finally {
+      methods.forEach((method, index) => {
+        console[method] = originals[index] as (typeof console)[typeof method];
+      });
+    }
+  });
 });
 
 describe('unknown property', () => {
