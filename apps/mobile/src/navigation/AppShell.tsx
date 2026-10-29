@@ -3,23 +3,11 @@ import * as Linking from 'expo-linking';
 import { useEffect, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { COPY } from '../copy/userFacing';
-import { readSession } from '../session/readSession';
-import { parseDeepLink, tabDeepLink, type TabScreen } from './deepLink';
+import { useHasSession } from '../session/useHasSession';
+import { parseDeepLink } from './deepLink';
+import { dropHeld, settleHeld, type Held, type Place } from './heldLink';
 import { linking } from './linking';
 import { AppTabs } from './tabs';
-
-type Place =
-  | { name: 'inicio'; tabUrl: string | null }
-  | { name: 'sign-in' }
-  | { name: 'notification' };
-
-/** The nid stays here and is never passed into the rendered tree. */
-type Held =
-  | { kind: 'notification'; nid: string }
-  | { kind: 'tab'; screen: TabScreen }
-  | { kind: 'inicio' };
-
-const SIGN_IN_BODY = 'Inicia sesión para abrir esta notificación.';
 
 function holdFromUrl(url: string): Held | null {
   const parsed = parseDeepLink(url);
@@ -36,12 +24,13 @@ function holdFromUrl(url: string): Held | null {
 }
 
 /**
- * Subscribes to the real linking URL. There is no session until auth storage exists,
- * so a notification link stops on sign-in. Ahora no and Cancelar drop it and open Inicio.
- * The notification screen is a stub: every nid gets the same not-found copy.
+ * Subscribes to the real linking URL. Session is read once per mount until auth
+ * subscribes, so a notification link stops on sign-in. Ahora no and Cancelar drop
+ * it and open Inicio. The notification screen is a stub: every nid gets the same
+ * not-found copy. A held nid is cleared once it is opened or dropped.
  */
 export function AppShell() {
-  const hasSession = readSession();
+  const hasSession = useHasSession();
   const [held, setHeld] = useState<Held | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const [place, setPlace] = useState<Place>({ name: 'inicio', tabUrl: null });
@@ -82,31 +71,37 @@ export function AppShell() {
     if (!held || dismissed) {
       return;
     }
-    if (held.kind === 'notification') {
-      setPlace(hasSession ? { name: 'notification' } : { name: 'sign-in' });
-      return;
+    const next = settleHeld(held, hasSession);
+    setPlace(next.place);
+    if (next.held === null) {
+      setHeld(null);
     }
-    if (held.kind === 'tab') {
-      setPlace({ name: 'inicio', tabUrl: tabDeepLink(held.screen) });
-      return;
-    }
-    setPlace({ name: 'inicio', tabUrl: null });
   }, [held, dismissed, hasSession]);
 
   function leaveToInicio() {
+    const next = dropHeld();
+    setHeld(null);
     setDismissed(true);
-    setPlace({ name: 'inicio', tabUrl: null });
+    setPlace(next.place);
   }
 
   if (place.name === 'sign-in') {
     return (
       <View>
-        <Text>{SIGN_IN_BODY}</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="Ahora no" onPress={leaveToInicio}>
-          <Text>Ahora no</Text>
+        <Text>{COPY['notif.signIn.body']}</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={COPY['notif.signIn.notNow']}
+          onPress={leaveToInicio}
+        >
+          <Text>{COPY['notif.signIn.notNow']}</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" accessibilityLabel="Cancelar" onPress={leaveToInicio}>
-          <Text>Cancelar</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={COPY['notif.signIn.cancel']}
+          onPress={leaveToInicio}
+        >
+          <Text>{COPY['notif.signIn.cancel']}</Text>
         </Pressable>
       </View>
     );

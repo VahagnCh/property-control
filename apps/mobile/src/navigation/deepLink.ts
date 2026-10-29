@@ -6,6 +6,10 @@ export const APP_SCHEME = 'duerecord';
 /** 8-4-4-4-12 hex. Case-insensitive. Not a free-form slug. */
 const NID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+export function isNotificationId(value: string): boolean {
+  return NID.test(value);
+}
+
 const TAB_BY_SEGMENT = {
   propiedades: 'Propiedades',
   pagos: 'Pagos',
@@ -69,10 +73,6 @@ function segmentsAfterScheme(
     return 'unhandled';
   }
   return rest.split('/');
-}
-
-function isNotificationId(value: string): boolean {
-  return NID.test(value);
 }
 
 /**

@@ -123,7 +123,7 @@ describe("DueRecord edge-case rules", () => {
 
   it.todo("EC-9.1 When a saved field already has a persisted value, replace writes an audit with the server-side previous value, the new value, action replace, the suggestionId, and the actor. accept or edit returns 409 with error field_already_set and does not mark the suggestion accepted. reject leaves the value unchanged.");
 
-  it.todo("EC-9.2 A replace is audited only when the record is saved, not before. The audit event name is ocr.replaced, not ocr_replace. Unsaved Reemplazar writes no audit. On save, that audit records ocr.replaced and the suggestionId, and it does not store a client-typed previous value. A request that contains clientPriorValue returns 422. A bulk accept-all returns 422.");
+  it.todo("EC-9.2 A replace is audited only when the record is saved, not before. The audit event name is ocr.replaced, not ocr_replace. Unsaved Reemplazar writes no audit. On save, that audit records ocr.replaced and the suggestionId, and it does not store a client-typed previous value. A request that contains clientPriorValue returns 422. A bulk accept-all returns 422. The notes and maintenance description audit stores only {length, sha256} in before_state and after_state, from the NFC-normalized, LF-normalized text. length is UTF-16 code units, sha256 is the hex SHA-256 of those bytes, and the raw text is never stored.");
 
   it.todo("EC-10.1 The consent screen shows whenever consent.required is true. That covers first sign-in, any sign-in after Ahora no, and any sign-in after an aviso version change. The checkbox starts unchecked, and Continuar stays disabled until it is checked.");
 
@@ -181,12 +181,12 @@ describe("DueRecord edge-case rules", () => {
 
   it.todo("EC-13.3 Only a 422 aviso_version_mismatch shows consent.updated. A 503 never shows consent.updated.");
 
-  it.todo("EC-14.1 A pending notification link is kept in memory only and is never persisted (brief §11.4). The held nid is AppShell state only. It is never written to SecureStore or AsyncStorage.");
+  it.todo("EC-14.1 A pending notification link is kept in memory only and is never persisted (brief §11.4). The held nid is AppShell state only. It is never written to SecureStore or AsyncStorage. The held nid is cleared when the stub opens and when Ahora no or Cancelar drops the link.");
 
-  it.todo("EC-14.2 Production, store, and TestFlight builds register and accept only duerecord://. A duerecord://notificaciones/<uuid> link opens a stub screen. The nid is an 8-4-4-4-12 hex id. The path is exactly those two segments. A dot-dot segment, an empty segment, a trailing slash, or a host or port opens Inicio. The same path on an Expo Go exp://…/--/ link is accepted only while running in Expo Go or a dev build.");
+  it.todo("EC-14.2 Production, store, and TestFlight builds register and accept only duerecord://. A duerecord://notificaciones/<uuid> link opens a stub screen. The nid is an 8-4-4-4-12 hex id. The path is exactly those two segments. A dot-dot segment, an empty segment, a trailing slash, or a host or port opens Inicio. exp:// and exps:// are accepted only while running in Expo Go or a dev build. The dev-prefix gate covers both exp:// and exps://. The navigation map does not register notificaciones/:nid. Routing stays in AppShell.");
 
   it.todo("EC-14.3 The stub shows the same not-found copy for every nid. notif.notFound.title is Esta notificación ya no está disponible. notif.notFound.body is Puede que se haya eliminado o que no tengas acceso. notif.notFound.cta is Ir a Inicio. The call to action opens Inicio. The screen does not render the nid or any other text taken from the URL.");
 
-  it.todo("EC-14.4 Without a session the link stops on sign-in. Ahora no and Cancelar drop it and open Inicio. There is no auth storage in this client. Tokens, when they land, use expo-secure-store and never AsyncStorage. Query and fragment are removed before a route receives params. property-control:// is not handled.");
+  it.todo("EC-14.4 Without a session the link stops on sign-in. Ahora no and Cancelar drop it and open Inicio. The session flag is read once per mount. Tokens are stored by apps/mobile/src/auth/tokenStore.ts in expo-secure-store with WHEN_UNLOCKED_THIS_DEVICE_ONLY, and never in AsyncStorage. Query and fragment are removed before a route receives params. property-control:// is not handled.");
 
 });

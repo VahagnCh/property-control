@@ -51,6 +51,14 @@ const FIELDS = new Map<string, FieldRule>([
   ['notes', { kind: 'text', entities: ['obligation', 'payment'], maxLength: 2000, multiline: true }],
 ]);
 
+/**
+ * Trust rev f.5 §9. Notes, maintenance description, and any other multi-line
+ * free-text field are length + hash in audit states, never the body.
+ */
+export function isMultilineAuditField(fieldPath: string): boolean {
+  return FIELDS.get(fieldPath)?.multiline === true || fieldPath === 'description';
+}
+
 const FORBIDDEN_PATHS = new Set(['__proto__', 'constructor', 'prototype']);
 
 export type ConfidenceBandName = 'alta' | 'media' | 'revisa';
