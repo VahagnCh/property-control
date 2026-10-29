@@ -86,9 +86,9 @@ describe('ES256 access tokens', () => {
   it('rejects a tampered ES256 signature', () => {
     const token = signAccessToken(keys, { sub: 'user-1', sid: 'session-1', now: NOW });
     const parts = token.split('.');
-    const signature = parts[2] ?? '';
-    const flipped = signature.slice(0, -1) + (signature.endsWith('a') ? 'b' : 'a');
-    expect(verifyAccessToken(keys, `${parts[0]}.${parts[1]}.${flipped}`, NOW)).toEqual({
+    const raw = Buffer.from(parts[2] ?? '', 'base64url');
+    raw[0] = (raw[0] ?? 0) ^ 0xff;
+    expect(verifyAccessToken(keys, `${parts[0]}.${parts[1]}.${raw.toString('base64url')}`, NOW)).toEqual({
       ok: false,
       reason: 'invalid',
     });

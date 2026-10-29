@@ -313,11 +313,11 @@ describe('email code auth', () => {
     await request(server).get('/v1/auth/session').set('Authorization', 'Token abc').expect(401);
     const minted = signAccessToken(keys, { sub: 'user-1', sid: 'sid-1', now: clock.current });
     const parts = minted.split('.');
-    const signature = parts[2] ?? '';
-    const flipped = signature.slice(0, -1) + (signature.endsWith('a') ? 'b' : 'a');
+    const raw = Buffer.from(parts[2] ?? '', 'base64url');
+    raw[0] = (raw[0] ?? 0) ^ 0xff;
     const tampered = await request(server)
       .get('/v1/auth/session')
-      .set('Authorization', `Bearer ${parts[0]}.${parts[1]}.${flipped}`)
+      .set('Authorization', `Bearer ${parts[0]}.${parts[1]}.${raw.toString('base64url')}`)
       .expect(401);
     expect(tampered.body.error).toMatch(/token_/);
     expect(JSON.stringify(tampered.body)).not.toContain(minted);
