@@ -1,6 +1,6 @@
 export const ACCESS_TOKEN_VERIFIER = Symbol('ACCESS_TOKEN_VERIFIER');
 
-export type AccessTokenVerdict = { sub: string } | 'invalid' | 'expired';
+export type AccessTokenVerdict = { sub: string; sid?: string } | 'invalid' | 'expired';
 
 export interface AccessTokenVerifier {
   verify(token: string): AccessTokenVerdict;
@@ -9,7 +9,7 @@ export interface AccessTokenVerifier {
 export type TokenErrorCode = 'token_missing' | 'token_invalid' | 'token_expired';
 
 export type BearerCheck =
-  | { ok: true; sub: string }
+  | { ok: true; sub: string; sid?: string }
   | { ok: false; error: TokenErrorCode; message: string };
 
 /** Shared by the guard and the OCR middleware so a bad token is 401 before path or JSON parsing. */
@@ -32,7 +32,7 @@ export function verifyBearer(
   if (!verdict || verdict === 'invalid' || typeof verdict.sub !== 'string' || verdict.sub.length === 0) {
     return { ok: false, error: 'token_invalid', message: 'Invalid access token.' };
   }
-  return { ok: true, sub: verdict.sub };
+  return { ok: true, sub: verdict.sub, sid: verdict.sid };
 }
 
 /**

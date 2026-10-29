@@ -53,7 +53,7 @@ One Nest module per entity group, matching the module table in the formal v0 doc
 - OCR routes are in memory and stay **501** unless `OCR_STUB_ENABLED` is set. When it is on, they require an access token and a property membership.
 - `GET /v1/health` checks the database with `SELECT 1` and is the only health route.
 
-The modules present: `health`, `auth`, `users`, `home`, `properties`, `memberships`, `invites`, `obligations`, `payments`, `evidence`, `maintenance`, `documents`, `reminders`, `audit`, `ocr`. The stub maps **57** routes.
+The modules present: `health`, `auth`, `users`, `home`, `properties`, `memberships`, `invites`, `obligations`, `payments`, `evidence`, `maintenance`, `documents`, `reminders`, `audit`, `ocr`. The stub maps **62** routes.
 
 Not present yet, and named in formal v0: `StorageModule` (signed PUT and GET, delete on hard delete) and `RetentionModule` (the 30-day soft-to-hard delete job).
 

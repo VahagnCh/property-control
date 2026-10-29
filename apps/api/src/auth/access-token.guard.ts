@@ -4,7 +4,7 @@ import { ACCESS_TOKEN_VERIFIER, verifyBearer, type AccessTokenVerifier } from '.
 
 interface RequestWithAuth {
   headers: Record<string, string | string[] | undefined>;
-  accessToken?: { sub: string };
+  accessToken?: { sub: string; sid?: string };
 }
 
 /**
@@ -22,7 +22,7 @@ export class AccessTokenGuard implements CanActivate {
     if (!verdict.ok) {
       throw ocrUnauthorized(verdict.error, verdict.message);
     }
-    request.accessToken = { sub: verdict.sub };
+    request.accessToken = { sub: verdict.sub, sid: verdict.sid };
     return true;
   }
 }

@@ -50,6 +50,18 @@ export class MemoryRateLimits {
       return consume(this.buckets, bucketKey(stored), stored);
     });
   }
+
+  /** Seconds until the bucket opens, or null when the next attempt may proceed. */
+  retryIfBlocked(input: { subject: string; purpose: string; now: Date }): Promise<number | null> {
+    return this.mutex.run(async () => {
+      const key = bucketKey({ subject: authSubjectHmac(input.subject, this.secret), purpose: input.purpose });
+      const bucket = this.buckets.get(key);
+      if (!bucket?.blockedUntil || bucket.blockedUntil <= input.now) {
+        return null;
+      }
+      return Math.max(1, Math.ceil((bucket.blockedUntil.getTime() - input.now.getTime()) / 1000));
+    });
+  }
 }
 
 export class PrismaRateLimits {

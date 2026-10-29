@@ -5,7 +5,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PrismaIdempotencyKeys } from '../src/auth/idempotency-keys.js';
 import { PrismaRateLimits, authSubjectHmac, bucketKey } from '../src/auth/rate-limit.js';
 import { PrismaRefreshTokens } from '../src/auth/prisma-refresh-tokens.js';
+import { authCodeHmac } from '../src/auth/auth-codes.js';
 import { hashToken } from '../src/auth/refresh-tokens.js';
+import { keyedHmac } from '../src/auth/server-secret.js';
 import { TEST_SERVER_SECRET } from './test-server-secret.js';
 import { PrismaConsentRepository } from '../src/consent/prisma-consent.repository.js';
 import { ConsentService } from '../src/consent/consent.service.js';
@@ -1003,6 +1005,29 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       expect(JSON.stringify(stored)).not.toContain(email.toLowerCase());
     } finally {
       await deleteFixture(prisma, fixture, version);
+    }
+  });
+
+  it('stores a login code as an hmac and not the code or the email', async () => {
+    const code = '654321';
+    const email = 'login-secret@example.com';
+    const emailHmac = keyedHmac(email, TEST_SERVER_SECRET, 'auth-email');
+    const codeHmac = authCodeHmac(code, TEST_SERVER_SECRET);
+    const created = await prisma.authCode.create({
+      data: {
+        emailHmac,
+        codeHmac,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    try {
+      const row = await prisma.authCode.findUnique({ where: { id: created.id } });
+      expect(row?.codeHmac).toBe(codeHmac);
+      expect(row?.codeHmac).not.toBe(code);
+      expect(Object.values(row ?? {})).not.toContain(code);
+      expect(Object.values(row ?? {})).not.toContain(email);
+    } finally {
+      await prisma.authCode.delete({ where: { id: created.id } });
     }
   });
 });

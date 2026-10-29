@@ -179,6 +179,8 @@ enum OcrApplyStatus {
 model User {
   id          String   @id @default(uuid()) @db.Uuid
   trustSub    String   @unique @map("trust_sub")
+  /// Keyed HMAC of the normalized login email. The address itself is not required here.
+  emailHmac   String?  @unique @map("email_hmac")
   email       String?
   displayName String?  @map("display_name")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -714,6 +716,21 @@ model AuthCodeAttempt {
 
   @@index([subject, purpose, attemptedAt])
   @@map("auth_code_attempts")
+}
+
+/// One outstanding login code. `code_hmac` is HMAC-SHA256 with the server pepper.
+/// The 6-digit code and the email address are not stored.
+model AuthCode {
+  id        String    @id @default(uuid()) @db.Uuid
+  emailHmac String    @map("email_hmac")
+  codeHmac  String    @map("code_hmac")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+  attempts  Int       @default(0)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([emailHmac, createdAt])
+  @@map("auth_codes")
 }
 
 /// Postgres counter for 429 Retry-After. There is no Redis.

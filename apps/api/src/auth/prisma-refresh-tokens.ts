@@ -39,6 +39,13 @@ export class PrismaRefreshTokens {
     return this.prisma.$transaction((tx) => rotateInStore(new PrismaRefreshTx(tx, this.secret), input));
   }
 
+  async revokeFamily(familyId: string, now: Date): Promise<void> {
+    await this.prisma.refreshToken.updateMany({
+      where: { familyId, revokedAt: null },
+      data: { revokedAt: now, graceRefreshToken: null },
+    });
+  }
+
   async countByFamily(familyId: string): Promise<number> {
     return this.prisma.refreshToken.count({ where: { familyId } });
   }
