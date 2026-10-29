@@ -160,7 +160,7 @@ ALTER TABLE membership_invites
   DROP CONSTRAINT IF EXISTS membership_invites_expires_within_7_days;
 ALTER TABLE membership_invites
   ADD CONSTRAINT membership_invites_expires_within_7_days CHECK (
-    expires_at <= created_at + interval '7 days'
+    expires_at <= now() + interval '7 days'
   );
 
 ALTER TABLE refresh_tokens
@@ -247,6 +247,11 @@ ALTER TABLE aviso_versions
   DROP CONSTRAINT IF EXISTS aviso_versions_text_not_empty;
 ALTER TABLE aviso_versions
   ADD CONSTRAINT aviso_versions_text_not_empty CHECK (length("text") > 0);
+
+ALTER TABLE aviso_versions
+  DROP CONSTRAINT IF EXISTS aviso_versions_text_not_blank;
+ALTER TABLE aviso_versions
+  ADD CONSTRAINT aviso_versions_text_not_blank CHECK ("text" !~ '^[[:space:]]*$');
 
 ALTER TABLE aviso_versions
   DROP CONSTRAINT IF EXISTS aviso_versions_text_sha256_matches;

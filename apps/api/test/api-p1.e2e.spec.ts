@@ -39,6 +39,7 @@ const GUARDED_ROUTES = [
   'POST /v1/properties/:propertyId/payments',
   'GET /v1/properties/:propertyId/payments/:paymentId',
   'PATCH /v1/properties/:propertyId/payments/:paymentId',
+  'POST /v1/properties/:propertyId/payments/:paymentId/void',
   'GET /v1/properties/:propertyId/documents/:documentId/ocr-jobs',
   'GET /v1/properties/:propertyId/ocr-jobs/:ocrJobId',
   'POST /v1/properties/:propertyId/documents/:documentId/ocr-jobs',
@@ -58,6 +59,7 @@ const LIVE_ROUTES = new Set([
   'POST /v1/properties/:id/payments',
   'GET /v1/properties/:id/payments/:id',
   'PATCH /v1/properties/:id/payments/:id',
+  'POST /v1/properties/:id/payments/:id/void',
 ]);
 
 const LIST_MODULES: Record<string, string> = {
@@ -585,7 +587,8 @@ describe('API P1 guarded OCR', () => {
     });
     expect(payment.status).toBe(403);
     expect(payment.body.error).toBe('forbidden');
-    expect(voided.status).toBe(501);
+    expect(voided.status).toBe(403);
+    expect(voided.body.error).toBe('forbidden');
     expect(upload.status).toBe(501);
     expectNoSecret(payment.body);
   });

@@ -13,7 +13,7 @@ Most of this is specified and not implemented. The placeholder guard in `apps/ap
 | Enforce `PropertyMembership` | **This API** |
 | Token lifetime | Access 15–30 minutes, configured by Trust |
 
-The API never mints or refreshes a token. It fetches JWKS from Trust and validates. There is no password, password hash, or session secret in this repository, and `users` holds only `trust_sub` plus denormalized display fields.
+This API mints the email-code access JWT and the rotating refresh token, and it checks that bearer token on each request. Codes and refresh tokens are stored only as hashes. There is no password. `users` holds `trust_sub` and an email HMAC, not the address.
 
 ## The guard
 

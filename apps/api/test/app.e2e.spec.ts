@@ -102,7 +102,7 @@ describe('API scaffold', () => {
     await request(server).delete('/v1/properties/property-1/invites/invite-1').expect(400);
 
     await request(server).delete(`/v1/properties/${PROPERTY_ID}/payments/${PAYMENT_ID}`).expect(404);
-    await request(server).post(`/v1/properties/${PROPERTY_ID}/payments/${PAYMENT_ID}/void`).expect(501);
+    await request(server).post(`/v1/properties/${PROPERTY_ID}/payments/${PAYMENT_ID}/void`).expect(401);
     await request(server)
       .post(`/v1/properties/${PROPERTY_ID}/obligations/${OBLIGATION_ID}/resume`)
       .expect(501);

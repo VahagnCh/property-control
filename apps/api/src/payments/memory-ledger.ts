@@ -1,8 +1,15 @@
-import type { LedgerStore, LedgerTx, ObligationSnapshot, PaymentSnapshot } from './ledger.js';
+import type {
+  LedgerStore,
+  LedgerTx,
+  ObligationSnapshot,
+  PaymentSnapshot,
+  PeriodOutcomeSnapshot,
+} from './ledger.js';
 
 interface LedgerState {
   obligations: Map<string, ObligationSnapshot>;
   payments: Map<string, PaymentSnapshot>;
+  outcomes: Map<string, PeriodOutcomeSnapshot>;
 }
 
 export class MemoryLedger implements LedgerStore {
@@ -12,6 +19,7 @@ export class MemoryLedger implements LedgerStore {
     return new MemoryLedger({
       obligations: new Map(obligations.map((row) => [row.id, { ...row }])),
       payments: new Map(payments.map((row) => [row.id, { ...row }])),
+      outcomes: new Map(),
     });
   }
 
@@ -22,6 +30,11 @@ export class MemoryLedger implements LedgerStore {
 
   payment(id: string): PaymentSnapshot | undefined {
     const row = this.state.payments.get(id);
+    return row ? { ...row } : undefined;
+  }
+
+  outcome(obligationId: string, periodDueDate: string): PeriodOutcomeSnapshot | undefined {
+    const row = this.state.outcomes.get(outcomeKey(obligationId, periodDueDate));
     return row ? { ...row } : undefined;
   }
 
@@ -75,11 +88,24 @@ class MemoryLedgerTx implements LedgerTx {
       .filter((row) => row.obligationId === obligationId)
       .map((row) => ({ ...row }));
   }
+
+  async saveOutcome(row: PeriodOutcomeSnapshot): Promise<void> {
+    this.state.outcomes.set(outcomeKey(row.obligationId, row.periodDueDate), { ...row });
+  }
+
+  async deleteOutcome(obligationId: string, periodDueDate: string): Promise<void> {
+    this.state.outcomes.delete(outcomeKey(obligationId, periodDueDate));
+  }
 }
 
 function cloneState(state: LedgerState): LedgerState {
   return {
     obligations: new Map([...state.obligations].map(([id, row]) => [id, { ...row }])),
     payments: new Map([...state.payments].map(([id, row]) => [id, { ...row }])),
+    outcomes: new Map([...state.outcomes].map(([id, row]) => [id, { ...row }])),
   };
+}
+
+function outcomeKey(obligationId: string, periodDueDate: string): string {
+  return `${obligationId}\u001e${periodDueDate}`;
 }

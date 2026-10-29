@@ -161,7 +161,7 @@ describe.skipIf(!enabled)('property, obligation, and payment writes', () => {
       .set('Idempotency-Key', 'cfe-paid-1')
       .send({
         obligationId: obligation.body.id,
-        amount: '850',
+        amount: '850.00',
         paidAt: new Date().toISOString(),
         periodDueDate: day,
         notes: 'Pagado',
@@ -274,7 +274,7 @@ describe.skipIf(!enabled)('property, obligation, and payment writes', () => {
       throw new Error('Casa was not created.');
     }
     const day = new Date().toISOString().slice(0, 10);
-    const cases = ['0', '0.00', '-1.00', '1.234', '21474836.48', '999999999999.99'];
+    const cases = ['0', '0.00', '-1.00', '1.234', '1234567890123.00', '9999999999999.99'];
     for (const [index, amount] of cases.entries()) {
       const response = await request(server)
         .post(`/v1/properties/${propertyId}/obligations`)

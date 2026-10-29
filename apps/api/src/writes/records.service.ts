@@ -6,13 +6,15 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Prisma, type PrismaClient } from '@prisma/client';
-import { assertIdempotencyKey, type IdempotencyStore } from '../auth/idempotency-keys.js';
+import { assertIdempotencyKey, IdempotencyKeyInvalidException, type IdempotencyStore } from '../auth/idempotency-keys.js';
 import { notFoundException } from '../common/not-found.js';
 import { assertNextDueDateInRange } from '../obligations/next-due-date.js';
 import { sealAuditText } from '../ocr/audit-text.js';
 import type { OcrConfirmAudit } from '../ocr/ocr.types.js';
 import { assertPaidAt } from '../payments/paid-at.js';
-import { centavosToWireAmount } from '../payments/wire-money.js';
+import { recordPayment, voidPayment as voidLedgerPayment } from '../payments/ledger.js';
+import { centavosToLedgerNumber, centavosToWireAmount } from '../payments/wire-money.js';
+import { ledgerTx } from '../persistence/prisma-ledger.js';
 import {
   OCCUPANCY_STATUSES,
   PROPERTY_TYPES,
@@ -323,7 +325,7 @@ export class RecordsService {
     const raw = asObject(body);
     await this.ensureUser(userId);
     return this.write(userId, key, route, body, async () => {
-      const row = await this.transaction(async (tx) => {
+      const recorded = await this.transaction(async (tx) => {
         const property = await this.assertWriter(tx, userId, propertyId);
         const input = parsePaymentCreate(raw, property.timezone);
         const obligation = await tx.obligation.findFirst({
@@ -332,42 +334,89 @@ export class RecordsService {
         if (!obligation) {
           throw notFoundException();
         }
-        const id = randomUUID();
-        const created = await tx.payment.create({
-          data: {
-            id,
-            propertyId,
+        const amountCentavos = centavosToLedgerNumber(input.amount);
+        if (amountCentavos === null) {
+          throw invalid('amount_invalid', 'amount must be a positive decimal peso string.');
+        }
+        const result = await recordPayment(
+          { transaction: (work) => work(ledgerTx(tx)) },
+          {
+            id: randomUUID(),
             obligationId: input.obligationId,
-            periodDueDate: input.periodDueDate,
-            recordedByUserId: userId,
-            amount: input.amount,
-            currency: 'MXN',
+            amountCentavos,
             paidAt: input.paidAt,
+            timeZone: property.timezone,
+            actorUserId: userId,
+            periodDueDate: input.periodDueDate,
+            markPartial: input.markPartial,
+            idempotencyKey: requireKey(key),
+            notes: input.notes,
             method: input.method,
             reference: input.reference,
-            notes: input.notes,
-            status: 'recorded',
-            idempotencyKey: requireKey(key),
           },
-        });
-        const notes = notesState(null, created.notes);
+        );
+        if (result.payment.propertyId !== propertyId) {
+          throw notFoundException();
+        }
+        const row = await tx.payment.findUniqueOrThrow({ where: { id: result.payment.id } });
+        const notes = notesState(null, row.notes);
         await this.audit(tx, {
           propertyId,
           actorUserId: userId,
           action: 'payment.created',
           entityType: 'payment',
-          entityId: id,
+          entityId: row.id,
           beforeState: notes.beforeState,
           afterState: notes.afterState,
           metadata: {
-            obligationId: created.obligationId,
-            amount: centavosToWireAmount(created.amount),
+            obligationId: row.obligationId,
+            amount: centavosToWireAmount(row.amount),
             currency: 'MXN',
           },
         });
-        return created;
+        return { row, warnings: result.warnings };
       });
-      return { status: 201, body: { payment: paymentJson(row), warnings: [] } };
+      return { status: 201, body: { payment: paymentJson(recorded.row), warnings: recorded.warnings } };
+    });
+  }
+
+  async voidPayment(
+    userId: string,
+    propertyId: string,
+    paymentId: string,
+    key: string | undefined,
+    route: string,
+    body: unknown,
+  ): Promise<IdempotentResult> {
+    const raw = asObject(body);
+    rejectUnknown(raw, ['voidReason']);
+    await this.ensureUser(userId);
+    return this.write(userId, key, route, body, async () => {
+      const row = await this.transaction(async (tx) => {
+        const property = await this.assertWriter(tx, userId, propertyId);
+        const existing = await tx.payment.findFirst({ where: { id: paymentId, propertyId } });
+        if (!existing) {
+          throw notFoundException();
+        }
+        const reason = voidReasonOf(raw.voidReason);
+        await voidLedgerPayment(
+          { transaction: (work) => work(ledgerTx(tx)) },
+          { paymentId, actorUserId: userId, reason, now: new Date() },
+        );
+        const updated = await tx.payment.findUniqueOrThrow({ where: { id: paymentId } });
+        await this.audit(tx, {
+          propertyId,
+          actorUserId: userId,
+          action: 'payment.voided',
+          entityType: 'payment',
+          entityId: paymentId,
+          beforeState: null,
+          afterState: null,
+          metadata: { voidReason: reason, timezone: property.timezone },
+        });
+        return updated;
+      });
+      return { status: 200, body: paymentJson(row) };
     });
   }
 
@@ -542,11 +591,7 @@ export function requestHash(body: unknown): string {
 
 function requireKey(key: string | undefined): string {
   if (typeof key !== 'string') {
-    throw new BadRequestException({
-      statusCode: 400,
-      error: 'idempotency_key_invalid',
-      message: 'Idempotency-Key must be 8 to 128 characters of letters, digits, underscores, or hyphens.',
-    });
+    throw new IdempotencyKeyInvalidException();
   }
   assertIdempotencyKey(key);
   return key;
@@ -732,15 +777,29 @@ function parsePaymentCreate(raw: Record<string, unknown>, timeZone: string): {
   obligationId: string;
   amount: bigint;
   paidAt: Date;
-  periodDueDate: Date;
+  periodDueDate?: string;
+  markPartial: boolean;
   method: string | null;
   reference: string | null;
   notes: string | null;
 } {
-  rejectUnknown(raw, ['obligationId', 'amount', 'currency', 'paidAt', 'periodDueDate', 'method', 'reference', 'notes']);
+  rejectUnknown(raw, [
+    'obligationId',
+    'amount',
+    'currency',
+    'paidAt',
+    'periodDueDate',
+    'markPartial',
+    'method',
+    'reference',
+    'notes',
+  ]);
   currencyOf(raw.currency);
   if (typeof raw.obligationId !== 'string' || !/^[0-9a-f-]{36}$/i.test(raw.obligationId)) {
     throw invalid('obligation_invalid', 'obligationId must be a UUID on this property.');
+  }
+  if (raw.markPartial !== undefined && typeof raw.markPartial !== 'boolean') {
+    throw invalid('mark_partial_invalid', 'markPartial must be a boolean.');
   }
   if (typeof raw.paidAt !== 'string') {
     throw invalid('paid_at_out_of_range', 'paidAt is outside the allowed range.');
@@ -751,11 +810,27 @@ function parsePaymentCreate(raw: Record<string, unknown>, timeZone: string): {
     obligationId: raw.obligationId,
     amount: parsePositiveCentavos(raw.amount),
     paidAt,
-    periodDueDate: requiredDate(raw.periodDueDate, 'period_due_date_invalid'),
+    periodDueDate:
+      raw.periodDueDate === undefined
+        ? undefined
+        : dateOnly(requiredDate(raw.periodDueDate, 'period_due_date_invalid')),
+    markPartial: raw.markPartial === true,
     method: optionalText(raw.method, 80),
     reference: optionalText(raw.reference, 120),
     notes: raw.notes === undefined || raw.notes === null ? null : assertNotes(raw.notes),
   };
+}
+
+function voidReasonOf(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw invalid('void_reason_invalid', 'voidReason must be 1 to 500 characters.');
+  }
+  const trimmed = value.trim();
+  try {
+    return assertSingleLine(trimmed, 500);
+  } catch {
+    throw invalid('void_reason_invalid', 'voidReason must be 1 to 500 characters.');
+  }
 }
 
 function parsePaymentPatch(raw: Record<string, unknown>): Prisma.PaymentUpdateInput {
@@ -964,6 +1039,8 @@ function paymentJson(row: {
   reference: string | null;
   notes: string | null;
   status: string;
+  voidedAt?: Date | null;
+  voidReason?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }): unknown {
@@ -979,6 +1056,8 @@ function paymentJson(row: {
     reference: row.reference,
     notes: row.notes,
     status: row.status,
+    voidedAt: row.voidedAt ? row.voidedAt.toISOString() : null,
+    voidReason: row.voidReason ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

@@ -5,13 +5,12 @@ import { AuthModule } from '../auth/auth.module.js';
 import { ConsentRequiredGuard } from '../auth/consent-required.guard.js';
 import { PropertyMembershipGuard } from '../auth/property-membership.guard.js';
 import { pathOnly } from '../common/path-safety.js';
-import { scaffoldNotReady } from '../common/scaffold.response.js';
 import { RecordsModule } from '../writes/records.module.js';
 import { RecordsService } from '../writes/records.service.js';
 
 /**
  * Payment routes record a payment the member already made.
- * A correction is POST :paymentId/void, which stays a stub. There is no DELETE.
+ * A correction is POST :paymentId/void. There is no DELETE.
  * amount on the wire is a decimal peso string plus currency MXN, never a float.
  * The database stores integer centavos. This does not move money.
  */
@@ -33,9 +32,11 @@ export class PaymentsController {
     @Body() body: unknown,
     @Res({ passthrough: true }) res: Response,
   ) {
-    return reply(
-      res,
-      this.records.createPayment(subject(request), propertyId(request), idempotencyKey, routeOf(request), body),
+    return this.records.createPayment(subject(request), propertyId(request), idempotencyKey, routeOf(request), body).then(
+      (result) => {
+        res.status(result.replayed && result.status === 201 ? 200 : result.status);
+        return result.body;
+      },
     );
   }
 
@@ -67,8 +68,24 @@ export class PaymentsController {
   }
 
   @Post(':paymentId/void')
-  voidPayment(): never {
-    return scaffoldNotReady('payments');
+  @UseGuards(AccessTokenGuard, PropertyMembershipGuard, ConsentRequiredGuard)
+  voidPayment(
+    @Req() request: Authed,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Body() body: unknown,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return reply(
+      res,
+      this.records.voidPayment(
+        subject(request),
+        propertyId(request),
+        idParam(request, 'paymentId'),
+        idempotencyKey,
+        routeOf(request),
+        body,
+      ),
+    );
   }
 }
 

@@ -28,7 +28,7 @@ describe('idempotent writes', () => {
     ]);
     expect(calls).toBe(1);
     expect(left).toEqual({ status: 201, body: { id: 'casa' } });
-    expect(right).toEqual(left);
+    expect(right).toMatchObject({ status: 201, body: { id: 'casa' }, replayed: true });
   });
 
   it('does not store a 5xx, so the same key can succeed on the next attempt', async () => {

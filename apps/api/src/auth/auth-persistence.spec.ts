@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { TEST_SERVER_SECRET } from '../../test/test-server-secret.js';
-import { MemoryIdempotencyKeys } from './idempotency-keys.js';
+import { MemoryIdempotencyKeys, IdempotencyKeyReusedException } from './idempotency-keys.js';
 import { MemoryRateLimits, authSubjectHmac } from './rate-limit.js';
 import { MemoryRefreshTokens, hashToken } from './refresh-tokens.js';
 
@@ -124,7 +124,9 @@ describe('idempotency keys', () => {
       responseStatus: 201,
       responseBody: { id: 'consent-1' },
     });
-    await expect(keys.reserve({ ...input, requestHash: 'hash-b' })).rejects.toBeInstanceOf(ConflictException);
+    await expect(keys.reserve({ ...input, requestHash: 'hash-b' })).rejects.toBeInstanceOf(
+      IdempotencyKeyReusedException,
+    );
     try {
       await keys.reserve({ ...input, requestHash: 'hash-b' });
     } catch (error) {
@@ -181,6 +183,18 @@ describe('idempotency keys', () => {
       idempotencyInput({ key, route: 'POST /v1/obligations', requestHash: 'hash-b' }),
     );
     expect(otherHash.outcome).toBe('reserved');
+  });
+
+  it('treats a lower-case method as the same route scope', async () => {
+    const keys = new MemoryIdempotencyKeys();
+    const reserved = await keys.reserve(idempotencyInput({ method: 'post', route: 'POST /v1/payments' }));
+    expect(reserved.outcome).toBe('reserved');
+    if (reserved.outcome !== 'reserved') {
+      return;
+    }
+    await keys.complete(reserved.id, 201, { ok: true });
+    const replay = await keys.reserve(idempotencyInput({ method: 'POST', route: 'POST /v1/payments' }));
+    expect(replay.outcome).toBe('replay');
   });
 
   it('stores an email HMAC scope without the plain email', async () => {

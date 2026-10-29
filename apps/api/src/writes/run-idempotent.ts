@@ -5,6 +5,7 @@ import { isReplayableStatus } from '../auth/idempotency-keys.js';
 export interface IdempotentResult {
   status: number;
   body: unknown;
+  replayed?: boolean;
 }
 
 const WAIT_MS = 5_000;
@@ -21,8 +22,8 @@ export async function runIdempotent(
   work: () => Promise<IdempotentResult>,
 ): Promise<IdempotentResult> {
   const claimed = await claim(store, input);
-  if (claimed.outcome === 'replay') {
-    return { status: claimed.responseStatus, body: claimed.responseBody };
+    if (claimed.outcome === 'replay') {
+    return { status: claimed.responseStatus, body: claimed.responseBody, replayed: true };
   }
   if (claimed.outcome !== 'reserved') {
     throw new ConflictException({

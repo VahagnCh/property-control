@@ -122,7 +122,7 @@ POST   /v1/properties/:propertyId/payments
          Headers: Idempotency-Key: <string>          // required
          Body: { obligationId, amount, currency?, paidAt, periodDueDate?,
                  markPartial?, method?, reference?, notes? }
-         → 201 { payment, warnings } | stored status and body on replay
+         → 201 { payment, warnings } | 200 same body on replay
 GET    /v1/properties/:propertyId/payments/:paymentId          → 200 | 404
 PATCH  /v1/properties/:propertyId/payments/:paymentId          → 200 Payment
          Body: { notes?, method?, reference? }       // cannot void or unvoid

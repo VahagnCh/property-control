@@ -33,6 +33,7 @@ describe('payment ledger', () => {
       actorUserId: ACTOR,
     });
     expect(paid.nextDueDate).toBe('2026-02-28');
+    expect(ledger.outcome(OBLIGATION, '2026-01-31')).toMatchObject({ outcome: 'paid', overpaidAmount: 0 });
     expect(paid.warnings).toEqual([]);
     const voided = await voidPayment(ledger, {
       paymentId: paid.payment.id,
@@ -42,6 +43,7 @@ describe('payment ledger', () => {
     });
     expect(voided.status).toBe('voided');
     expect(ledger.obligation(OBLIGATION)?.nextDueDate).toBe('2026-01-31');
+    expect(ledger.outcome(OBLIGATION, '2026-01-31')).toBeUndefined();
     await expect(
       voidPayment(ledger, {
         paymentId: paid.payment.id,
@@ -71,6 +73,7 @@ describe('payment ledger', () => {
       periodDueDate: '2026-03-15',
     });
     expect(first.nextDueDate).toBe('2026-03-15');
+    expect(ledger.outcome(OBLIGATION, '2026-03-15')).toMatchObject({ outcome: 'partial', overpaidAmount: 0 });
     const second = await recordPayment(ledger, {
       id: '44444444-4444-4444-8444-333333333333',
       obligationId: OBLIGATION,

@@ -968,7 +968,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       owner.avisoVersion.create({
         data: { version, url: 'https://example.com/aviso', text: '', textSha256: textSha256('') },
       }),
-    ).rejects.toThrow(/aviso_versions_text_not_empty/);
+    ).rejects.toThrow(/aviso_versions_text_not_blank/);
     await expect(
       owner.avisoVersion.create({
         data: { version, url: 'https://example.com/aviso', text, textSha256: 'a'.repeat(64) },
@@ -1194,7 +1194,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
             invitedByUserId: fixture.userId,
             createdAt: created,
             sentAt: created,
-            expiresAt: new Date(created.getTime() + 8 * 24 * 60 * 60 * 1000),
+            expiresAt: new Date(Date.now() + 8 * 24 * 60 * 60 * 1000),
           },
         }),
       ).rejects.toThrow(/membership_invites_expires_within_7_days/);

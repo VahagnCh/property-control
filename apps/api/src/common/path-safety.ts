@@ -55,9 +55,8 @@ export function isOcrPath(urlPath: string): boolean {
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
 /**
- * Live property, obligation, and payment reads and writes.
- * Stubbed suffixes (void, resume, delete) are not included, so they stay 501
- * before the token is read.
+ * Live property, obligation, and payment reads and writes, including void.
+ * Resume and delete stay 501 before the token is read.
  */
 export function isLiveRecordPath(method: string, urlPath: string): boolean {
   const verb = method.toUpperCase();
@@ -87,6 +86,9 @@ export function isLiveRecordPath(method: string, urlPath: string): boolean {
     new RegExp(`^/v1/properties/${UUID}/payments/${UUID}$`, 'i').test(path) &&
     (verb === 'GET' || verb === 'PATCH')
   ) {
+    return true;
+  }
+  if (new RegExp(`^/v1/properties/${UUID}/payments/${UUID}/void$`, 'i').test(path) && verb === 'POST') {
     return true;
   }
   return false;

@@ -319,6 +319,8 @@ model Payment {
   notes            String?
   status           PaymentStatus @default(recorded)
   idempotencyKey   String        @map("idempotency_key")
+  /// Set only when the obligation has no expected amount and this payment must not settle the period.
+  markPartial      Boolean       @default(false) @map("mark_partial")
   voidedAt         DateTime?     @map("voided_at") @db.Timestamptz(6)
   voidedByUserId   String?       @map("voided_by") @db.Uuid
   voidReason       String?       @map("void_reason") @db.VarChar(500)

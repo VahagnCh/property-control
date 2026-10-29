@@ -47,14 +47,34 @@ interface StoredKey {
   expiresAt: Date;
 }
 
-export function assertIdempotencyKey(key: string): void {
-  if (!IDEMPOTENCY_KEY.test(key)) {
-    throw new BadRequestException({
+export class IdempotencyKeyReusedException extends ConflictException {
+  constructor() {
+    super({
+      statusCode: 409,
+      error: 'idempotency_key_reused',
+      message: 'This idempotency key was already used with a different request.',
+    });
+  }
+}
+
+export class IdempotencyKeyInvalidException extends BadRequestException {
+  constructor() {
+    super({
       statusCode: 400,
       error: 'idempotency_key_invalid',
       message: 'Idempotency-Key must be 8 to 128 characters of letters, digits, underscores, or hyphens.',
     });
   }
+}
+
+export function assertIdempotencyKey(key: string): void {
+  if (!IDEMPOTENCY_KEY.test(key)) {
+    throw new IdempotencyKeyInvalidException();
+  }
+}
+
+function normalizeMethod(method: string): string {
+  return method.trim().toUpperCase();
 }
 
 export class MemoryIdempotencyKeys implements IdempotencyStore {
@@ -127,7 +147,8 @@ export class PrismaIdempotencyKeys implements IdempotencyStore {
   }
 }
 
-function reserveStored(rows: Map<string, StoredKey>, input: IdempotencyInput): ReserveResult {
+function reserveStored(rows: Map<string, StoredKey>, raw: IdempotencyInput): ReserveResult {
+  const input = { ...raw, method: normalizeMethod(raw.method) };
   assertIdempotencyKey(input.key);
   const scope = scopeOf(input);
   const mapKey = scopeKey(scope, input);
@@ -155,7 +176,8 @@ function reserveStored(rows: Map<string, StoredKey>, input: IdempotencyInput): R
   return { outcome: 'reserved', id: created.id };
 }
 
-async function reservePrisma(tx: Prisma.TransactionClient, input: IdempotencyInput): Promise<ReserveResult> {
+async function reservePrisma(tx: Prisma.TransactionClient, raw: IdempotencyInput): Promise<ReserveResult> {
+  const input = { ...raw, method: normalizeMethod(raw.method) };
   const scope = scopeOf(input);
   const existing = await tx.idempotencyKey.findFirst({
     where:
@@ -197,11 +219,7 @@ function decision(
   requestHash: string,
 ): ReserveResult {
   if (existing.requestHash !== requestHash) {
-    throw new ConflictException({
-      statusCode: 409,
-      error: 'idempotency_key_reused',
-      message: 'This idempotency key was already used with a different request.',
-    });
+    throw new IdempotencyKeyReusedException();
   }
   if (existing.responseStatus !== null) {
     return {

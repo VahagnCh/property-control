@@ -1,8 +1,8 @@
 import { UnprocessableEntityException } from '@nestjs/common';
-import { wireAmountToCentavos } from '../payments/wire-money.js';
+import { INT8_MAX_CENTAVOS, wireAmountToCentavos } from '../payments/wire-money.js';
 
-/** EC-2.1. Above this many centavos the amount is rejected. */
-export const MAX_CENTAVOS = 2_147_483_647n;
+/** Above this many centavos the amount does not fit a signed int8. */
+export const MAX_CENTAVOS = INT8_MAX_CENTAVOS;
 
 /**
  * Positive peso string to integer centavos. Zero, negatives, more than two

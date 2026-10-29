@@ -43,8 +43,21 @@ export interface PaymentSnapshot {
   voidReason: string | null;
   createdAt: Date;
   recordedByUserId: string;
-  /** Domain-only. The payments table does not store this flag. */
+  /** True only when expectedAmount is null and this payment must not settle the period. */
   markPartial: boolean;
+  idempotencyKey?: string;
+  notes?: string | null;
+  method?: string | null;
+  reference?: string | null;
+}
+
+export interface PeriodOutcomeSnapshot {
+  obligationId: string;
+  propertyId: string;
+  periodDueDate: string;
+  outcome: 'paid' | 'partial';
+  paymentId: string;
+  overpaidAmount: number;
 }
 
 export interface LedgerTx {
@@ -55,6 +68,8 @@ export interface LedgerTx {
   lockPayment(id: string): Promise<PaymentSnapshot | null>;
   markVoided(row: PaymentSnapshot): Promise<void>;
   lockPayments(obligationId: string): Promise<PaymentSnapshot[]>;
+  saveOutcome(row: PeriodOutcomeSnapshot): Promise<void>;
+  deleteOutcome(obligationId: string, periodDueDate: string): Promise<void>;
 }
 
 export interface LedgerStore {
@@ -77,6 +92,10 @@ export interface RecordPaymentInput {
   periodDueDate?: string;
   markPartial?: boolean;
   createdAt?: Date;
+  idempotencyKey?: string;
+  notes?: string | null;
+  method?: string | null;
+  reference?: string | null;
 }
 
 export interface RecordPaymentResult {
@@ -172,12 +191,18 @@ export async function recordPayment(store: LedgerStore, input: RecordPaymentInpu
       createdAt: input.createdAt ?? input.paidAt,
       recordedByUserId: input.actorUserId,
       markPartial: input.markPartial === true,
+      idempotencyKey: input.idempotencyKey,
+      notes: input.notes,
+      method: input.method,
+      reference: input.reference,
     };
     const wasSettled = periodSettled(obligation, payments, periodDueDate);
     await tx.insertPayment(payment);
+    const withPayment = [...payments, payment];
+    await syncPeriod(tx, obligation, withPayment, periodDueDate);
     const nextDueDate = wasSettled
       ? obligation.nextDueDate
-      : advancedDueDate(obligation, [...payments, payment], periodDueDate);
+      : advancedDueDate(obligation, withPayment, periodDueDate);
     if (nextDueDate) {
       assertDueDateSanity(nextDueDate);
     }
@@ -229,6 +254,7 @@ export async function voidPayment(store: LedgerStore, input: VoidPaymentInput): 
     const payments = (await tx.lockPayments(obligation.id)).map((row) =>
       row.id === voided.id ? voided : row,
     );
+    await syncPeriod(tx, obligation, payments, voided.periodDueDate);
     const nextDueDate = earliestUnsettled(obligation, payments);
     if (nextDueDate) {
       assertDueDateSanity(nextDueDate);
@@ -273,6 +299,64 @@ function calendarDaysApart(left: string, right: string): number {
   const leftMs = Date.UTC(a.year, a.month - 1, a.day);
   const rightMs = Date.UTC(b.year, b.month - 1, b.day);
   return Math.round(Math.abs(leftMs - rightMs) / 86_400_000);
+}
+
+export function periodOutcomeOf(
+  obligation: ObligationSnapshot,
+  payments: PaymentSnapshot[],
+  periodDue: string,
+): PeriodOutcomeSnapshot | null {
+  const recorded = payments.filter((payment) => payment.status === 'recorded' && payment.periodDueDate === periodDue);
+  if (recorded.length === 0) {
+    return null;
+  }
+  const sum = recorded.reduce((total, payment) => total + payment.amount, 0);
+  const latest = [...recorded].sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0];
+  if (!latest || sum <= 0) {
+    return null;
+  }
+  if (obligation.expectedAmount === null) {
+    return {
+      obligationId: obligation.id,
+      propertyId: obligation.propertyId,
+      periodDueDate: periodDue,
+      outcome: recorded.some((payment) => !payment.markPartial) ? 'paid' : 'partial',
+      paymentId: latest.id,
+      overpaidAmount: 0,
+    };
+  }
+  if (sum < obligation.expectedAmount) {
+    return {
+      obligationId: obligation.id,
+      propertyId: obligation.propertyId,
+      periodDueDate: periodDue,
+      outcome: 'partial',
+      paymentId: latest.id,
+      overpaidAmount: 0,
+    };
+  }
+  return {
+    obligationId: obligation.id,
+    propertyId: obligation.propertyId,
+    periodDueDate: periodDue,
+    outcome: 'paid',
+    paymentId: latest.id,
+    overpaidAmount: sum - obligation.expectedAmount,
+  };
+}
+
+async function syncPeriod(
+  tx: LedgerTx,
+  obligation: ObligationSnapshot,
+  payments: PaymentSnapshot[],
+  periodDue: string,
+): Promise<void> {
+  const outcome = periodOutcomeOf(obligation, payments, periodDue);
+  if (!outcome) {
+    await tx.deleteOutcome(obligation.id, periodDue);
+    return;
+  }
+  await tx.saveOutcome(outcome);
 }
 
 function periodSettled(obligation: ObligationSnapshot, payments: PaymentSnapshot[], periodDue: string): boolean {
