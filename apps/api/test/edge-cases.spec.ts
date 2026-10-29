@@ -123,5 +123,70 @@ describe("DueRecord edge-case rules", () => {
 
   it.todo("EC-9.1 When a saved field already has a persisted value, replace writes an audit with the server-side previous value, the new value, action replace, the suggestionId, and the actor. accept or edit returns 409 with error field_already_set and does not mark the suggestion accepted. reject leaves the value unchanged.");
 
-  it.todo("EC-9.2 Before a record is saved, a replace audit stores only the suggestionId, the field, decision replaced, and the suggested value. It does not store a client-typed previous value. On save, the payment create audit records source ocr_replace and the suggestionId. A request that contains clientPriorValue returns 422. A bulk accept-all returns 422.");
+  it.todo("EC-9.2 A replace is audited only when the record is saved, not before. The audit event name is ocr.replaced, not ocr_replace. Unsaved Reemplazar writes no audit. On save, that audit records ocr.replaced and the suggestionId, and it does not store a client-typed previous value. A request that contains clientPriorValue returns 422. A bulk accept-all returns 422. The notes and maintenance description audit stores only {length, sha256} in before_state and after_state, from the NFC-normalized, LF-normalized text. length is UTF-16 code units, sha256 is the hex SHA-256 of those bytes, and the raw text is never stored.");
+
+  it.todo("EC-10.1 The consent screen shows whenever consent.required is true. That covers first sign-in, any sign-in after Ahora no, and any sign-in after an aviso version change. The checkbox starts unchecked, and Continuar stays disabled until it is checked.");
+
+  it.todo("EC-10.2 Ahora no shows the copy \"Sin tu consentimiento no podemos guardar pagos ni comprobantes.\" It then signs the user out and saves nothing.");
+
+  it.todo("EC-10.3 POST /v1/me/consent body is only {avisoVersion}. appVersion comes from the app-version header. A client-sent acceptedAt is ignored, and the server stores acceptedAt. The full text of each aviso version is stored, and that table is insert-only. The current version returns 201 and appends one record of the user, the aviso version, the server acceptedAt, and the app version, in the same transaction as its audit entry. Posting that same version again returns 200 with the existing record and no new record. It does not change acceptedAt or appVersion, and it writes no second audit entry. Posting a version that is not current, including an older published version, returns 422 with error aviso_version_mismatch. Records are never overwritten.");
+
+  it.todo("EC-10.4 The full guard order is 501, then 401, then 400 or 413, then 404 membership, then 403 viewer, then 403 consent_required. Reads are allowed before consent. A property, obligation, payment, or evidence write made before the current consent returns 403 consent_required only after those earlier gates. A route that is still a stub returns 501 before the token is read. A missing, invalid, or expired token returns 401. A bad request returns 400 and a payload that is too large returns 413. A non-member, or an unknown resource, returns 404, including when that caller also lacks consent. A viewer write returns 403 viewer, not consent_required. POST /v1/properties has no membership check, so after 501, 401, and 400 or 413, a user who has not consented receives 403 consent_required and cannot create a property.");
+
+  it.todo("EC-10.5 Reads do not require consent, and they skip the viewer check. GET /v1/me is one of those reads. With a valid token and no current consent it returns the profile, including consent { required, avisoVersion, avisoUrl }, and it does not return consent_required. consent.required is true when the caller has no row for the configured AVISO_VERSION. A non-member read of a property resource is still 404.");
+
+  it.todo("EC-10.6 A new aviso version sets consent.required back to true. Writes then return 403 consent_required again until the user accepts that version. The earlier consent row stays and is not overwritten.");
+
+  it.todo("EC-10.7 In the app, a 403 consent_required goes straight back to the consent screen and shows no toast.");
+
+  it.todo("EC-10.8 On a new account, Continuar stays blocked until the box is checked. After the user accepts and then signs out and signs back in, the consent screen does not appear again while consent.required is false and that aviso version is unchanged.");
+
+  it.todo("EC-10.9 Retirar consentimiento and account deletion are separate MVP backlog items. Both are required before public launch, and neither is in the Nov 5 build.");
+
+  it.todo("EC-11.1 GET /v1/health runs a database query, so one call wakes both the API and the database. Success returns 200 and a JSON object whose only field is status set to ok. A failed query returns 503 and a JSON object whose only field is status set to unavailable. Those two bodies include no version, no host, and no error detail. The route is rate-limited, and a request past the limit returns 429 with a Retry-After header instead of either of those bodies. Responses are never cached and send Cache-Control no-store.");
+
+  it.todo("EC-11.2 The health check runs at launch, when the app returns to the foreground after more than 10 minutes in the background, and before a write only if more than 10 minutes have passed since the last API response. Otherwise a write sends no separate check. A write button tapped before the health check has passed shows Conectando… and sends only once the check passes. Every other request keeps the 15 s timeout. The copy keys are common.connecting at 3 s, common.connecting.slow at 8 s, and common.connecting.failed with Reintentar at 90 s.");
+
+  it.todo("EC-11.3 Every write button stays in the Conectando state until the health check passes. A write is never sent while the API is still in a cold start.");
+
+  it.todo("EC-11.4 On the free build, a first open that completes within 90 s behind Conectando is a pass, and reaching common.connecting.failed at 90 s is a fail.");
+
+  it.todo("EC-11.5 The phone never retries POST /v1/auth/code automatically, and the route honors Idempotency-Key. The key is 8 to 128 characters of letters, digits, underscores, or hyphens, matching [A-Za-z0-9_-], and anything else returns 400 idempotency_key_invalid. Reintentar sends the same key. The same key for the same email within 10 minutes returns the original 202, creates no new code, sends no second email, and does not consume another rate-limit hit. A new key comes from Reenviar (\"Enviar otro código\"), returns a fresh code, invalidates the earlier code, and counts toward the rate limit. The key is stored against a keyed HMAC of the normalized email, and the raw email is never stored. The same key with a different email is a new request: it returns 202, and the response reveals nothing about whether the key was already used or whether either account exists. A 429 response includes Retry-After. The success response is 202 whether or not the account exists. Codes, tokens, and emails never appear in logs.");
+
+  it.todo("EC-11.6 The line auth.code.latest (Si pediste más de un código, usa el del correo más reciente.) is shown under auth.code.body only after Reenviar (auth.code.resend). It is not shown on the first visit and it is not shown after Reintentar. An older code is rejected with auth.code.wrong.");
+
+  it.todo("EC-11.7 A safe GET auto-retries once, and only after a timeout or a network error. It never retries a 4xx, including 401, 403, 404, and 429. A 401 goes through the single-flight refresh. A safe GET never retries a signed file URL request; it asks for a fresh URL instead. Writes never auto-retry. Retrying a write requires the user to tap Reintentar, which resends the same body with the same Idempotency-Key (AC-PAY-22).");
+
+  it.todo("EC-11.8 The legacy /health route is removed. No health response, including a 429, carries a version, a host, or an error detail.");
+
+  it.todo("EC-12.1 Reemplazar saves the field's current value as the undo, keyed by suggestion id and field. It saves that value again only when the field does not already hold the OCR value, so tapping Reemplazar two or three times keeps the value from before the first tap.");
+
+  it.todo("EC-12.2 Mantener restores the saved undo value, or the saved value when the field was already saved, sends reject, and then clears the undo.");
+
+  it.todo("EC-12.3 Typing 5.00, then Reemplazar, then Mantener, then typing 6.00, then Reemplazar, then Mantener ends on 6.00. Typing a new value between two Reemplazar taps saves that newly typed value as the undo.");
+
+  it.todo("EC-12.4 Reemplazar, then editing the same field, then Mantener restores the value from before the Reemplazar tap and sends reject.");
+
+  it.todo("EC-12.5 Copying the form object or editing another field never changes the stored undo for a field.");
+
+  it.todo("EC-12.6 Remount persistence is deferred to the record-payment screen PR, which stores the undo with the decisions, keyed by suggestion id + field, and adds a remount test. Until then the undo lives in row state and is never sent.");
+
+  it.todo("EC-12.7 Confirm and reject request bodies never carry typed or saved text, previousValue, or clientPriorValue.");
+
+  it.todo("EC-12.8 Only Reemplazar sends replace, and the latest choice wins. The undo is held in screen or row state, never in module state. Mantener restores the value from before the first tap, or savedValue, sends reject, and clears the undo. Known low: typing the OCR value by hand after Reemplazar looks like a repeat tap.");
+
+  it.todo("EC-13.1 The server fails at boot when the configured AVISO_VERSION has no published row, and it does not start listening. At runtime a missing current aviso returns 503 with error aviso_unavailable and logs an alert that contains no PII. POST /v1/me/consent returns that 503 now. GET /v1/me returning 503 is a tracked follow-up. That missing-aviso response is never 422.");
+
+  it.todo("EC-13.2 On the phone, a 503 shows consent.unavailable (No pudimos cargar el Aviso de privacidad. Inténtalo de nuevo en unos minutos.) with Reintentar and Ahora no. The checkbox never unchecks in a loop, nothing is saved, and Ahora no signs the user out.");
+
+  it.todo("EC-13.3 Only a 422 aviso_version_mismatch shows consent.updated. A 503 never shows consent.updated.");
+
+  it.todo("EC-14.1 A pending notification link is kept in memory only and is never persisted (brief §11.4). The held nid is AppShell state only. It is never written to SecureStore or AsyncStorage. The held nid is cleared when the stub opens and when Ahora no or Cancelar drops the link.");
+
+  it.todo("EC-14.2 Production, store, and TestFlight builds register and accept only duerecord://. A duerecord://notificaciones/<uuid> link opens a stub screen. The nid is an 8-4-4-4-12 hex id. The path is exactly those two segments. A dot-dot segment, an empty segment, a trailing slash, or a host or port opens Inicio. exp:// and exps:// are accepted only while running in Expo Go or a dev build. The dev-prefix gate covers both exp:// and exps://. The navigation map does not register notificaciones/:nid. Routing stays in AppShell.");
+
+  it.todo("EC-14.3 The stub shows the same not-found copy for every nid. notif.notFound.title is Esta notificación ya no está disponible. notif.notFound.body is Puede que se haya eliminado o que no tengas acceso. notif.notFound.cta is Ir a Inicio. The call to action opens Inicio. The screen does not render the nid or any other text taken from the URL.");
+
+  it.todo("EC-14.4 Without a session the link stops on sign-in. Ahora no and Cancelar drop it and open Inicio. The session flag is read once per mount. Tokens are stored by apps/mobile/src/auth/tokenStore.ts in expo-secure-store with WHEN_UNLOCKED_THIS_DEVICE_ONLY, and never in AsyncStorage. Query and fragment are removed before a route receives params. property-control:// is not handled.");
+
 });
