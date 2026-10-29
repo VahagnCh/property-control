@@ -152,7 +152,7 @@ An optional private file supporting a payment or a maintenance task.
 | `payment_id`, `maintenance_task_id` | Exactly one is set |
 | `idempotency_key` | Unique with `property_id` |
 
-Key convention: `properties/{propertyId}/evidence/{evidenceId}/{uuid}`.
+Key convention: `{env}/evidence/{uuid}`. `env` is `staging` or `prod` from `OBJECT_STORAGE_ENV`. The property id is only on the row.
 
 Evidence is optional on a payment. A payment never requires an evidence row.
 
@@ -170,7 +170,7 @@ A private file on a property: a deed, a mortgage, a policy, a receipt.
 | `source_key` | Unique and private |
 | `content_type`, `byte_size` | Same allowlist and cap as evidence |
 
-Key convention: `properties/{propertyId}/documents/{documentId}/{uuid}`.
+Key convention: `{env}/documents/{uuid}`. `env` is `staging` or `prod` from `OBJECT_STORAGE_ENV`. The property id is only on the row.
 
 A document upload is the trigger for OCR, mortgages and deeds first.
 

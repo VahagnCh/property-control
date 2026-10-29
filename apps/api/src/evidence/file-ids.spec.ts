@@ -2,6 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { notFoundBody } from '../common/not-found.js';
 import { PropertyFileIds, isOpaqueFileId } from './file-ids.js';
+import { EVIDENCE_SOURCE_KEY } from './storage-key.js';
 
 const PROPERTY_A = '11111111-1111-4111-8111-111111111111';
 const PROPERTY_B = '11111111-1111-4111-8111-222222222222';
@@ -16,6 +17,9 @@ describe('fileId', () => {
     expect(sourceKey).toBeDefined();
     expect(issued.fileId).not.toBe(sourceKey);
     expect(sourceKey).not.toContain(issued.fileId);
+    expect(sourceKey).toMatch(EVIDENCE_SOURCE_KEY);
+    expect(sourceKey).not.toContain(PROPERTY_A);
+    expect(sourceKey?.startsWith('staging/evidence/')).toBe(true);
     expect(issued.fileId).not.toContain('properties/');
     expect(JSON.stringify(issued)).not.toMatch(/storageKey|storage_key|properties\//);
   });

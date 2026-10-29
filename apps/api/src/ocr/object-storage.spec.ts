@@ -1,23 +1,21 @@
-import { BadRequestException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
+import { DOCUMENT_SOURCE_KEY } from '../evidence/storage-key.js';
 import { PrivateObjectStorage } from './object-storage.js';
 
+const PROPERTY_ID = '11111111-1111-4111-8111-111111111111';
+const USER_ID = '22222222-2222-4222-8222-222222222222';
+
 describe('private object storage', () => {
-  it('rejects a bad id as invalid_source_key and does not say storage key', () => {
-    const storage = new PrivateObjectStorage();
-    try {
-      storage.buildOcrSourceKey('not-a-uuid', '22222222-2222-4222-8222-111111111111');
-      throw new Error('expected a bad request');
-    } catch (error) {
-      expect(error).toBeInstanceOf(BadRequestException);
-      const body = (error as BadRequestException).getResponse();
-      expect(body).toEqual({
-        statusCode: 400,
-        error: 'invalid_source_key',
-        message: 'Invalid source key input.',
-      });
-      expect(JSON.stringify(body)).not.toMatch(/storage[_-]?key/i);
-    }
-    expect(storage.calls).toEqual([]);
+  it('builds a document key from the configured env', () => {
+    const staging = new PrivateObjectStorage({ OBJECT_STORAGE_ENV: 'staging' });
+    const prod = new PrivateObjectStorage({ OBJECT_STORAGE_ENV: 'prod' });
+    const stagingKey = staging.buildOcrSourceKey();
+    const prodKey = prod.buildOcrSourceKey();
+    expect(stagingKey).toMatch(DOCUMENT_SOURCE_KEY);
+    expect(stagingKey.startsWith('staging/documents/')).toBe(true);
+    expect(prodKey.startsWith('prod/documents/')).toBe(true);
+    expect(stagingKey).not.toContain(PROPERTY_ID);
+    expect(stagingKey).not.toContain(USER_ID);
+    expect(stagingKey).not.toBe(staging.buildOcrSourceKey());
   });
 });
