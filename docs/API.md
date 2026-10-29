@@ -387,6 +387,14 @@ TODO: Retirar consentimiento leads into account deletion before public launch. W
 
 ## Email code login
 
+```text
+POST   /v1/auth/code
+POST   /v1/auth/verify
+POST   /v1/auth/refresh
+POST   /v1/auth/logout
+GET    /v1/auth/session
+```
+
 Trust brief §4.6. `POST /v1/auth/code` always returns **202** `{ message: "Si el correo es válido, te enviamos un código." }` for a string email, whether or not an account exists. A missing email is **400** `auth.email_invalid`. The code is 6 digits, valid for 10 minutes, single use, and stored only as HMAC-SHA256 with the server pepper. A new code invalidates the previous one. The same `Idempotency-Key` within 10 minutes returns that 202 and does not send another email or count toward the limit. A different email with the same key is a new request and still returns 202. Resend cooldown is 60 seconds. More than 5 sends an hour for one email, or for one IP, is **429** with `Retry-After`.
 
 `POST /v1/auth/verify` takes `{ email, code }`. A wrong, expired, used, or unknown code is **401** `auth.code_invalid`. The fifth failure in 10 minutes is **429** with `Retry-After`. The first success creates the user. The access token is an ES256 JWT, lifetime 15 minutes, `iss=api.duerecord.mx`, `aud=duerecord-app`, claims `sub`, `sid`, `iat`, and `exp` only. Clock skew is 60 seconds. `alg=none` and `HS256` are rejected. The refresh token is `rt_` plus 256 bits, stored only as SHA-256, sliding 30 days, absolute 90 days, rotated on use. Reuse outside the 30 second grace revokes the family. `POST /v1/auth/refresh` returns the new pair. `POST /v1/auth/logout` and `GET /v1/auth/session` require the access token. A missing or invalid token is **401**. A non-member or unknown property is **404**, not 403.
