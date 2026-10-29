@@ -1,3 +1,5 @@
+import { allowsDevPrefix, currentDevPrefixEnv, type DevPrefixEnv } from './devPrefix';
+
 /** Expo URL scheme. The slug stays property-control. */
 export const APP_SCHEME = 'duerecord';
 
@@ -45,11 +47,18 @@ function splitScheme(input: string): { scheme: string; rest: string } | null {
 
 /**
  * Segments after the scheme, with empty pieces kept.
- * Expo Go links drop the host through `/--/` and then use the same segments.
+ * Expo Go links drop the host through `/--/` only when the dev-prefix check allows `exp://`.
  * `..`, a double slash, and a trailing slash stay in the list so they cannot collapse into a nid.
  */
-function segmentsAfterScheme(scheme: string, rest: string): string[] | 'unhandled' {
+function segmentsAfterScheme(
+  scheme: string,
+  rest: string,
+  allowExp: boolean,
+): string[] | 'unhandled' {
   if (scheme === 'exp' || scheme === 'exps') {
+    if (!allowExp) {
+      return 'unhandled';
+    }
     const marker = rest.indexOf(EXPO_GO_MARK);
     if (marker === -1) {
       return 'unhandled';
@@ -69,16 +78,19 @@ function isNotificationId(value: string): boolean {
 /**
  * Reads one incoming URL.
  * A notification is exactly the segments ['notificaciones', <uuid>].
- * Any other duerecord or Expo Go path falls back to Inicio.
+ * Any other duerecord path falls back to Inicio.
+ * `exp://` and `exps://` are parsed only when `allowsDevPrefix` is true — the same
+ * Expo Go / dev-build check that registers the prefix. A store or TestFlight build
+ * ignores them, including a link whose host is not this app.
  * Any other scheme is ignored. Query and fragment are never part of the result.
  */
-export function parseDeepLink(input: string): DeepLinkParse {
+export function parseDeepLink(input: string, env: DevPrefixEnv = currentDevPrefixEnv()): DeepLinkParse {
   const stripped = stripQueryAndFragment(input.trim());
   const parts = splitScheme(stripped);
   if (!parts) {
     return { status: 'inicio' };
   }
-  const segments = segmentsAfterScheme(parts.scheme, parts.rest);
+  const segments = segmentsAfterScheme(parts.scheme, parts.rest, allowsDevPrefix(env));
   if (segments === 'unhandled') {
     return { status: 'unhandled' };
   }
@@ -98,8 +110,12 @@ export function parseDeepLink(input: string): DeepLinkParse {
 }
 
 /** Where the shell should go. A missing session holds the nid until sign-in, and never the raw URL. */
-export function resolveDeepLink(input: string, hasSession: boolean): DeepLinkAction {
-  const parsed = parseDeepLink(input);
+export function resolveDeepLink(
+  input: string,
+  hasSession: boolean,
+  env?: DevPrefixEnv,
+): DeepLinkAction {
+  const parsed = parseDeepLink(input, env);
   if (parsed.status === 'unhandled') {
     return { action: 'ignore' };
   }
@@ -133,8 +149,8 @@ export function notificationDeepLink(nid: string): string | null {
 }
 
 /** The URL this app keeps after handling. Secrets on the incoming URL are not copied. */
-export function handledDeepLinkUrl(input: string): string | null {
-  const parsed = parseDeepLink(input);
+export function handledDeepLinkUrl(input: string, env?: DevPrefixEnv): string | null {
+  const parsed = parseDeepLink(input, env);
   if (parsed.status !== 'notification') {
     return null;
   }
