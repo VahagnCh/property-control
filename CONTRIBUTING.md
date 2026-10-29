@@ -4,7 +4,7 @@ DueRecord is a tracking product. Pull requests that charge money, connect a bank
 
 ## Setup
 
-Node 20.19+ (see `.nvmrc`) and pnpm 10. From a clean checkout:
+Node 22.13+ (see `.nvmrc`) and pnpm 10. Expo SDK 58 does not run on Node 20. From a clean checkout:
 
 ```bash
 pnpm install

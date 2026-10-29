@@ -16,6 +16,8 @@ export function allowsDevPrefix(env: Pick<DevPrefixEnv, 'dev' | 'executionEnviro
  */
 export function currentDevPrefixEnv(): DevPrefixEnv {
   const dev = typeof __DEV__ !== 'undefined' && __DEV__;
-  const executionEnvironment = Constants.executionEnvironment;
-  return { dev, executionEnvironment };
+  return {
+    dev,
+    executionEnvironment: Constants.executionEnvironment,
+  };
 }

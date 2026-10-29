@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   GoneException,
   HttpException,
   InternalServerErrorException,
@@ -16,6 +17,7 @@ import { NEXT_DUE_DATE_ERROR } from '../obligations/next-due-date.js';
 import { loadOcrRuntime } from './ocr-runtime.js';
 import { OcrService } from './ocr.service.js';
 import { paymentCreateAuditFromReplace, type OcrDecision, type OcrSuggestion } from './ocr.types.js';
+import { DOCUMENT_SOURCE_KEY } from '../evidence/storage-key.js';
 import { PrivateObjectStorage } from './object-storage.js';
 
 const PROPERTY = '11111111-1111-4111-8111-111111111111';
@@ -93,7 +95,10 @@ describe('OcrService', () => {
     expect(job.vendor).toBe('stub');
     expect(job).not.toHaveProperty('storageKey');
     expect(JSON.stringify(job)).not.toMatch(/storageKey|storage_key|properties\//i);
-    expect(storage.calls).toEqual([`properties/${PROPERTY}/documents/${DOCUMENT}/ocr-stub`]);
+    expect(storage.calls).toHaveLength(1);
+    expect(storage.calls[0]).toMatch(DOCUMENT_SOURCE_KEY);
+    expect(storage.calls[0]).not.toContain(PROPERTY);
+    expect(storage.calls[0]).not.toContain(DOCUMENT);
 
     const suggestions = suggestionMap(service, PROPERTY, job.id);
     expect(suggestions.length).toBeGreaterThan(0);
@@ -120,17 +125,6 @@ describe('OcrService', () => {
         error: 'invalid_path',
         statusCode: 400,
       });
-    }
-    expect(() => storage.buildOcrSourceKey('property-1', DOCUMENT)).toThrow(BadRequestException);
-    try {
-      storage.buildOcrSourceKey('property-1', DOCUMENT);
-      expect.unreachable();
-    } catch (error) {
-      expect((error as BadRequestException).getResponse()).toMatchObject({
-        error: 'invalid_source_key',
-        message: 'Invalid source key input.',
-      });
-      expect(JSON.stringify((error as BadRequestException).getResponse())).not.toMatch(/storage[_-]?key/i);
     }
     expect(storage.calls).toEqual([]);
   });
@@ -1475,6 +1469,41 @@ describe('OcrService', () => {
         statusCode: 422,
       });
     }
+  });
+
+  it('returns 404 for an unknown suggestion id and does not leak it', async () => {
+    const service = serviceWith();
+    const { job } = service.enqueue(PROPERTY, DOCUMENT);
+    const suggestions = suggestionMap(service, PROPERTY, job.id);
+    expect(suggestions.length).toBeGreaterThan(0);
+    const bodies = [
+      [{ suggestionId: FORGED, action: 'reject' as const }],
+      [
+        ...suggestions.map((row) => ({ suggestionId: row.id, action: 'reject' as const })),
+        { suggestionId: FORGED, action: 'reject' as const },
+      ],
+    ];
+    for (const body of bodies) {
+      try {
+        await service.confirm(PROPERTY, job.id, body, { actorUserId: 'user-a' });
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(NotFoundException);
+        expect(error).not.toBeInstanceOf(ForbiddenException);
+        expect(error).not.toBeInstanceOf(UnprocessableEntityException);
+        const response = (error as NotFoundException).getResponse();
+        expect((error as NotFoundException).getStatus()).toBe(404);
+        expect(response).toEqual({ statusCode: 404, error: 'not_found', message: 'Not found.' });
+        const serialized = JSON.stringify(response);
+        expect(serialized).not.toContain(FORGED);
+        expect(serialized).not.toContain('Cannot');
+        for (const row of suggestions) {
+          expect(serialized).not.toContain(row.id);
+        }
+      }
+    }
+    expect(service.getJob(PROPERTY, job.id).job.status).toBe('suggested');
+    expect(suggestionMap(service, PROPERTY, job.id).every((row) => row.applyStatus === 'pending')).toBe(true);
   });
 
   it('rejects a top-level clientPriorValue with 422', async () => {

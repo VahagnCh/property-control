@@ -3,18 +3,15 @@ import {
   type LinkingOptions,
 } from '@react-navigation/native';
 import * as Linking from 'expo-linking';
-import { allowsDevPrefix, currentDevPrefixEnv } from './devPrefix';
 import { APP_SCHEME, isNotificationId } from './deepLink';
+import { allowsDevPrefix, currentDevPrefixEnv, type DevPrefixEnv } from './devPrefix';
 
-export { allowsDevPrefix };
-
-export type LinkingRuntime = {
-  /** True for a debug bundle (`__DEV__`). False for a store or TestFlight release. */
-  dev: boolean;
-  executionEnvironment: string | null | undefined;
+export type LinkingRuntime = DevPrefixEnv & {
   /** `Linking.createURL('/')` when it is an Expo Go `exp://` prefix. Otherwise null. */
   expoGoPrefix: string | null;
 };
+
+export { allowsDevPrefix };
 
 export function linkingPrefixes(env: LinkingRuntime): string[] {
   const prefixes = [`${APP_SCHEME}://`];
@@ -123,11 +120,10 @@ function expoGoPrefix(): string | null {
 }
 
 function currentRuntime(): LinkingRuntime {
-  const { dev, executionEnvironment } = currentDevPrefixEnv();
+  const env = currentDevPrefixEnv();
   return {
-    dev,
-    executionEnvironment,
-    expoGoPrefix: allowsDevPrefix({ dev, executionEnvironment }) ? expoGoPrefix() : null,
+    ...env,
+    expoGoPrefix: allowsDevPrefix(env) ? expoGoPrefix() : null,
   };
 }
 

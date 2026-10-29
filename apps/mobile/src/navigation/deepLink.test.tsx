@@ -220,6 +220,53 @@ describe('duerecord deep links', () => {
     });
   });
 
+  it('parses exp:// and exps:// only in Expo Go or a dev build', () => {
+    const production = { dev: false, executionEnvironment: 'standalone' };
+    expect(parseDeepLink(`${EXPO_GO}notificaciones/${UUID}?access_token=${SECRET}`, production)).toEqual({
+      status: 'unhandled',
+    });
+    expect(parseDeepLink(`exps://evil.example/--/notificaciones/${UUID}`, production)).toEqual({
+      status: 'unhandled',
+    });
+    expect(parseDeepLink('exp://user:pass@evil.example/--/pagos', production)).toEqual({
+      status: 'unhandled',
+    });
+    expect(parseDeepLink(`duerecord://notificaciones/${UUID}`, production)).toEqual({
+      status: 'notification',
+      nid: UUID,
+    });
+    expect(resolveDeepLink(`${EXPO_GO}notificaciones/${UUID}`, false, production)).toEqual({
+      action: 'ignore',
+    });
+    expect(handledDeepLinkUrl(`${EXPO_GO}notificaciones/${UUID}?access_token=${SECRET}`, production)).toBeNull();
+
+    const dev = { dev: true, executionEnvironment: 'bare' };
+    expect(parseDeepLink(`${EXPO_GO}notificaciones/${UUID}`, dev)).toEqual({
+      status: 'notification',
+      nid: UUID,
+    });
+
+    const expoGo = { dev: false, executionEnvironment: 'storeClient' };
+    expect(parseDeepLink(`${EXPO_GO}pagos?token=abc`, expoGo)).toEqual({
+      status: 'tab',
+      screen: 'Pagos',
+    });
+    expect(createLinkingOptions({ ...production, expoGoPrefix: EXPO_GO }).prefixes).toEqual(['duerecord://']);
+    expect(createLinkingOptions({ ...dev, expoGoPrefix: EXPO_GO }).prefixes).toEqual(['duerecord://', EXPO_GO]);
+    expect(createLinkingOptions({ ...expoGo, expoGoPrefix: EXPO_GO }).prefixes).toEqual(['duerecord://', EXPO_GO]);
+  });
+
+  it('parses an Expo Go link the same way as duerecord', () => {
+    expect(parseDeepLink(`${EXPO_GO}notificaciones/${UUID}?access_token=${SECRET}`)).toEqual(
+      parseDeepLink(`duerecord://notificaciones/${UUID}`),
+    );
+    expect(parseDeepLink(`${EXPO_GO}pagos?token=abc`)).toEqual(parseDeepLink('duerecord://pagos?token=abc'));
+    expect(parseDeepLink(`${EXPO_GO}notificaciones/${UUID}`)).toEqual({
+      status: 'notification',
+      nid: UUID,
+    });
+  });
+
   it('does not parse exp:// or exps:// in a production build, including an arbitrary host', () => {
     const runtime = currentDevPrefixEnv();
     const expoNotification = `${EXPO_GO}notificaciones/${UUID}?access_token=${SECRET}`;
@@ -296,6 +343,24 @@ describe('duerecord deep links', () => {
     fireEvent.press(screen.getByRole('button', { name: COPY['notif.notFound.cta'] }));
     expect(await screen.findByTestId('tab-Inicio')).toBeTruthy();
     expect(treeText()).not.toContain(UUID);
+  });
+
+  it('holds a pending notification nid in memory only', async () => {
+    setHasSession(false);
+    setInitialUrl(`duerecord://notificaciones/${UUID}?access_token=${SECRET}&refresh_token=${REFRESH}`);
+    render(<App />);
+
+    expect(await screen.findByText(COPY['notif.signIn.body'])).toBeTruthy();
+    const text = treeText();
+    expect(text).not.toContain(UUID);
+    expect(text).not.toContain(SECRET);
+    expect(text).not.toContain(REFRESH);
+    expect(text).not.toContain('access_token');
+    expect(screen.queryByTestId('notification-detail')).toBeNull();
+    expect(resolveDeepLink(`duerecord://notificaciones/${UUID}`, false)).toEqual({
+      action: 'sign-in',
+      pendingNid: UUID,
+    });
   });
 
   it('holds the link on sign-in and opens the stub after a real session', async () => {
