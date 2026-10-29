@@ -1,3 +1,4 @@
+import { normalizeAuthEmail } from './auth-codes.js';
 import { UnconfiguredAuthEmailSender, ResendAuthEmailSender } from './resend-auth-email.js';
 
 /** Login mail. Production uses Resend. Tests and local dev use the fake when no key is set. */
@@ -20,16 +21,41 @@ export function authEmailFromEnv(env: NodeJS.ProcessEnv = process.env): string {
   return env.AUTH_EMAIL_FROM?.trim() || 'DueRecord <onboarding@resend.dev>';
 }
 
-export function assertProductionEmailFrom(env: NodeJS.ProcessEnv): void {
-  if (env.NODE_ENV !== 'production') {
+/** True when From is unset or still the Resend onboarding sandbox sender. */
+export function isDefaultAuthEmailFrom(env: NodeJS.ProcessEnv = process.env): boolean {
+  const from = env.AUTH_EMAIL_FROM?.trim().toLowerCase() ?? '';
+  return from.length === 0 || from.includes('onboarding@resend.dev');
+}
+
+/**
+ * Addresses that may receive a code while the sandbox sender is in use.
+ * Null means the variable is unset, so every valid address may be sent.
+ */
+export function authEmailAllowList(env: NodeJS.ProcessEnv = process.env): Set<string> | null {
+  const raw = env.AUTH_EMAIL_ALLOWED_RECIPIENTS?.trim() ?? '';
+  if (raw.length === 0) {
+    return null;
+  }
+  return new Set(
+    raw
+      .split(',')
+      .map((item) => normalizeAuthEmail(item))
+      .filter((item) => item.length > 0),
+  );
+}
+
+export function assertAuthEmailFrom(env: NodeJS.ProcessEnv): void {
+  if (!isDefaultAuthEmailFrom(env)) {
     return;
   }
-  if (!env.RESEND_API_KEY?.trim()) {
-    return;
+  if (env.APP_ENV?.trim() === 'production') {
+    throw new Error('AUTH_EMAIL_FROM must be a verified sender when APP_ENV is production.');
   }
-  const from = env.AUTH_EMAIL_FROM?.trim() ?? '';
-  if (from.length === 0 || from.includes('onboarding@resend.dev')) {
-    throw new Error('AUTH_EMAIL_FROM must be a verified sender when RESEND_API_KEY is set.');
+  const allowList = authEmailAllowList(env);
+  if (!allowList || allowList.size === 0) {
+    throw new Error(
+      'AUTH_EMAIL_ALLOWED_RECIPIENTS is required when AUTH_EMAIL_FROM is the Resend onboarding sender.',
+    );
   }
 }
 

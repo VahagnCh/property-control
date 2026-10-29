@@ -231,4 +231,44 @@ describe('login email', () => {
     const ok = await service.verifyCode({ email: 'reset@example.com', code, ip: '203.0.113.22' });
     expect(ok.status).toBe(200);
   });
+
+  it('sends a code only when the address is on the allow-list', async () => {
+    const previous = process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS;
+    process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS = 'Listed@Example.com';
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const { service, sender, codes } = harness({
+        limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+      });
+      const listed = await service.requestCode({ email: 'listed@example.com', ip: '198.51.100.90' });
+      expect(listed.status).toBe(202);
+      expect(sender.sent).toHaveLength(1);
+      expect(sender.sent[0]?.to).toBe('listed@example.com');
+      expect(JSON.parse(codes.storedText())).toHaveLength(1);
+      const hidden = await service.requestCode({ email: 'other@example.com', ip: '198.51.100.91' });
+      expect(hidden.status).toBe(202);
+      expect(hidden.body).toEqual(listed.body);
+      expect(sender.sent).toHaveLength(1);
+      expect(JSON.parse(codes.storedText())).toHaveLength(1);
+      expect(codes.storedText()).not.toContain('other@example.com');
+      const dumped = [log, info, warn, error]
+        .flatMap((spy) => spy.mock.calls.flat().map((part) => String(part)))
+        .join('\n');
+      expect(dumped).not.toContain('other@example.com');
+      expect(dumped).not.toContain('listed@example.com');
+    } finally {
+      log.mockRestore();
+      info.mockRestore();
+      warn.mockRestore();
+      error.mockRestore();
+      if (previous === undefined) {
+        delete process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS;
+      } else {
+        process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS = previous;
+      }
+    }
+  });
 });
