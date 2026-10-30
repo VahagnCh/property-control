@@ -162,7 +162,7 @@ Quiet hours are 21:00–08:00 in the recipient device timezone: a device-local t
 
 ## Invites
 
-Only an owner invites, by email, as `member` or `viewer`. The API stores a single-use token hash that expires 7 days after `sentAt`. A resend restarts those 7 days. Accepting requires the invited email. An unknown token or the wrong account is 404 first; a used, revoked, superseded, or expired token is 410; an invitee who is already a member is 409; a non-owner invite action is 403. This API owns the invite row and the accept route. Trust still mints the session the invitee uses to sign in. The behavior is [EDGE_CASES.md](EDGE_CASES.md) section 8.
+Only an owner invites, by email, as `member` or `viewer`. The API stores a single-use token hash that expires 7 days after `sentAt`. A resend restarts those 7 days. Accepting requires the invited email. An unknown token or the wrong account is 404 first; a used, revoked, superseded, or expired token is 410; an invitee who is already a member is 409; a caller with no membership, and an unknown property, returns 404 before any 403; a non-owner invite action is 403. This API owns the invite row and the accept route. Trust still mints the session the invitee uses to sign in. The behavior is [EDGE_CASES.md](EDGE_CASES.md) section 8.
 
 ## Open questions
 
