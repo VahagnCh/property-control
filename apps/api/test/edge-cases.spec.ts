@@ -211,7 +211,7 @@ describe("DueRecord edge-case rules", () => {
 
   it.todo("EC-15.11 Logout and session routes check the bearer token first, including the trailing-slash path /v1/auth/logout/, so a missing token is 401 before any 400 or 413.");
 
-  it.todo("EC-15.12 A double void, two people voiding at the same time, returns 409 already_voided. The client shows pay.void.noEdit with pay.void.noEdit.cta (\"Ver pago\"), which reloads the receipt in its anulado state.");
+  it.todo("EC-15.12 A second void, including two people voiding at the same time, returns 409 already_voided. The client shows pay.void.alreadyVoided (\"Este pago ya estaba anulado.\"), then the receipt refreshes as anulado (AC-PAY-21).");
 
 
   it.todo("EC-15.13 The client treats a token-storage read failure as unavailable, showing connecting or retry copy, and never as signed out. It never clears tokens because of that failure.");
