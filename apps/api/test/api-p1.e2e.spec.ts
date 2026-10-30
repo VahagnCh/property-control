@@ -440,13 +440,16 @@ describe('API P1', () => {
           const empty = await send(server, method, concrete, { body: '', contentType: 'application/json' });
           expect(empty.status, `${route} empty`).toBe(template === '/v1/auth/code' ? 400 : 401);
           const bearerFirst = template === '/v1/auth/logout';
-          const malformed = await send(server, method, concrete, { body: '{', contentType: 'application/json' });
-          expect(malformed.status, `${route} malformed`).toBe(bearerFirst ? 401 : 400);
-          const oversized = await send(server, method, concrete, {
-            body: `{"pad":"${'x'.repeat(40_000)}"}`,
-            contentType: 'application/json',
-          });
-          expect(oversized.status, `${route} oversized`).toBe(bearerFirst ? 401 : 413);
+          const targets = bearerFirst ? [concrete, '/v1/auth/logout/'] : [concrete];
+          for (const path of targets) {
+            const malformed = await send(server, method, path, { body: '{', contentType: 'application/json' });
+            expect(malformed.status, `${path} malformed`).toBe(bearerFirst ? 401 : 400);
+            const oversized = await send(server, method, path, {
+              body: `{"pad":"${'x'.repeat(40_000)}"}`,
+              contentType: 'application/json',
+            });
+            expect(oversized.status, `${path} oversized`).toBe(bearerFirst ? 401 : 413);
+          }
         }
         continue;
       }

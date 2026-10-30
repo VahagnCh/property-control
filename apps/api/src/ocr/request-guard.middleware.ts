@@ -77,7 +77,7 @@ export class RequestGuardMiddleware implements NestMiddleware {
 }
 
 function isAuthBearerPath(url: string): boolean {
-  return url === '/v1/auth/logout' || url === '/v1/auth/session';
+  return /^\/v1\/auth\/(logout|session)\/?$/.test(url);
 }
 
 function writeParseError(res: Response, error: unknown): void {

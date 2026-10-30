@@ -12,6 +12,7 @@ function publishedEnv(secret: string | undefined): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     AVISO_VERSION: '2026-10-21',
     AVISO_URL: 'https://example.com/aviso',
+    AUTH_EMAIL_FROM: 'DueRecord <hello@example.com>',
   };
   if (secret !== undefined) {
     env.SERVER_SECRET = secret;
@@ -90,5 +91,44 @@ describe('prepareBoot', () => {
       readFileSync(path, 'utf8').includes('TEST_SERVER_SECRET'),
     );
     expect(hits).toEqual([]);
+  });
+
+  it('rejects the Resend onboarding sender when APP_ENV is production', async () => {
+    const env = publishedEnv(validSecret);
+    env.APP_ENV = 'production';
+    env.NODE_ENV = 'production';
+    delete env.AUTH_EMAIL_FROM;
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/AUTH_EMAIL_FROM/);
+    env.AUTH_EMAIL_FROM = 'DueRecord <onboarding@resend.dev>';
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/AUTH_EMAIL_FROM/);
+    env.AUTH_EMAIL_FROM = 'DueRecord <hello@example.com>';
+    await expect(prepareBoot(env, async () => true)).resolves.toBeUndefined();
+  });
+
+  it('rejects the onboarding sender in staging when no allow-list is set', async () => {
+    const env = publishedEnv(validSecret);
+    env.APP_ENV = 'staging';
+    env.NODE_ENV = 'production';
+    env.AUTH_EMAIL_FROM = 'DueRecord <onboarding@resend.dev>';
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/AUTH_EMAIL_ALLOWED_RECIPIENTS/);
+    delete env.AUTH_EMAIL_FROM;
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/AUTH_EMAIL_ALLOWED_RECIPIENTS/);
+    env.AUTH_EMAIL_ALLOWED_RECIPIENTS = 'person@example.com';
+    await expect(prepareBoot(env, async () => true)).resolves.toBeUndefined();
+  });
+
+  it('treats a missing or unknown APP_ENV as production for the onboarding sender', async () => {
+    const env = publishedEnv(validSecret);
+    env.NODE_ENV = 'production';
+    env.AUTH_EMAIL_FROM = 'DueRecord <onboarding@resend.dev>';
+    env.AUTH_EMAIL_ALLOWED_RECIPIENTS = 'person@example.com';
+    delete env.APP_ENV;
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/AUTH_EMAIL_FROM/);
+    env.APP_ENV = '   ';
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/AUTH_EMAIL_FROM/);
+    env.APP_ENV = 'preview';
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/AUTH_EMAIL_FROM/);
+    env.APP_ENV = 'staging';
+    await expect(prepareBoot(env, async () => true)).resolves.toBeUndefined();
   });
 });

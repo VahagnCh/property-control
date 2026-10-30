@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import type { AuthAuditEvent, AuthAuditLog } from './auth-audit.js';
-import type { AuthCodeRow, AuthCodeStore } from './auth-codes.js';
+import type { AuthCodeRow, AuthCodeStore, ReservedAttempt } from './auth-codes.js';
 import type { AuthUsers } from './auth.service.js';
 import type { SessionDirectory } from './session-directory.js';
 
@@ -110,6 +110,41 @@ export class PrismaAuthCodes implements AuthCodeStore {
     `;
     const row = rows[0];
     return row ? fromRaw(row) : null;
+  }
+
+  async reserveAttempt(emailHmac: string, now: Date): Promise<ReservedAttempt | null> {
+    const rows = await this.prisma.$queryRaw<Array<{ id: string; code_hmac: string }>>`
+      UPDATE auth_codes
+      SET attempts = attempts + 1
+      WHERE id = (
+        SELECT id FROM auth_codes
+        WHERE email_hmac = ${emailHmac}
+          AND used_at IS NULL
+          AND expires_at > ${now}
+        ORDER BY created_at DESC
+        LIMIT 1
+        FOR UPDATE
+      )
+        AND attempts < 5
+      RETURNING id, code_hmac
+    `;
+    const row = rows[0];
+    return row ? { id: row.id, codeHmac: row.code_hmac } : null;
+  }
+
+  async claimUnused(id: string, now: Date): Promise<boolean> {
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      UPDATE auth_codes
+      SET used_at = ${now}
+      WHERE id = CAST(${id} AS uuid)
+        AND used_at IS NULL
+      RETURNING id
+    `;
+    return rows.length > 0;
+  }
+
+  async deleteById(id: string): Promise<void> {
+    await this.prisma.authCode.deleteMany({ where: { id } });
   }
 
   async markUsed(id: string, now: Date): Promise<void> {

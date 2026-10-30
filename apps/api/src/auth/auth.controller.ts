@@ -48,10 +48,10 @@ export class AuthController {
   @Post('logout')
   @UseGuards(AccessTokenGuard)
   async logout(
-    @Req() request: { accessToken?: { sid?: string } },
+    @Req() request: { accessToken?: { sid?: string; sub?: string } },
     @Res() response: Response,
   ): Promise<void> {
-    writeAuthResult(response, await this.auth.logout(request.accessToken?.sid));
+    writeAuthResult(response, await this.auth.logout(request.accessToken?.sid, request.accessToken?.sub));
   }
 
   @Get('session')

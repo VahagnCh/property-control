@@ -17,6 +17,7 @@ export class ResendAuthEmailSender implements AuthEmailSender {
     const send = this.config.fetchImpl ?? fetch;
     const response = await send('https://api.resend.com/emails', {
       method: 'POST',
+      signal: AbortSignal.timeout(10_000),
       headers: {
         Authorization: `Bearer ${this.config.apiKey}`,
         'Content-Type': 'application/json',

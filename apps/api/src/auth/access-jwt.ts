@@ -67,6 +67,9 @@ export function assertAuthJwtConfig(env: NodeJS.ProcessEnv = process.env): void 
   if (!material) {
     return;
   }
+  if (new Set(material.publicKeys.map((key) => key.kid)).size !== material.publicKeys.length) {
+    throw new Error('AUTH_JWT_PREVIOUS_KID must differ from AUTH_JWT_KID.');
+  }
   assertP256Private(material.current.privateKeyPem);
   for (const key of material.publicKeys) {
     assertP256Public(key.publicKeyPem);
@@ -134,6 +137,9 @@ export function verifyAccessToken(
   }
   const key = keys.find((item) => item.kid === header.kid);
   if (!key) {
+    return { ok: false, reason: 'invalid' };
+  }
+  if (!/^[A-Za-z0-9_-]{86}$/.test(encodedSignature)) {
     return { ok: false, reason: 'invalid' };
   }
   let signature: Buffer;
