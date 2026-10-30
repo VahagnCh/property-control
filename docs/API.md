@@ -132,9 +132,12 @@ POST   /v1/properties/:propertyId/payments/:paymentId/void
          → 200 Payment | 409 already_voided
 ```
 
-There is no `DELETE` for a payment. A correction is the void route. It sets `voidedAt`, `voidedBy`, and `voidReason`. A second void of a payment that is already voided is **409** `already_voided` and changes nothing: the stored `voidReason`, `voidedAt`, and `voidedBy` stay as they were. A void cannot be undone. The same Idempotency-Key returns the original void response. A viewer receives 403. A caller with no membership, including when the payment id is unknown, receives 404.
+There is no `DELETE` for a payment. A correction is the void route. It sets `voidedAt`, `voidedBy`, and `voidReason`. A void cannot be undone. The same Idempotency-Key returns the original void response. A viewer receives 403. A caller with no membership, including when the payment id is unknown, receives 404.
 
-`PATCH` of a voided payment is **409** `payment_voided` for every edit, including notes, amount, method, reference, and status. That 409 is stored under the Idempotency-Key, and a replay returns the same body. No `payment.updated` audit entry is written, and the payment row does not change. Mobile copy keys are `pay.void.noEdit` and `pay.void.noEdit.cta`.
+Two 409s mean the payment is already voided. Mobile uses one copy for both, `pay.void.noEdit` and `pay.void.noEdit.cta`. The CTA reloads the payment.
+
+- `PATCH` of a voided payment is **409** `payment_voided` for every edit, including notes, amount, method, reference, and status. That 409 is stored under the Idempotency-Key, and a replay returns the same body. No `payment.updated` audit entry is written, and the payment row does not change.
+- A second `POST .../void` is **409** `already_voided`. The stored `voidReason`, `voidedAt`, and `voidedBy` stay as they were. The UI hides Anular once a payment is voided, so this response is the concurrency race where a void is already in flight.
 
 This records a payment the person already made somewhere else. The API does not charge a card, debit an account, or hold a balance. `method` and `reference` are descriptive text — "SPEI", a folio — not instructions to a payment processor.
 
@@ -450,8 +453,8 @@ Test hosting is Render, Neon, Cloudflare R2, and Resend. The code stays provider
 | Same idempotency key, different body on a payment or evidence route | 409 `idempotency_key_reused` |
 | Same user-scoped idempotency key, different request hash | 409 `idempotency_key_reused` |
 | Replay with the same key and body | stored 2xx or 4xx |
-| PATCH of a voided payment (`pay.void.noEdit`, `pay.void.noEdit.cta`) | 409 `payment_voided` |
-| Second void of an already voided payment | 409 `already_voided` |
+| PATCH of a voided payment. Copy `pay.void.noEdit` / `pay.void.noEdit.cta`; the CTA reloads the payment | 409 `payment_voided` |
+| Second void of an already voided payment (UI hides Anular; this is a race). Same copy, `pay.void.noEdit` / `pay.void.noEdit.cta`; the CTA reloads the payment | 409 `already_voided` |
 | N/A conflict, archive read-only, or invite of an active member | 409 |
 | Used, revoked, superseded-by-resend, or expired invite token | 410 |
 | Amount, currency, `paidAt`, `dueDay`, or `voidReason` rejected | 422 |
