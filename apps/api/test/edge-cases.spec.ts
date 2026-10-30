@@ -215,4 +215,10 @@ describe("DueRecord edge-case rules", () => {
 
 
   it.todo("EC-15.13 The client treats a token-storage read failure as unavailable, showing connecting or retry copy, and never as signed out. It never clears tokens because of that failure.");
+
+  it.todo("EC-15.14 If an edit and a void on the same payment arrive at once, the edit either finishes before the void or returns 409 payment_voided. It never returns 200 on a voided payment. The check is atomic, with a row lock or a conditional update.");
+
+  it.todo("EC-15.15 A trailing slash on write routes (POST and PATCH on properties, obligations, and payments, and .../void/) is still checked for the bearer token first, so a missing token gets 401 before any 400 or 413. The idempotency scope is normalized the same way, so /x and /x/ share a scope.");
+
+  it.todo("EC-15.16 Property address and property name are stored in the audit only as {length, sha256}, on both create and update. Obligation titles may stay plaintext. The current name and address on the property itself stay readable.");
 });

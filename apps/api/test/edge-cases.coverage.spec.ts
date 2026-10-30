@@ -37,6 +37,9 @@ const section15Ids = [
   'EC-15.11',
   'EC-15.12',
   'EC-15.13',
+  'EC-15.14',
+  'EC-15.15',
+  'EC-15.16',
 ] as const;
 
 function ruleId(rule: string): string {
