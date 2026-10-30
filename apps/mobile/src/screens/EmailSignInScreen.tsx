@@ -70,6 +70,7 @@ export function EmailSignInScreen({
   const resendLeft = resendDeadline === null ? 0 : remainingSeconds(resendDeadline, clock);
   const blockLeft = blockDeadline === null ? 0 : remainingSeconds(blockDeadline, clock);
   const shownWait = Math.max(resendLeft, blockLeft);
+  const expiryLine = sentAt === null ? null : codeExpiryLabel(sentAt, clock);
   const slow = busySince !== null && clock - busySince >= SLOW_AFTER_MS;
 
   function currentClient(): SignInClient {
@@ -252,7 +253,11 @@ export function EmailSignInScreen({
       ) : (
         <>
           <Text style={styles.body}>{fillCopy(COPY['auth.code.body'], { email: normalizeAuthEmail(email) })}</Text>
-          {sentAt !== null ? <Text style={styles.body}>{codeExpiryLabel(sentAt)}</Text> : null}
+          {expiryLine ? (
+            <Text testID="auth-code-expiry" style={styles.body}>
+              {expiryLine}
+            </Text>
+          ) : null}
           {showLatest ? <Text style={styles.body}>{COPY['auth.code.latest']}</Text> : null}
           <Text style={styles.body}>{COPY['auth.code.spamHint']}</Text>
           <TextInput

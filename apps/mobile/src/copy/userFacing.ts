@@ -86,7 +86,7 @@ export const COPY = {
   'auth.email.label': 'Correo electrónico',
   'auth.email.cta': 'Enviar código',
   'auth.email.invalid': 'Escribe un correo válido.',
-  'auth.email.webUnavailable': 'En el navegador no se puede iniciar sesión. Abre DueRecord en el teléfono.',
+  'auth.email.webUnavailable': 'Por ahora, solo puedes entrar desde la app en tu teléfono.',
   'auth.code.title': 'Revisa tu correo',
   'auth.code.body': 'Si {email} puede entrar a DueRecord, te enviamos un código de 6 dígitos. Vence en 10 minutos.',
   'auth.code.latest': 'Si pediste más de un código, usa el del correo más reciente.',
@@ -97,7 +97,7 @@ export const COPY = {
   'auth.code.resendWait': 'Puedes pedir otro código en {s} s.',
   'auth.code.wait': 'Demasiados intentos. Espera unos minutos y pide un código nuevo.',
   'auth.code.changeEmail': 'Usar otro correo',
-  'auth.code.expiresAt': 'Vence a las {time}, hora de la Ciudad de México ({date}).',
+  'auth.code.expiresAt': 'El código vence a las {time}.',
   'auth.network': 'No pudimos conectarnos. Revisa tu conexión e inténtalo de nuevo.',
   'auth.session.expired': 'Tu sesión terminó. Entra de nuevo.',
   'idempotency.keyReused': 'Esa solicitud ya se usó con otros datos. Revísala e inténtalo de nuevo.',
@@ -105,8 +105,25 @@ export const COPY = {
 
 export type CopyKey = keyof typeof COPY;
 
-export function copyText(key: CopyKey): string {
-  return COPY[key];
+/** English fallback. Spanish in `COPY` is the source. */
+export const COPY_EN: Partial<Record<CopyKey, string>> = {
+  'auth.email.webUnavailable': 'For now, you can only sign in from the app on your phone.',
+  'auth.code.expiresAt': 'The code expires at {time}.',
+};
+
+/**
+ * Spanish is the source. English is used when the caller asks for it, or
+ * when the Spanish string is empty.
+ */
+export function pickCopy(spanish: string, english: string | undefined, language: 'es' | 'en' = 'es'): string {
+  if (language === 'en') {
+    return english || spanish;
+  }
+  return spanish || english || '';
+}
+
+export function copyText(key: CopyKey, language: 'es' | 'en' = 'es'): string {
+  return pickCopy(COPY[key], COPY_EN[key], language);
 }
 
 /** Fills `{name}` placeholders. The replacement is inserted as text, not a pattern. */

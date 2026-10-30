@@ -99,8 +99,8 @@ describe('email sign-in screen', () => {
     expect(screen.getByText(COPY['auth.code.spamHint'])).toBeTruthy();
     expect(screen.queryByText(COPY['auth.code.latest'])).toBeNull();
     expect(screen.queryByText(AUTH_CODE_ACCEPTED_MESSAGE)).toBeNull();
-    expect(screen.getByText(/00:05/)).toBeTruthy();
-    expect(screen.getByText(/2026-10-31/)).toBeTruthy();
+    expect(screen.getByText('El código vence a las 12:05 a. m.')).toBeTruthy();
+    expect(screen.queryByText(/2026-10-31/)).toBeNull();
     expect(screen.queryByText(/2026-10-30/)).toBeNull();
     const input = screen.getByTestId('auth-code-input');
     expect(input.props.textContentType).toBe('oneTimeCode');
@@ -316,8 +316,52 @@ describe('email sign-in screen', () => {
     expect(screen.getByText(COPY['auth.email.title'])).toBeTruthy();
     expect(screen.getByText(COPY['auth.email.webUnavailable'])).toBeTruthy();
     expect(screen.queryByLabelText(COPY['auth.email.label'])).toBeNull();
-    expect(screen.queryByRole('button', { name: COPY['auth.email.cta'] })).toBeNull();
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByRole('link')).toBeNull();
     expect(requestCode).not.toHaveBeenCalled();
+  });
+
+  it('shows the expiry line at 23:59, hides it at 00:01, and waits for a 401 before an error', async () => {
+    const server = createContractFakeServer();
+    server.route('POST', AUTH_VERIFY_PATH, () => ({
+      status: 401,
+      body: { statusCode: 401, error: 'auth.code_invalid', message: 'The code is not valid.' },
+    }));
+    let clock = Date.parse('2026-10-31T05:50:00.000Z');
+    const handlers: Array<(state: string) => void> = [];
+    const spy = jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, handler) => {
+      handlers.push(handler as (state: string) => void);
+      return { remove: jest.fn() };
+    });
+    try {
+      renderWithSafeArea(<EmailSignInScreen client={clientFor(server)} now={() => clock} />);
+      fireEvent.changeText(screen.getByLabelText(COPY['auth.email.label']), 'persona@ejemplo.com');
+      fireEvent.press(screen.getByRole('button', { name: COPY['auth.email.cta'] }));
+      expect(await screen.findByText('El código vence a las 12:00 a. m.')).toBeTruthy();
+
+      clock = Date.parse('2026-10-31T05:59:00.000Z');
+      await act(async () => {
+        handlers.forEach((handler) => handler('active'));
+      });
+      expect(screen.getByTestId('auth-code-expiry').props.children).toBe('El código vence a las 12:00 a. m.');
+      expect(screen.queryByTestId('auth-error')).toBeNull();
+
+      clock = Date.parse('2026-10-31T06:01:00.000Z');
+      await act(async () => {
+        handlers.forEach((handler) => handler('active'));
+      });
+      expect(screen.queryByTestId('auth-code-expiry')).toBeNull();
+      expect(screen.queryByText(/vence a las/)).toBeNull();
+      expect(screen.queryByTestId('auth-error')).toBeNull();
+      const resend = screen.getByRole('button', { name: COPY['auth.code.resend'] });
+      expect(resend.props.accessibilityState?.disabled).toBe(false);
+
+      fireEvent.changeText(screen.getByTestId('auth-code-input'), '123456');
+      expect(await screen.findByText(COPY['auth.code.wrong'])).toBeTruthy();
+      expect(screen.queryByText('auth.code.expired')).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('opens sign-in when the session expires', async () => {
