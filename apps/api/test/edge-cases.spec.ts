@@ -195,7 +195,7 @@ describe("DueRecord edge-case rules", () => {
 
   it.todo("EC-15.3 A GET retries once automatically, and only after a timeout or a network error. It never retries a 4xx or a signed-URL request. A write never auto-retries, except that after a 401 the client does a single refresh and then resends the write once with the same Idempotency-Key and the same body. If that refresh or resend fails, there is no further automatic retry, and the user sees the normal error or Reintentar.");
 
-  it.todo("EC-15.4 A voided payment is read-only. Any PATCH returns 409 payment_voided, that response is stored under the idempotency key, and the PATCH writes no audit. The UI shows no Editar. The race copy keys are pay.void.noEdit and pay.void.noEdit.cta (\"Ver pago\"). To fix a mistake the user records a new payment.");
+  it.todo("EC-15.4 A voided payment is read-only. Any PATCH returns 409 payment_voided, that response is stored under the idempotency key, and the PATCH writes no audit. The UI shows no Editar. Editing a voided payment shows pay.void.noEdit with pay.void.noEdit.cta (\"Ver pago\"). To fix a mistake the user records a new payment.");
 
   it.todo("EC-15.5 voidReason stays readable on the payment. The audit log stores only {length, sha256} via sealAuditText.");
 
@@ -205,13 +205,13 @@ describe("DueRecord edge-case rules", () => {
 
   it.todo("EC-15.8 The refresh lifetime is 30 days idle and 90 days absolute, with a 30 second rotation grace. The client uses a single-flight refresh. A refresh ends the session only on a 401, or on a 400 or 401 carrying auth.refresh_invalid, auth.refresh_reused, token_invalid, or token_expired.");
 
-  it.todo("EC-15.9 A verify attempt is reserved atomically before the code is compared, at a maximum of 5 per email, and at most 3 wrong verifies per (email, IP) within the 5 per email. A freshly delivered code resets the count. One IP can never lock out an account. Send limits are 20 per hour per IP and 5 per email, and the IP limit is checked first. A failed Resend send does not start the 60 second cooldown and does not consume quota. An unset or unknown APP_ENV is treated as production. The onboarding@resend.dev sender is refused at boot in production. Staging requires a recipient allow-list compared after trim and lowercase.");
+  it.todo("EC-15.9 A verify attempt is reserved atomically before the code is compared, at a maximum of 5 per email, and at most 3 wrong verifies per (email, IP) within the 5 per email. A freshly delivered code resets the count. One IP can never lock out an account. Send limits are checked in order: 20 per hour per IP, then auth.code.email_ip at 3 per hour per (email, IP), then 5 per hour per email. From the same IP, the 4th send to one email returns 429, while a send from another IP still returns 202 and the code is delivered. A failed send is undone across all three buckets. A failed Resend send does not start the 60 second cooldown and does not consume quota. An unset or unknown APP_ENV means production. In production, auth never uses in-memory stores even when NODE_ENV=test, it throws if DATABASE_URL is missing, a missing Resend key gives the 503 sender and never the fake one, and any @resend.dev From address is treated as the sandbox sender and refused at boot. Staging requires a recipient allow-list compared after trim and lowercase.");
 
   it.todo("EC-15.10 Requests must arrive over HTTPS. Behind the proxy, X-Forwarded-Proto is trusted only from the configured proxy (§12.1 carve-out).");
 
   it.todo("EC-15.11 Logout and session routes check the bearer token first, including the trailing-slash path /v1/auth/logout/, so a missing token is 401 before any 400 or 413.");
 
-  it.todo("EC-15.12 A double void, two people voiding at the same time, returns 409. The client shows pay.void.noEdit with the call to action pay.void.noEdit.cta (\"Ver pago\"), which reloads the receipt in its anulado state.");
+  it.todo("EC-15.12 A double void, two people voiding at the same time, returns 409 already_voided. The client shows pay.void.noEdit with pay.void.noEdit.cta (\"Ver pago\"), which reloads the receipt in its anulado state.");
 
 
   it.todo("EC-15.13 The client treats a token-storage read failure as unavailable, showing connecting or retry copy, and never as signed out. It never clears tokens because of that failure.");
