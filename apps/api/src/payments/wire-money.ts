@@ -14,7 +14,11 @@ export const WIRE_MONEY_EXAMPLE: WireMoney = {
   currency: 'MXN',
 };
 
-const WIRE_AMOUNT = /^(?:0|[1-9]\d*)(?:\.(\d{2}))?$/;
+/** One or two fraction digits, and at most 12 digits before the decimal. */
+const WIRE_AMOUNT = /^(?:0|[1-9]\d{0,11})\.(\d{1,2})$/;
+
+/** Signed PostgreSQL BIGINT. A centavo total above this is rejected. */
+export const INT8_MAX_CENTAVOS = 9223372036854775807n;
 
 /** Decimal pesos to integer centavos. Rejects anything that is not the wire form. */
 export function wireAmountToCentavos(amount: string): bigint {
@@ -23,8 +27,12 @@ export function wireAmountToCentavos(amount: string): bigint {
     throw new Error('amount must be a decimal peso string such as "1234.50".');
   }
   const whole = amount.split('.')[0] ?? '0';
-  const frac = match[1] ?? '00';
-  return BigInt(whole) * 100n + BigInt(frac);
+  const frac = (match[1] ?? '').padEnd(2, '0');
+  const cents = BigInt(whole) * 100n + BigInt(frac);
+  if (cents > INT8_MAX_CENTAVOS) {
+    throw new Error('amount exceeds int8.');
+  }
+  return cents;
 }
 
 /** Integer centavos to the wire decimal. No float division. */

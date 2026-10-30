@@ -1,7 +1,7 @@
-import { BadRequestException, UnprocessableEntityException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { TEST_SERVER_SECRET } from '../../test/test-server-secret.js';
-import { MemoryIdempotencyKeys } from './idempotency-keys.js';
+import { MemoryIdempotencyKeys, IdempotencyKeyReusedException } from './idempotency-keys.js';
 import { MemoryRateLimits, authSubjectHmac } from './rate-limit.js';
 import { MemoryRefreshTokens, hashToken } from './refresh-tokens.js';
 
@@ -16,6 +16,8 @@ function idempotencyInput(overrides: Partial<{
   method: string;
   route: string;
   requestHash: string;
+  now: Date;
+  expiresAt: Date;
 }> = {}) {
   return {
     userId: USER,
@@ -125,8 +127,38 @@ describe('idempotency keys', () => {
       responseBody: { id: 'consent-1' },
     });
     await expect(keys.reserve({ ...input, requestHash: 'hash-b' })).rejects.toBeInstanceOf(
-      UnprocessableEntityException,
+      IdempotencyKeyReusedException,
     );
+    const emailKeys = new MemoryIdempotencyKeys();
+    const emailInput = idempotencyInput({
+      userId: null,
+      emailHmac: 'email-hmac',
+      key: 'code-key-1',
+      route: 'POST /v1/auth/code',
+    });
+    const emailReserved = await emailKeys.reserve(emailInput);
+    expect(emailReserved.outcome).toBe('reserved');
+    if (emailReserved.outcome === 'reserved') {
+      await emailKeys.complete(emailReserved.id, 202, { message: 'ok' });
+    }
+    try {
+      await emailKeys.reserve({ ...emailInput, requestHash: 'hash-b' });
+      throw new Error('expected a reused email key to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(IdempotencyKeyReusedException);
+      expect((error as IdempotencyKeyReusedException).getResponse()).toMatchObject({
+        statusCode: 409,
+        error: 'idempotency_key_reused',
+      });
+    }
+    try {
+      await keys.reserve({ ...input, requestHash: 'hash-b' });
+    } catch (error) {
+      expect((error as ConflictException).getResponse()).toMatchObject({
+        statusCode: 409,
+        error: 'idempotency_key_reused',
+      });
+    }
   });
 
   it('accepts a UUID v4 and the length boundaries, and rejects a short or illegal key', async () => {
@@ -152,6 +184,24 @@ describe('idempotency keys', () => {
     }
   });
 
+  it('keeps an unfinished reservation in progress until it expires', async () => {
+    const keys = new MemoryIdempotencyKeys();
+    const start = new Date('2026-10-29T12:00:00.000Z');
+    const reserved = await keys.reserve(
+      idempotencyInput({ now: start, expiresAt: new Date(start.getTime() + 60_000) }),
+    );
+    expect(reserved.outcome).toBe('reserved');
+    const stillOpen = await keys.reserve(
+      idempotencyInput({ now: new Date(start.getTime() + 31_000), expiresAt: new Date(start.getTime() + 60_000) }),
+    );
+    expect(stillOpen.outcome).toBe('in_progress');
+    const afterExpiry = new Date(start.getTime() + 60_001);
+    const taken = await keys.reserve(
+      idempotencyInput({ now: afterExpiry, expiresAt: new Date(afterExpiry.getTime() + 60_000) }),
+    );
+    expect(taken.outcome).toBe('reserved');
+  });
+
   it('treats the same key on another route as a new request', async () => {
     const keys = new MemoryIdempotencyKeys();
     const key = 'route-key-1';
@@ -175,6 +225,18 @@ describe('idempotency keys', () => {
       idempotencyInput({ key, route: 'POST /v1/obligations', requestHash: 'hash-b' }),
     );
     expect(otherHash.outcome).toBe('reserved');
+  });
+
+  it('treats a lower-case method as the same route scope', async () => {
+    const keys = new MemoryIdempotencyKeys();
+    const reserved = await keys.reserve(idempotencyInput({ method: 'post', route: 'POST /v1/payments' }));
+    expect(reserved.outcome).toBe('reserved');
+    if (reserved.outcome !== 'reserved') {
+      return;
+    }
+    await keys.complete(reserved.id, 201, { ok: true });
+    const replay = await keys.reserve(idempotencyInput({ method: 'POST', route: 'POST /v1/payments' }));
+    expect(replay.outcome).toBe('replay');
   });
 
   it('stores an email HMAC scope without the plain email', async () => {

@@ -13,7 +13,7 @@ Most of this is specified and not implemented. The placeholder guard in `apps/ap
 | Enforce `PropertyMembership` | **This API** |
 | Token lifetime | Access 15–30 minutes, configured by Trust |
 
-The API never mints or refreshes a token. It fetches JWKS from Trust and validates. There is no password, password hash, or session secret in this repository, and `users` holds only `trust_sub` plus denormalized display fields.
+This API mints the email-code access JWT and the rotating refresh token, and it checks that bearer token on each request. Codes and refresh tokens are stored only as hashes. There is no password. `users` holds `trust_sub` and an email HMAC, not the address.
 
 ## The guard
 
@@ -34,10 +34,10 @@ Resolution order:
 2. Verify the access JWT against Trust's JWKS. A missing, invalid, or expired token is **401**.
 3. A bad request is **400**. A payload over the limit is **413**. Those beat membership and consent.
 4. Resolve the local `User` by `trust_sub = jwt.sub`. Upsert on first sight is fine. Load the membership where `property_id = :propertyId AND user_id = :userId AND status = 'active' AND deleted_at IS NULL`, and the property is not soft-deleted. No membership, or a missing or soft-deleted property, is **404** `not_found`, even when that caller also lacks consent. The API does not reveal which properties exist.
-5. A viewer write is **403** `viewer`. A viewer without consent who writes is `viewer`, not `consent_required`.
+5. A viewer write is **403** `forbidden`. A viewer without consent who writes is `forbidden`, not `consent_required`.
 6. A write without the current consent is **403** `consent_required`. Reads skip steps 5 and 6. A non-member read is still 404.
 
-`POST /v1/properties` has no membership check. While it is stubbed the response is 501. When it is live the order is 401, then 400 or 413, then 403 `consent_required`. `POST /v1/invites/accept` stays on the invite checks in [EDGE_CASES.md](EDGE_CASES.md) section 8 after the token: an unknown token, or acceptance from the wrong account, is 404 before any used, revoked, superseded, or expired state is revealed.
+`POST /v1/properties` has no membership check. The order is 401, then 400 or 413, then 403 `consent_required`. `POST /v1/invites/accept` stays on the invite checks in [EDGE_CASES.md](EDGE_CASES.md) section 8 after the token: an unknown token, or acceptance from the wrong account, is 404 before any used, revoked, superseded, or expired state is revealed.
 
 TODO: Retirar consentimiento leads into account deletion before public launch. Withdrawal is not implemented.
 

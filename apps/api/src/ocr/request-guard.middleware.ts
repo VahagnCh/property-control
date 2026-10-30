@@ -1,7 +1,7 @@
 import { Inject, Injectable, type NestMiddleware } from '@nestjs/common';
 import { json, urlencoded, type NextFunction, type Request, type Response } from 'express';
 import { ACCESS_TOKEN_VERIFIER, verifyBearer, type AccessTokenVerifier } from '../auth/access-token.verifier.js';
-import { earlyRequestStatus, isOcrPath, pathOnly } from '../common/path-safety.js';
+import { earlyRequestStatus, isLiveRecordPath, isOcrPath, pathOnly } from '../common/path-safety.js';
 import { OCR_ERROR, ocrBody } from './ocr-errors.js';
 import { OCR_RUNTIME, ocrDisabledBody, type OcrRuntime } from './ocr-runtime.js';
 
@@ -24,14 +24,31 @@ export class RequestGuardMiddleware implements NestMiddleware {
 
   use(req: Request, res: Response, next: NextFunction): void {
     const url = pathOnly(req.originalUrl ?? req.url);
-    if (isOcrPath(url) && this.runtime.enabled) {
-      const verdict = verifyBearer(this.verifier, req.headers.authorization);
-      if (!verdict.ok) {
-        req.resume();
-        res.status(401).json(ocrBody(401, verdict.error, verdict.message));
-        return;
-      }
+    if ((isOcrPath(url) && this.runtime.enabled) || isAuthBearerPath(url) || isLiveRecordPath(req.method, url)) {
+      void this.requireBearer(req, res, next, url);
+      return;
     }
+    this.afterBearer(req, res, next, url);
+  }
+
+  private async requireBearer(req: Request, res: Response, next: NextFunction, url: string): Promise<void> {
+    let verdict: Awaited<ReturnType<typeof verifyBearer>>;
+    try {
+      verdict = await verifyBearer(this.verifier, req.headers.authorization);
+    } catch {
+      req.resume();
+      res.status(401).json(ocrBody(401, OCR_ERROR.tokenInvalid, 'Invalid access token.'));
+      return;
+    }
+    if (!verdict.ok) {
+      req.resume();
+      res.status(401).json(ocrBody(401, verdict.error, verdict.message));
+      return;
+    }
+    this.afterBearer(req, res, next, url);
+  }
+
+  private afterBearer(req: Request, res: Response, next: NextFunction, url: string): void {
     const status = earlyRequestStatus(url, this.runtime.enabled);
     if (status === 501) {
       req.resume();
@@ -57,6 +74,10 @@ export class RequestGuardMiddleware implements NestMiddleware {
       });
     });
   }
+}
+
+function isAuthBearerPath(url: string): boolean {
+  return /^\/v1\/auth\/(logout|session)\/?$/.test(url);
 }
 
 function writeParseError(res: Response, error: unknown): void {

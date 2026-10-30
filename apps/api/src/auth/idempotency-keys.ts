@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { BadRequestException, UnprocessableEntityException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { Mutex } from '../persistence/mutex.js';
 
@@ -22,6 +22,26 @@ export type ReserveResult =
   | { outcome: 'replay'; responseStatus: number; responseBody: unknown }
   | { outcome: 'in_progress' };
 
+/** 2xx and 4xx are stored. 401 and 5xx are released so the same key can try again. */
+export function isReplayableStatus(status: number): boolean {
+  return status >= 200 && status < 500 && status !== 401;
+}
+
+/** A 409 idempotency_in_progress is not a stored response. The client retries the same key. */
+export function isInProgressConflict(body: unknown): boolean {
+  return Boolean(
+    body &&
+      typeof body === 'object' &&
+      (body as { error?: unknown }).error === 'idempotency_in_progress',
+  );
+}
+
+export interface IdempotencyStore {
+  reserve(input: IdempotencyInput): Promise<ReserveResult>;
+  complete(id: string, responseStatus: number, responseBody: unknown): Promise<void>;
+  release(id: string): Promise<void>;
+}
+
 interface StoredKey {
   id: string;
   userId: string | null;
@@ -36,9 +56,19 @@ interface StoredKey {
   expiresAt: Date;
 }
 
-export function assertIdempotencyKey(key: string): void {
-  if (!IDEMPOTENCY_KEY.test(key)) {
-    throw new BadRequestException({
+export class IdempotencyKeyReusedException extends ConflictException {
+  constructor() {
+    super({
+      statusCode: 409,
+      error: 'idempotency_key_reused',
+      message: 'This idempotency key was already used with a different request.',
+    });
+  }
+}
+
+export class IdempotencyKeyInvalidException extends BadRequestException {
+  constructor() {
+    super({
       statusCode: 400,
       error: 'idempotency_key_invalid',
       message: 'Idempotency-Key must be 8 to 128 characters of letters, digits, underscores, or hyphens.',
@@ -46,7 +76,17 @@ export function assertIdempotencyKey(key: string): void {
   }
 }
 
-export class MemoryIdempotencyKeys {
+export function assertIdempotencyKey(key: string): void {
+  if (!IDEMPOTENCY_KEY.test(key)) {
+    throw new IdempotencyKeyInvalidException();
+  }
+}
+
+function normalizeMethod(method: string): string {
+  return method.trim().toUpperCase();
+}
+
+export class MemoryIdempotencyKeys implements IdempotencyStore {
   private readonly rows = new Map<string, StoredKey>();
   private readonly mutex = new Mutex();
 
@@ -60,6 +100,12 @@ export class MemoryIdempotencyKeys {
   }
 
   complete(id: string, responseStatus: number, responseBody: unknown): Promise<void> {
+    if (isInProgressConflict(responseBody)) {
+      return Promise.resolve();
+    }
+    if (!isReplayableStatus(responseStatus)) {
+      return this.release(id);
+    }
     return this.mutex.run(async () => {
       const row = [...this.rows.values()].find((item) => item.id === id);
       if (!row || row.responseStatus !== null) {
@@ -69,9 +115,19 @@ export class MemoryIdempotencyKeys {
       row.responseBody = responseBody;
     });
   }
+
+  release(id: string): Promise<void> {
+    return this.mutex.run(async () => {
+      for (const [key, row] of this.rows) {
+        if (row.id === id && row.responseStatus === null) {
+          this.rows.delete(key);
+        }
+      }
+    });
+  }
 }
 
-export class PrismaIdempotencyKeys {
+export class PrismaIdempotencyKeys implements IdempotencyStore {
   constructor(private readonly prisma: PrismaClient) {}
 
   async reserve(input: IdempotencyInput): Promise<ReserveResult> {
@@ -88,20 +144,32 @@ export class PrismaIdempotencyKeys {
   }
 
   async complete(id: string, responseStatus: number, responseBody: unknown): Promise<void> {
+    if (isInProgressConflict(responseBody)) {
+      return;
+    }
+    if (!isReplayableStatus(responseStatus)) {
+      await this.release(id);
+      return;
+    }
     await this.prisma.idempotencyKey.updateMany({
       where: { id, responseStatus: null },
       data: { responseStatus, responseBody: responseBody as Prisma.InputJsonValue },
     });
   }
+
+  async release(id: string): Promise<void> {
+    await this.prisma.idempotencyKey.deleteMany({ where: { id, responseStatus: null } });
+  }
 }
 
-function reserveStored(rows: Map<string, StoredKey>, input: IdempotencyInput): ReserveResult {
+function reserveStored(rows: Map<string, StoredKey>, raw: IdempotencyInput): ReserveResult {
+  const input = { ...raw, method: normalizeMethod(raw.method) };
   assertIdempotencyKey(input.key);
   const scope = scopeOf(input);
   const mapKey = scopeKey(scope, input);
   const existing = rows.get(mapKey);
   if (existing && existing.expiresAt > input.now) {
-    return decision(existing, input.requestHash);
+    return decideReservation(existing, input);
   }
   if (existing) {
     rows.delete(mapKey);
@@ -123,7 +191,8 @@ function reserveStored(rows: Map<string, StoredKey>, input: IdempotencyInput): R
   return { outcome: 'reserved', id: created.id };
 }
 
-async function reservePrisma(tx: Prisma.TransactionClient, input: IdempotencyInput): Promise<ReserveResult> {
+async function reservePrisma(tx: Prisma.TransactionClient, raw: IdempotencyInput): Promise<ReserveResult> {
+  const input = { ...raw, method: normalizeMethod(raw.method) };
   const scope = scopeOf(input);
   const existing = await tx.idempotencyKey.findFirst({
     where:
@@ -132,13 +201,14 @@ async function reservePrisma(tx: Prisma.TransactionClient, input: IdempotencyInp
         : { emailHmac: scope.subject, method: input.method, route: input.route, key: input.key },
   });
   if (existing && existing.expiresAt > input.now) {
-    return decision(
+    return decideReservation(
       {
         requestHash: existing.requestHash,
         responseStatus: existing.responseStatus,
         responseBody: existing.responseBody,
+        createdAt: existing.createdAt,
       },
-      input.requestHash,
+      input,
     );
   }
   if (existing) {
@@ -160,16 +230,12 @@ async function reservePrisma(tx: Prisma.TransactionClient, input: IdempotencyInp
   return { outcome: 'reserved', id: created.id };
 }
 
-function decision(
-  existing: { requestHash: string; responseStatus: number | null; responseBody: unknown },
-  requestHash: string,
+function decideReservation(
+  existing: { requestHash: string; responseStatus: number | null; responseBody: unknown; createdAt: Date },
+  input: IdempotencyInput,
 ): ReserveResult {
-  if (existing.requestHash !== requestHash) {
-    throw new UnprocessableEntityException({
-      statusCode: 422,
-      error: 'idempotency_key_mismatch',
-      message: 'This idempotency key was already used with a different request.',
-    });
+  if (existing.requestHash !== input.requestHash) {
+    throw new IdempotencyKeyReusedException();
   }
   if (existing.responseStatus !== null) {
     return {

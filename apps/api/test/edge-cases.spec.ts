@@ -113,7 +113,7 @@ describe("DueRecord edge-case rules", () => {
 
   it.todo("EC-7.3 When the same obligation already has a non-voided payment for the same centavo amount whose property-timezone calendar date differs by 0, 1, 2, or 3 days from the new payment's property-timezone calendar date, create still returns 201 and includes warnings. The warning code is possible_duplicate and the message is Ya registraste un pago de $X el D. ¿Registrar otro? X is a leading $ with no space, comma thousands separators, and two decimals. D is the day number with no leading zero, the lowercase es-MX month name, and the four-digit year, as in 3 de marzo de 2026. 123450 centavos matched to 3 March 2026 produces Ya registraste un pago de $1,234.50 el 3 de marzo de 2026. ¿Registrar otro? The warning names the match with the latest paidAt, then the latest createdAt. A date difference of 4 days does not warn. warnings is an empty array when nothing matches.");
 
-  it.todo("EC-7.4 A voided payment is not a duplicate match. A different centavo amount is not a match. Replaying the same Idempotency-Key returns the stored create response with status 200 and does not run the duplicate check again.");
+  it.todo("EC-7.4 A voided payment is not a duplicate match. A different centavo amount is not a match. Replaying the same Idempotency-Key returns the stored create response with its stored status, 201, and does not run the duplicate check again.");
 
   it.todo("EC-8.1 An unknown token, or acceptance from an account whose email does not equal the invited email after both are trimmed and lowercased, returns 404. This check runs first, before any token state is revealed, and it leaves usedAt null. Acceptance requires the invited email.");
 

@@ -17,7 +17,7 @@ interface RequestWithAuth {
 export class PropertyMembershipGuard implements CanActivate {
   constructor(@Inject(PROPERTY_ACCESS) private readonly access: PropertyAccess) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<RequestWithAuth>();
     const userId = request.accessToken?.sub;
     if (!userId) {
@@ -43,14 +43,14 @@ export class PropertyMembershipGuard implements CanActivate {
       throw ocrBadRequest(OCR_ERROR.invalidPath, 'Invalid path parameter.');
     }
 
-    const membership = this.access.resolve({ userId, propertyId });
+    const membership = await this.access.resolve({ userId, propertyId });
     if (!membership || membership.userId !== userId || !isRole(membership.role)) {
-throw ocrNotFound();
+      throw ocrNotFound();
     }
 
     const documentId = params.documentId;
-    if (typeof documentId === 'string' && !this.access.documentBelongsToProperty(propertyId, documentId)) {
-throw ocrNotFound();
+    if (typeof documentId === 'string' && !(await this.access.documentBelongsToProperty(propertyId, documentId))) {
+      throw ocrNotFound();
     }
 
     const method = request.method ?? 'GET';

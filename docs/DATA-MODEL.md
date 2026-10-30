@@ -269,4 +269,4 @@ The statements are in [`apps/api/prisma/sql/checks.sql`](../apps/api/prisma/sql/
 - The two reminder partial unique indexes named above
 - Invite `role` is `member` or `viewer`
 - UUID primary keys default to `gen_random_uuid()`, which is core Postgres 13+. No extension is created.
-- `consents`, `audit_events`, and `aviso_versions` reject `UPDATE`, `DELETE`, and `TRUNCATE`. The message is `<table> are append-only`, so consents still say `consents are append-only`. The app role also has no grant for those statements, and it cannot `ALTER TABLE`, disable a trigger, or set `session_replication_role`.
+- `consents`, `audit_events`, and `aviso_versions` reject `UPDATE`, `DELETE`, and `TRUNCATE`. The message is `<table> are append-only`, so consents still say `consents are append-only`. The app role also has no grant for those statements. It cannot `INSERT` into `aviso_versions` (publishing a privacy notice is owner-only; accepting one still inserts into `consents`). It cannot `ALTER TABLE`, disable a trigger, or set `session_replication_role`.

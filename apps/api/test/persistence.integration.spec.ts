@@ -2,10 +2,18 @@ import { createHash, randomUUID } from 'node:crypto';
 import { ConflictException, ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { generateAuthJwtKeys } from '../src/auth/access-jwt.js';
+import { FakeAuthEmailSender } from '../src/auth/auth-email.js';
+import * as authCodes from '../src/auth/auth-codes.js';
+import { AuthService } from '../src/auth/auth.service.js';
+import { MemorySessionDirectory } from '../src/auth/session-directory.js';
 import { PrismaIdempotencyKeys } from '../src/auth/idempotency-keys.js';
 import { PrismaRateLimits, authSubjectHmac, bucketKey } from '../src/auth/rate-limit.js';
 import { PrismaRefreshTokens } from '../src/auth/prisma-refresh-tokens.js';
+import { authCodeHmac } from '../src/auth/auth-codes.js';
+import { PrismaAuthAudit, PrismaAuthCodes, PrismaAuthSessions, PrismaAuthUsers } from '../src/auth/prisma-auth-store.js';
 import { hashToken } from '../src/auth/refresh-tokens.js';
+import { keyedHmac, serverSecret } from '../src/auth/server-secret.js';
 import { TEST_SERVER_SECRET } from './test-server-secret.js';
 import { PrismaConsentRepository } from '../src/consent/prisma-consent.repository.js';
 import { ConsentService } from '../src/consent/consent.service.js';
@@ -675,7 +683,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
     const fixture = await createFixture(prisma);
     const version = `aviso-${randomUUID()}`;
     try {
-      await prisma.avisoVersion.create({
+      await owner.avisoVersion.create({
         data: {
           version,
           url: 'https://example.com/aviso',
@@ -783,12 +791,50 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
         });
         throw new Error('expected an idempotency mismatch');
       } catch (error) {
-        expect(error).toBeInstanceOf(UnprocessableEntityException);
-        expect((error as UnprocessableEntityException).getResponse()).toMatchObject({
-          statusCode: 422,
-          error: 'idempotency_key_mismatch',
+        expect(error).toBeInstanceOf(ConflictException);
+        expect((error as ConflictException).getResponse()).toMatchObject({
+          statusCode: 409,
+          error: 'idempotency_key_reused',
         });
       }
+    } finally {
+      await deleteFixture(prisma, fixture);
+    }
+  });
+
+  it('keeps an unfinished idempotency row in progress until it expires', async () => {
+    const fixture = await createFixture(prisma);
+    try {
+      const keys = new PrismaIdempotencyKeys(prisma);
+      const start = new Date('2026-10-21T12:00:00.000Z');
+      const key = randomUUID();
+      const input = {
+        userId: fixture.userId,
+        key,
+        method: 'POST',
+        route: 'POST /v1/properties',
+        requestHash: 'hash-a',
+        now: start,
+        expiresAt: new Date(start.getTime() + 60_000),
+      };
+      expect((await keys.reserve(input)).outcome).toBe('reserved');
+      expect((await keys.reserve({ ...input, now: new Date(start.getTime() + 31_000) })).outcome).toBe('in_progress');
+      const afterExpiry = new Date(start.getTime() + 60_001);
+      const taken = await keys.reserve({
+        ...input,
+        now: afterExpiry,
+        expiresAt: new Date(afterExpiry.getTime() + 60_000),
+      });
+      expect(taken.outcome).toBe('reserved');
+      if (taken.outcome === 'reserved') {
+        await keys.complete(taken.id, 201, { id: 'casa' });
+      }
+      const replay = await keys.reserve({
+        ...input,
+        now: afterExpiry,
+        expiresAt: new Date(afterExpiry.getTime() + 60_000),
+      });
+      expect(replay).toMatchObject({ outcome: 'replay', responseStatus: 201, responseBody: { id: 'casa' } });
     } finally {
       await deleteFixture(prisma, fixture);
     }
@@ -842,8 +888,8 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       AVISO_URL: 'https://example.com/aviso',
     };
     await purgeAppendOnly({ avisoVersion: 'seed-v1' });
-    await seedDatabase(prisma, env);
-    await seedDatabase(prisma, env);
+    await seedDatabase(owner, env);
+    await seedDatabase(owner, env);
     const obligation = await prisma.obligation.findUnique({ where: { id: DEMO_OBLIGATION_ID } });
     expect(obligation?.title).toBe('CFE');
     expect(obligation?.expectedAmount).toBe(85000n);
@@ -960,13 +1006,18 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       prisma.avisoVersion.create({
         data: { version, url: 'https://example.com/aviso', text: '', textSha256: textSha256('') },
       }),
-    ).rejects.toThrow(/aviso_versions_text_not_empty/);
+    ).rejects.toThrow(/permission denied/i);
     await expect(
-      prisma.avisoVersion.create({
+      owner.avisoVersion.create({
+        data: { version, url: 'https://example.com/aviso', text: '', textSha256: textSha256('') },
+      }),
+    ).rejects.toThrow(/aviso_versions_text_not_blank/);
+    await expect(
+      owner.avisoVersion.create({
         data: { version, url: 'https://example.com/aviso', text, textSha256: 'a'.repeat(64) },
       }),
     ).rejects.toThrow(/aviso_versions_text_sha256_matches/);
-    await prisma.avisoVersion.create({
+    await owner.avisoVersion.create({
       data: { version, url: 'https://example.com/aviso', text, textSha256: textSha256(text) },
     });
     const stored = await prisma.avisoVersion.findUnique({ where: { version } });
@@ -1066,7 +1117,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
     const fixture = await createFixture(prisma);
     const version = `aviso-${randomUUID()}`;
     try {
-      await prisma.avisoVersion.create({
+      await owner.avisoVersion.create({
         data: { version, url: 'https://example.com/aviso', text: 'Texto.', textSha256: textSha256('Texto.') },
       });
       await prisma.consent.create({
@@ -1126,7 +1177,7 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
     const version = `aviso-${randomUUID()}`;
     const email = 'Invitee@Example.com';
     try {
-      await prisma.avisoVersion.create({
+      await owner.avisoVersion.create({
         data: { version, url: 'https://example.com/old', text: 'old text', textSha256: textSha256('old text') },
       });
       await expect(
@@ -1205,6 +1256,207 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
       expect(JSON.stringify(stored)).not.toContain(email.toLowerCase());
     } finally {
       await deleteFixture(prisma, fixture, version);
+    }
+  });
+
+  it('stores a login code as an hmac and not the code or the email', async () => {
+    const code = '654321';
+    const email = 'login-secret@example.com';
+    const emailHmac = keyedHmac(email, TEST_SERVER_SECRET, 'auth-email');
+    const codeHmac = authCodeHmac(code, TEST_SERVER_SECRET);
+    const created = await prisma.authCode.create({
+      data: {
+        emailHmac,
+        codeHmac,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    try {
+      const row = await prisma.authCode.findUnique({ where: { id: created.id } });
+      expect(row?.codeHmac).toBe(codeHmac);
+      expect(row?.codeHmac).not.toBe(code);
+      expect(Object.values(row ?? {})).not.toContain(code);
+      expect(Object.values(row ?? {})).not.toContain(email);
+    } finally {
+      await prisma.authCode.delete({ where: { id: created.id } });
+    }
+  });
+
+  it('reserves at most five verify compares when many IPs race the correct code', async () => {
+    const email = `race-${randomUUID()}@example.com`;
+    const pepper = serverSecret();
+    const emailHmac = keyedHmac(email, pepper, 'auth-email');
+    const started = new Date();
+    const codes = new GatedAuthCodes(prisma);
+    const sender = new FakeAuthEmailSender();
+    const service = new AuthService(
+      new MemorySessionDirectory(),
+      sender,
+      codes,
+      generateAuthJwtKeys('race'),
+      () => new Date(),
+      { emailSendLimit: 20, ipSendLimit: 100, verifyIpLimit: 100, windowMs: 60 * 60 * 1000 },
+      new PrismaAuthUsers(prisma),
+      undefined,
+      new PrismaAuthAudit(prisma),
+      new PrismaRateLimits(prisma, pepper),
+    );
+    const compare = vi.spyOn(authCodes.authCodeCompare, 'authCodesMatch');
+    try {
+      await service.requestCode({ email, ip: '198.51.100.200' });
+      const correct = sender.sent.at(-1)?.code ?? '';
+      expect(correct).toMatch(/^\d{6}$/);
+      const firstWave = Array.from({ length: 5 }, (_, index) =>
+        service.verifyCode({ email, code: '000000', ip: `203.0.113.${index + 1}` }),
+      );
+      await vi.waitFor(
+        () => {
+          expect(codes.waiting).toBe(4);
+        },
+        { timeout: 15_000, interval: 20 },
+      );
+      const rest = [
+        service.verifyCode({ email, code: correct, ip: '203.0.113.80' }),
+        ...Array.from({ length: 15 }, (_, index) =>
+          service.verifyCode({ email, code: '111111', ip: `203.0.113.${100 + index}` }),
+        ),
+      ];
+      codes.release();
+      const results = await Promise.all([...firstWave, ...rest]);
+      expect(results.some((result) => result.status === 200)).toBe(false);
+      expect(compare.mock.calls.length).toBeLessThanOrEqual(5);
+      const row = await prisma.authCode.findFirst({ where: { emailHmac } });
+      expect(row?.attempts ?? 0).toBeLessThanOrEqual(5);
+      expect(codes.compares).toBeLessThanOrEqual(5);
+    } finally {
+      compare.mockRestore();
+      codes.release();
+      await prisma.authCode.deleteMany({ where: { emailHmac } });
+      await prisma.authCodeAttempt.deleteMany({ where: { attemptedAt: { gte: started } } });
+      await prisma.rateLimit.deleteMany({ where: { updatedAt: { gte: started } } });
+      await ownerClient.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT set_config('session_replication_role', 'replica', true)`;
+        await tx.auditEvent.deleteMany({
+          where: { action: 'auth.login.failed', createdAt: { gte: started } },
+        });
+      });
+    }
+  });
+
+  it('replays an auth idempotency key from a fresh service', async () => {
+    const email = `idem-${randomUUID()}@example.com`;
+    const pepper = serverSecret();
+    const emailHmac = keyedHmac(email, pepper, 'auth-email');
+    const sender = new FakeAuthEmailSender();
+    let now = new Date('2026-04-01T00:00:00.000Z');
+    const service = () =>
+      new AuthService(
+        new MemorySessionDirectory(),
+        sender,
+        new PrismaAuthCodes(prisma),
+        generateAuthJwtKeys('idem'),
+        () => now,
+        { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+        new PrismaAuthUsers(prisma),
+        undefined,
+        new PrismaAuthAudit(prisma),
+        new PrismaRateLimits(prisma, pepper),
+        new PrismaIdempotencyKeys(prisma),
+      );
+    const key = `idem-${randomUUID()}`;
+    try {
+      const first = await service().requestCode({ email, idempotencyKey: key, ip: '198.51.100.10' });
+      expect(first.status).toBe(202);
+      expect(sender.sent).toHaveLength(1);
+      now = new Date(now.getTime() + 120_000);
+      const second = await service().requestCode({ email, idempotencyKey: key, ip: '198.51.100.11' });
+      expect(second).toMatchObject({ status: 202, body: first.body });
+      expect(sender.sent).toHaveLength(1);
+    } finally {
+      const subjects = [emailHmac, '198.51.100.10', '198.51.100.11'].map((subject) =>
+        authSubjectHmac(subject, pepper),
+      );
+      await prisma.authCode.deleteMany({ where: { emailHmac } });
+      await prisma.idempotencyKey.deleteMany({ where: { emailHmac } });
+      await prisma.authCodeAttempt.deleteMany({ where: { subject: { in: subjects } } });
+      await prisma.rateLimit.deleteMany({
+        where: {
+          bucketKey: {
+            in: [
+              bucketKey({ subject: subjects[0] ?? '', purpose: 'auth.code.email' }),
+              bucketKey({ subject: subjects[1] ?? '', purpose: 'auth.code.ip' }),
+              bucketKey({ subject: subjects[2] ?? '', purpose: 'auth.code.ip' }),
+            ],
+          },
+        },
+      });
+    }
+  });
+
+  it('claims a code once and keeps the same user id in a new store', async () => {
+    const codes = new PrismaAuthCodes(prisma);
+    const emailHmac = keyedHmac('stable-login@example.com', 'pepper', 'auth-email');
+    const codeHmac = authCodeHmac('424242', 'pepper');
+    const now = new Date();
+    await codes.insert({
+      id: randomUUID(),
+      emailHmac,
+      codeHmac,
+      expiresAt: new Date(now.getTime() + 60_000),
+      usedAt: null,
+      attempts: 0,
+      createdAt: now,
+    });
+    const users = new PrismaAuthUsers(prisma);
+    const sessions = new PrismaAuthSessions(prisma);
+    const audit = new PrismaAuthAudit(prisma);
+    let userId = '';
+    let sid = '';
+    try {
+      expect(await codes.claimMatching(emailHmac, codeHmac, now)).not.toBeNull();
+      expect(await new PrismaAuthCodes(prisma).claimMatching(emailHmac, codeHmac, now)).toBeNull();
+      const wrong = await codes.insert({
+        id: randomUUID(),
+        emailHmac,
+        codeHmac: authCodeHmac('111111', 'pepper'),
+        expiresAt: new Date(now.getTime() + 60_000),
+        usedAt: null,
+        attempts: 0,
+        createdAt: new Date(now.getTime() + 1),
+      });
+      void wrong;
+      const latest = await codes.findLatest(emailHmac);
+      const failed = latest ? await codes.recordFailure(latest.id) : null;
+      expect(failed?.attempts).toBe(1);
+      userId = (await users.findOrCreate(emailHmac)).id;
+      expect((await new PrismaAuthUsers(prisma).findOrCreate(emailHmac)).id).toBe(userId);
+      sid = randomUUID();
+      await sessions.open(sid, userId);
+      expect(await new PrismaAuthSessions(prisma).isRevoked(sid)).toBe(false);
+      await sessions.revoke(sid, now);
+      expect(await new PrismaAuthSessions(prisma).isRevoked(sid)).toBe(true);
+      await audit.append({
+        action: 'auth.login.succeeded',
+        userId,
+        sessionId: sid,
+        emailHmac,
+        now,
+      });
+      const row = await prisma.auditEvent.findFirst({ where: { action: 'auth.login.succeeded', entityId: sid } });
+      const serialized = JSON.stringify(row);
+      expect(serialized).not.toContain('stable-login@example.com');
+      expect(serialized).not.toContain('424242');
+      expect(serialized).not.toContain('111111');
+      expect(row?.metadata).toMatchObject({ emailHmac });
+    } finally {
+      await purgeAppendOnly({ userId });
+      if (sid) {
+        await prisma.authSession.deleteMany({ where: { id: sid } });
+      }
+      await prisma.authCode.deleteMany({ where: { emailHmac } });
+      if (userId) {
+        await prisma.user.deleteMany({ where: { id: userId } });
+      }
     }
   });
 });
@@ -1338,6 +1590,33 @@ function oneField(fieldPath: string, suggestedValue: string): OcrExtractor {
       ],
     }),
   };
+}
+
+class GatedAuthCodes extends PrismaAuthCodes {
+  compares = 0;
+  waiting = 0;
+  release: () => void = () => undefined;
+  private readonly open: Promise<void>;
+
+  constructor(prisma: PrismaClient) {
+    super(prisma);
+    this.open = new Promise((resolve) => {
+      this.release = resolve;
+    });
+  }
+
+  override async reserveAttempt(emailHmac: string, now: Date) {
+    const row = await super.reserveAttempt(emailHmac, now);
+    if (!row) {
+      return null;
+    }
+    this.compares += 1;
+    if (this.compares <= 4) {
+      this.waiting += 1;
+      await this.open;
+    }
+    return row;
+  }
 }
 
 class PrismaConsentAudit implements ConsentAuditLog {

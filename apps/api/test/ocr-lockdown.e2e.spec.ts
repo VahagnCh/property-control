@@ -5,6 +5,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ACCESS_TOKEN_VERIFIER, type AccessTokenVerifier } from '../src/auth/access-token.verifier.js';
 import { PROPERTY_ACCESS, type PropertyAccess } from '../src/auth/property-access.js';
+import { CONSENT_GATE, FixedConsentGate } from '../src/consent/consent.gate.js';
 import { AppModule } from '../src/app.module.js';
 import { notFoundBody } from '../src/common/not-found.js';
 import { configureApp } from '../src/configure-app.js';
@@ -79,6 +80,8 @@ interface BootOptions {
   access?: PropertyAccess;
   lookup?: OcrTargetLookup;
   extractor?: OcrExtractor;
+  /** When access is stubbed, consent defaults to granted. Set false to require the aviso. */
+  consent?: boolean;
 }
 
 async function boot(options: BootOptions = {}): Promise<{
@@ -92,7 +95,10 @@ async function boot(options: BootOptions = {}): Promise<{
     jobTtlMs: options.jobTtlMs ?? 900_000,
   });
   if (options.verifier) builder = builder.overrideProvider(ACCESS_TOKEN_VERIFIER).useValue(options.verifier);
-  if (options.access) builder = builder.overrideProvider(PROPERTY_ACCESS).useValue(options.access);
+  if (options.access) {
+    builder = builder.overrideProvider(PROPERTY_ACCESS).useValue(options.access);
+    builder = builder.overrideProvider(CONSENT_GATE).useValue(new FixedConsentGate(options.consent !== false));
+  }
   if (options.lookup) builder = builder.overrideProvider(OCR_TARGET_LOOKUP).useValue(options.lookup);
   if (options.clock) builder = builder.overrideProvider(CLOCK).useValue(options.clock);
   if (options.extractor) builder = builder.overrideProvider(OCR_EXTRACTOR).useValue(options.extractor);
@@ -219,6 +225,48 @@ describe('OCR lockdown HTTP', () => {
       expect(oversized.status).toBe(401);
       expectNoLeak(malformed.body);
       expectNoLeak(oversized.body);
+    });
+  });
+
+  describe('flag on, member without consent', () => {
+    let app: INestApplication;
+
+    beforeAll(async () => {
+      ({ app } = await boot({
+        enabled: true,
+        verifier: verifier(),
+        access: access(),
+        consent: false,
+      }));
+    });
+
+    afterAll(async () => {
+      await app.close();
+    });
+
+    it('returns consent_required on OCR writes and still allows a read', async () => {
+      const server = app.getHttpServer();
+      const denied = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A}/ocr-jobs`)
+        .set(authA)
+        .expect(403);
+      expect(denied.body.error).toBe('consent_required');
+      const confirm = await request(server)
+        .post(`/v1/properties/${PROPERTY_A}/ocr-jobs/${FORGED}/confirm`)
+        .set(authA)
+        .send({ decisions: [] })
+        .expect(403);
+      expect(confirm.body.error).toBe('consent_required');
+      const read = await request(server)
+        .get(`/v1/properties/${PROPERTY_A}/ocr-jobs/${FORGED}`)
+        .set(authA)
+        .expect(404);
+      expect(read.body.error).toBe('not_found');
+      const listed = await request(server)
+        .get(`/v1/properties/${PROPERTY_A}/documents/${DOCUMENT_A}/ocr-jobs`)
+        .set(authA)
+        .expect(200);
+      expect(listed.body.items).toEqual([]);
     });
   });
 

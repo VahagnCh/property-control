@@ -179,6 +179,8 @@ enum OcrApplyStatus {
 model User {
   id          String   @id @default(uuid()) @db.Uuid
   trustSub    String   @unique @map("trust_sub")
+  /// Keyed HMAC of the normalized login email. The address itself is not required here.
+  emailHmac   String?  @unique @map("email_hmac")
   email       String?
   displayName String?  @map("display_name")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -196,6 +198,7 @@ model User {
   consents               Consent[]
   refreshTokens          RefreshToken[]
   idempotencyKeys        IdempotencyKey[]
+  authSessions           AuthSession[]
 
   @@map("users")
 }
@@ -316,6 +319,8 @@ model Payment {
   notes            String?
   status           PaymentStatus @default(recorded)
   idempotencyKey   String        @map("idempotency_key")
+  /// Set only when the obligation has no expected amount and this payment must not settle the period.
+  markPartial      Boolean       @default(false) @map("mark_partial")
   voidedAt         DateTime?     @map("voided_at") @db.Timestamptz(6)
   voidedByUserId   String?       @map("voided_by") @db.Uuid
   voidReason       String?       @map("void_reason") @db.VarChar(500)
@@ -329,7 +334,7 @@ model Payment {
   evidence       Evidence[]
   periodOutcomes ObligationPeriodOutcome[]
 
-  @@unique([propertyId, idempotencyKey])
+  @@unique([propertyId, recordedByUserId, idempotencyKey], map: "payments_property_user_idempotency_key")
   @@index([obligationId, periodDueDate])
   @@index([propertyId, paidAt])
   @@map("payments")
@@ -680,9 +685,11 @@ model RefreshToken {
 /// Idempotency for multi-instance writes. Distinct from `idempotency_records`,
 /// which stays property-scoped. Scope is user or email HMAC, plus method and
 /// route, plus the key. The same key on another route is a new request. A
-/// different request hash on the same scope is 422. Expired rows may be replaced.
-/// `userId` is nullable. `emailHmac` is the keyed HMAC for a later auth-code
-/// route; the plain email is never stored. Exactly one of the two is set.
+/// different request hash on the same scope is 409 idempotency_key_reused.
+/// Stored responses are 2xx and 4xx. A 5xx is not stored, so the same key can
+/// try again. Expired rows may be replaced.
+/// `userId` is nullable. `emailHmac` is the keyed HMAC for auth-code
+/// idempotency; the plain email is never stored. Exactly one of the two is set.
 /// The key is 8–128 characters of [A-Za-z0-9_-], so a UUID v4 is valid.
 model IdempotencyKey {
   id             String   @id @default(uuid()) @db.Uuid
@@ -714,6 +721,35 @@ model AuthCodeAttempt {
 
   @@index([subject, purpose, attemptedAt])
   @@map("auth_code_attempts")
+}
+
+/// One outstanding login code. `code_hmac` is HMAC-SHA256 with the server pepper.
+/// The 6-digit code and the email address are not stored.
+model AuthCode {
+  id        String    @id @default(uuid()) @db.Uuid
+  emailHmac String    @map("email_hmac")
+  codeHmac  String    @map("code_hmac")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+  attempts  Int       @default(0)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([emailHmac, createdAt])
+  @@map("auth_codes")
+}
+
+/// One login session. `id` is the access-token `sid` and the refresh family id.
+/// A revoked row rejects that access token even if the JWT has not expired.
+model AuthSession {
+  id        String    @id @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("auth_sessions")
 }
 
 /// Postgres counter for 429 Retry-After. There is no Redis.

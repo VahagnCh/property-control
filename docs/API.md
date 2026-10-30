@@ -2,7 +2,7 @@
 
 The v0 HTTP contract, and what the scaffold in `apps/api` actually does today. Source: [Backend formal v0](https://docs.google.com/document/d/1iekHZp5lOq4qTzLhglFproL2JSeI7Uw1q4I817d40dE/edit). Payment, period, reminder, timezone, and invite behavior for the public product, [DueRecord](EDGE_CASES.md), overrides this contract where they disagree.
 
-The Nest stub maps **57** routes, counting each method and path Nest registers, including `GET /v1/health`.
+The Nest stub maps **62** routes, counting each method and path Nest registers, including `GET /v1/health`.
 
 ## Base
 
@@ -122,17 +122,20 @@ POST   /v1/properties/:propertyId/payments
          Headers: Idempotency-Key: <string>          // required
          Body: { obligationId, amount, currency?, paidAt, periodDueDate?,
                  markPartial?, method?, reference?, notes? }
-         → 201 { payment, warnings } | 200 same body on replay
+         → 201 { payment, warnings }   // a replay returns this stored 201
 GET    /v1/properties/:propertyId/payments/:paymentId          → 200 | 404
-PATCH  /v1/properties/:propertyId/payments/:paymentId          → 200 Payment
+PATCH  /v1/properties/:propertyId/payments/:paymentId          → 200 Payment | 409 payment_voided
          Body: { notes?, method?, reference? }       // cannot void or unvoid
 POST   /v1/properties/:propertyId/payments/:paymentId/void
          Headers: Idempotency-Key: <string>          // required
          Body: { voidReason }                        // trimmed length 1–500
-         → 200 Payment
+         → 200 Payment | 409 already_voided
 ```
 
-There is no `DELETE` for a payment. A correction is the void route. It sets `voidedAt`, `voidedBy`, and `voidReason`. A second void returns 409 and changes nothing. A void cannot be undone. The same Idempotency-Key returns the original void response. A viewer receives 403. A caller with no membership, including when the payment id is unknown, receives 404.
+There is no `DELETE` for a payment. A correction is the void route. It sets `voidedAt`, `voidedBy`, and `voidReason`. A void cannot be undone. The same Idempotency-Key returns the original void response. A viewer receives 403. A caller with no membership, including when the payment id is unknown, receives 404.
+
+- `PATCH` of a voided payment is **409** `payment_voided` for every edit, including notes, amount, method, reference, and status. Copy is `pay.void.noEdit` and `pay.void.noEdit.cta` ("Ver pago"). The CTA reloads the payment. That 409 is stored under the Idempotency-Key, and a replay returns the same body. No `payment.updated` audit entry is written, and the payment row does not change.
+- A second `POST .../void` is **409** `already_voided`. Copy is `pay.void.alreadyVoided` ("Este pago ya estaba anulado."). After it, the receipt refreshes as anulado (AC-PAY-21). The stored `voidReason`, `voidedAt`, and `voidedBy` stay as they were. The UI hides Anular once a payment is voided, so this response is the concurrency race where a void is already in flight.
 
 This records a payment the person already made somewhere else. The API does not charge a card, debit an account, or hold a balance. `method` and `reference` are descriptive text — "SPEI", a folio — not instructions to a payment processor.
 
@@ -368,12 +371,12 @@ For a normal route the order is:
 2. **401** for a missing, invalid, or expired token.
 3. **400** for a bad request, or **413** when the payload is too large.
 4. **404** `not_found` for a non-member or an unknown resource, including when that caller also lacks consent.
-5. **403** `viewer` for a viewer write. A viewer without consent who writes is `viewer`, not `consent_required`.
+5. **403** `forbidden` for a viewer write. A viewer without consent who writes is `forbidden`, not `consent_required`.
 6. **403** `consent_required` on writes only, after the checks above.
 
 Reads skip steps 5 and 6. A non-member read is still 404.
 
-`POST /v1/properties` has no membership check. While it is stubbed the response is 501. When it is live the order is 401, then 400 or 413, then 403 `consent_required`. An oversized body with a valid token is 413. A valid body with consent is allowed.
+`POST /v1/properties` has no membership check. The order is 401, then 400 or 413, then 403 `consent_required`. An oversized body with a valid token is 413. A valid body with consent is allowed. Create, list, get, and update for properties, obligations, and payments are persisted. Delete, void, resume, and unarchive stay 501.
 
 ## Consent
 
@@ -387,13 +390,39 @@ No consent route is registered. `GET /v1/me` stays **501**. The contract, for th
 
 TODO: Retirar consentimiento leads into account deletion before public launch. Withdrawal is not implemented.
 
+## Email code login
+
+```text
+POST   /v1/auth/code
+POST   /v1/auth/verify
+POST   /v1/auth/refresh
+POST   /v1/auth/logout
+GET    /v1/auth/session
+```
+
+Trust brief §4.6. Copy keys `auth.codeEmail.subject` and `auth.codeEmail.body`.
+
+`POST /v1/auth/code` body `{ "email": "person@example.com" }`. Optional `Idempotency-Key`. A missing email, or a string without `@` or outside 3–320 characters, is **400** `auth.email_invalid`. Any other string email returns **202** `{ "message": "Si el correo es válido, te enviamos un código." }`, whether or not an account exists. No Resend key in production, or a Resend send that fails, is **503** `auth.unavailable`. A failed send does not start the 60 second cooldown and does not count against the send quota. The code is 6 digits, valid 10 minutes, single use, stored only as HMAC-SHA256. A new code invalidates the previous one. The same key within 10 minutes replays a stored 202 and does not send again. A reservation with no stored response, including one left by a crash, is **409** `idempotency_in_progress` and does not send. After that reservation expires, the same key and body may take it over and send. A failed send is **503** and is not stored, so the same key sends again. A different email with the same key is a new 202. Resend cooldown is 60 seconds. Default limits are 20 sends an hour per IP, then 3 an hour for that email from that IP, then 5 an hour per email (`AUTH_CODE_IP_LIMIT`, `AUTH_CODE_EMAIL_LIMIT`). The IP bucket is counted first. Over the limit is **429** `auth.rate_limited` with `Retry-After`. Wrong verifies are limited to 3 per email and IP, inside 5 per email.
+
+`POST /v1/auth/verify` body `{ "email": "person@example.com", "code": "123456" }`. A wrong, expired, used, or unknown code is **401** `auth.code_invalid`. The verify IP bucket (`AUTH_VERIFY_IP_LIMIT`, default 20/hour) is checked before the code is compared. The fifth email failure in 10 minutes is **429** `auth.rate_limited` with `Retry-After`. Missing signing keys return **503** `auth.unavailable` before the compare, for a correct code and a wrong code alike. Success is **200**:
+
+```json
+{ "tokenType": "Bearer", "accessToken": "<jwt>", "expiresIn": 900, "refreshToken": "rt_<secret>" }
+```
+
+The access token is ES256, 15 minutes, `iss=api.duerecord.mx`, `aud=duerecord-app`, claims `sub`, `sid`, `iat`, `exp` only. Clock skew is 60 seconds. A signature that is not 64 bytes, `alg=none`, `HS256`, a tampered signature, the wrong iss, or the wrong aud is **401**. `AUTH_JWT_PREVIOUS_PUBLIC_KEY` still verifies. The refresh token is `rt_` plus 256 bits, stored only as SHA-256, sliding 30 days, absolute 90 days. `POST /v1/auth/refresh` body `{ "refreshToken": "rt_..." }` returns the same 200 shape. Reuse inside 30 seconds returns that pair. Reuse after that is **401** `auth.refresh_reused` and revokes the family. An expired refresh is **401** `auth.refresh_invalid`.
+
+`POST /v1/auth/logout` and `GET /v1/auth/session` require a bearer token before the body is read. Missing, malformed, or invalid tokens are **401**, including a bad or oversized logout body. Session success is **200** `{ "sub", "sid" }`. Logout success is **204**. A non-member or unknown property is **404**, not 403.
+
+Login mail is Resend when `RESEND_API_KEY` is set, from `AUTH_EMAIL_FROM` (default `DueRecord <onboarding@resend.dev>`). `APP_ENV=production` refuses to boot when that From is unset or still the onboarding sender. A missing or unknown `APP_ENV` is treated as production. `staging`, `development`, and `test` may use the onboarding sender only when `AUTH_EMAIL_ALLOWED_RECIPIENTS` is set. List entries and the requested address are trimmed and lower-cased, then compared exactly. An address that is not on the list still gets the generic 202, and no code is stored or sent. The message is plain text: subject `auth.codeEmail.subject` = `Tu código para entrar a DueRecord`, body `auth.codeEmail.body` with the code, no links, and the address is not repeated. Production does not use the in-memory fake. Audit actions are `auth.login.succeeded`, `auth.login.failed`, `auth.refresh.reuse_detected`, and `auth.logout`. They store an email HMAC, never the address, the code, or a token.
+
 ## Sessions, idempotency keys, and auth-code limits
 
-These tables have repositories and no HTTP routes.
+`POST /v1/auth/code`, `POST /v1/auth/verify`, `POST /v1/auth/refresh`, `POST /v1/auth/logout`, and `GET /v1/auth/session` are live. The tables below back the code and the refresh token.
 
 A refresh token slides for 30 days and carries an absolute cap of 90 days, copied on rotation and never extended. Reuse detection is one Postgres transaction: `UPDATE ... WHERE used_at IS NULL RETURNING`, then insert the successor. A second refresh within 30 seconds receives that same rotated pair, unless the successor has already been used. The column holds AES-256-GCM ciphertext of the successor, never the raw token. That ciphertext is cleared when the window ends or the successor has been used. After 30 seconds, or when the successor is already used, reuse revokes the whole family. An expired or already revoked token does not revoke the family.
 
-`idempotency_keys` is separate from the property-scoped `idempotency_records` described below. A key is scoped by the user (or an email HMAC) plus the HTTP method and route. The same key on a different route is a new request. The key is 8 to 128 characters of letters, digits, underscores, or hyphens, so a UUID v4 passes. Anything else is **400** `idempotency_key_invalid`. The same scope and key with a different request hash is **422** `idempotency_key_mismatch`. The same hash with a stored response is a replay. The same hash without a response is in progress. An expired row may be replaced. `user_id` is nullable. `email_hmac` is ready for auth-code idempotency and stores only the HMAC. Exactly one of the two is set.
+`idempotency_keys` is separate from the property-scoped `idempotency_records` described below. A key is scoped by the user (or an email HMAC) plus the HTTP method and route. The same key on a different route is a new request. The key is 8 to 128 characters of letters, digits, underscores, or hyphens, so a UUID v4 passes. Anything else is **400** `idempotency_key_invalid`. The same scope and key with a different request hash is **409** `idempotency_key_reused`. The same hash with a stored response is a replay of that stored status and body. Only **2xx** and **4xx** other than **401** are stored. A **401** is not stored: the access-token guard runs before the idempotency layer. A **5xx** reply is never stored, so the same key can try again. The same hash with no stored response is **409** `idempotency_in_progress` until `expires_at`. That 409 is not stored. It is never replayed as a success, and once the first request stores its result the same key returns that result. After the row expires, the same key and body may take it over and run again. `user_id` is nullable. `email_hmac` is ready for auth-code idempotency and stores only the HMAC. Exactly one of the two is set.
 
 Auth-code attempts and rate-limit buckets are rows in Postgres. The attempt subject and the bucket key store a keyed HMAC, never the plain email. There is no Redis. A limited call will answer **429** with `Retry-After`. Nothing calls that repository from a route yet.
 
@@ -405,7 +434,7 @@ Test hosting is Render, Neon, Cloudflare R2, and Resend. The code stays provider
 
 | Condition | Status |
 | :---- | :---- |
-| Missing, invalid, or expired JWT | 401 |
+| Missing, invalid, or expired JWT. Not stored under an Idempotency-Key; the client refreshes once and resends the same key and body | 401 |
 | Non-UUID path id, path traversal, or unknown `fieldPath` | 400 |
 | Bad `editedValue` (`edited_value_invalid`, body includes `suggestionId` and `field`), date window (`next_due_date_out_of_range`), missing decision (`missing_decision`, body includes `suggestionId`), same-property retarget (`bound_target_immutable`), unbound target (`target_required`), voided payment (`target_voided`), unchecked payment (`target_status_unknown`), `clientPriorValue` (`client_prior_value_rejected`), bulk accept-all (`bulk_accept_rejected`), or invalid property timezone on write (`invalid_timezone`) | 422 |
 | Accept or edit of a field that already has a saved value | 409 `field_already_set` |
@@ -418,17 +447,19 @@ Test hosting is Render, Neon, Cloudflare R2, and Resend. The code stays provider
 | OCR flag off, or any other scaffold placeholder | 501 |
 | Active membership, role too low | 403 |
 | Soft-deleted child resource under a property the caller belongs to | 404 |
-| Missing `Idempotency-Key` on a payment create, a payment void, or an evidence create | 400 |
-| Same idempotency key, different body on a payment or evidence route | 409 |
-| Same user-scoped idempotency key, different request hash | 422 `idempotency_key_mismatch` |
-| Replay with the same key and body | 200 |
-| Void of an already-voided payment, N/A conflict, archive read-only, or invite of an active member | 409 |
+| Missing `Idempotency-Key` on a property, obligation, or payment create or update, a payment void, or an evidence create | 400 `idempotency_key_invalid` |
+| Same idempotency key, different body on a payment or evidence route | 409 `idempotency_key_reused` |
+| Same user-scoped idempotency key, different request hash | 409 `idempotency_key_reused` |
+| Replay with the same key and body | stored 2xx or 4xx |
+| PATCH of a voided payment. Copy `pay.void.noEdit` / `pay.void.noEdit.cta` ("Ver pago"); the CTA reloads the payment | 409 `payment_voided` |
+| Second void of an already voided payment (UI hides Anular; this is a race). Copy `pay.void.alreadyVoided` ("Este pago ya estaba anulado."). The receipt then refreshes as anulado (AC-PAY-21) | 409 `already_voided` |
+| N/A conflict, archive read-only, or invite of an active member | 409 |
 | Used, revoked, superseded-by-resend, or expired invite token | 410 |
 | Amount, currency, `paidAt`, `dueDay`, or `voidReason` rejected | 422 |
 
 ## Idempotency
 
-Required on `POST .../payments`, `POST .../payments/:paymentId/void`, `POST .../evidence`, and `POST .../evidence/upload-url`. Create uniqueness for a payment or an evidence row is `(property_id, idempotency_key)` on that table. Void uniqueness is `(property_id, route_key, idempotency_key)` on `idempotency_records`, with route key `POST /payments/:id/void`. First call creates and returns 201 for a create, or 200 for a void. A replay with the same body returns 200 and the original response, including the original `warnings` array, and does not run the duplicate check again. The same key with a different body is a 409. Use a UUID or another high-entropy string.
+Required on property, obligation, and payment creates and updates, and on `POST .../payments/:paymentId/void`, `POST .../evidence`, and `POST .../evidence/upload-url`. Create uniqueness for a payment is `(property_id, recorded_by_user_id, idempotency_key)`. Evidence stays `(property_id, idempotency_key)`. The same payment key from another member is a separate payment. User-scoped keys live in `idempotency_keys` by user, method, and route. A replay returns the stored status and body and does not write again. The same key with a different body is **409** `idempotency_key_reused`. A **401** is not stored under the key, because the access-token guard runs before the idempotency layer. After a 401 the client refreshes once and resends the same key and body. A **5xx** reply is never stored. Use a UUID or another high-entropy string.
 
 ## Role matrix
 

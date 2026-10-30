@@ -8,6 +8,9 @@ describe('evidence size cap', () => {
   it('accepts 10,485,760 bytes and rejects one byte more', () => {
     expect(MAX_EVIDENCE_BYTES).toBe(10_485_760);
     expect(checkEvidenceSize(10_485_760)).toEqual({ ok: true });
+    expect(checkEvidenceSize(0)).toEqual({ ok: false, status: 422, error: 'evidence.invalid_size' });
+    expect(checkEvidenceSize(-1)).toEqual({ ok: false, status: 422, error: 'evidence.invalid_size' });
+    expect(checkEvidenceSize(Number.NaN)).toEqual({ ok: false, status: 422, error: 'evidence.invalid_size' });
     expect(checkEvidenceSize(10_485_761)).toEqual({
       ok: false,
       status: 413,

@@ -1,0 +1,476 @@
+import { createHash } from 'node:crypto';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { generateAuthJwtKeys } from './access-jwt.js';
+import { MemoryAuthAudit } from './auth-audit.js';
+import * as authCodes from './auth-codes.js';
+import { CODE_TTL_MS, MemoryAuthCodes, normalizeAuthEmail } from './auth-codes.js';
+import { FakeAuthEmailSender } from './auth-email.js';
+import { AuthService } from './auth.service.js';
+import { MemoryIdempotencyKeys } from './idempotency-keys.js';
+import { AUTH_CODE_EMAIL_BODY_KEY, AUTH_CODE_EMAIL_SUBJECT, AUTH_CODE_EMAIL_SUBJECT_KEY, authCodeEmailBody } from './login-email.js';
+import { ResendAuthEmailSender, UnconfiguredAuthEmailSender } from './resend-auth-email.js';
+import { keyedHmac } from './server-secret.js';
+import { MemorySessionDirectory, type AuthLimits } from './session-directory.js';
+
+class HoldingSender extends FakeAuthEmailSender {
+  private releaseHold: (() => void) | null = null;
+  private readonly hold = new Promise<void>((resolve) => {
+    this.releaseHold = resolve;
+  });
+
+  override sendLoginCode(input: { to: string; code: string }): Promise<void> {
+    return this.hold.then(() => super.sendLoginCode(input));
+  }
+
+  release(): void {
+    this.releaseHold?.();
+  }
+}
+
+const SECRET = Buffer.alloc(32, 3).toString('base64');
+
+beforeAll(() => {
+  process.env.SERVER_SECRET = SECRET;
+});
+
+function harness(options?: {
+  limits?: AuthLimits;
+  jwt?: ReturnType<typeof generateAuthJwtKeys> | null;
+  sender?: FakeAuthEmailSender | UnconfiguredAuthEmailSender;
+  idempotency?: MemoryIdempotencyKeys;
+}) {
+  const codes = new MemoryAuthCodes();
+  const sender = options?.sender ?? new FakeAuthEmailSender();
+  const audit = new MemoryAuthAudit();
+  const clock = { current: new Date('2026-04-01T00:00:00.000Z') };
+  const idempotency = options?.idempotency ?? new MemoryIdempotencyKeys();
+  const service = new AuthService(
+    new MemorySessionDirectory(),
+    sender,
+    codes,
+    options?.jwt === undefined ? generateAuthJwtKeys() : options.jwt,
+    () => clock.current,
+    options?.limits ?? { emailSendLimit: 5, ipSendLimit: 1, verifyIpLimit: 1, windowMs: 60 * 60 * 1000 },
+    undefined,
+    undefined,
+    audit,
+    undefined,
+    idempotency,
+  );
+  return { service, codes, sender: sender as FakeAuthEmailSender, audit, clock, idempotency };
+}
+
+describe('auth send limits', () => {
+  it('does not consume another email quota when the IP is already blocked', async () => {
+    const { service, sender, clock } = harness();
+    await service.requestCode({ email: 'a@example.com', ip: '198.51.100.1' });
+    const blocked = await service.requestCode({ email: 'b@example.com', ip: '198.51.100.1' });
+    expect(blocked.status).toBe(429);
+    for (let index = 0; index < 5; index += 1) {
+      clock.current = new Date(clock.current.getTime() + 61_000);
+      const sent = await service.requestCode({ email: 'b@example.com', ip: `198.51.100.${index + 2}` });
+      expect(sent.status).toBe(202);
+    }
+    clock.current = new Date(clock.current.getTime() + 61_000);
+    const over = await service.requestCode({ email: 'b@example.com', ip: '198.51.100.20' });
+    expect(over.status).toBe(429);
+    expect(sender.sent.filter((message) => message.to === 'b@example.com')).toHaveLength(5);
+  });
+
+  it('checks the verify IP bucket before comparing the code', async () => {
+    const { service, sender, clock } = harness();
+    await service.requestCode({ email: 'c@example.com', ip: '198.51.100.30' });
+    const code = sender.sent[0]?.code ?? '';
+    const first = await service.verifyCode({ email: 'c@example.com', code: '000000', ip: '198.51.100.31' });
+    expect(first.status).toBe(401);
+    const blocked = await service.verifyCode({ email: 'c@example.com', code, ip: '198.51.100.31' });
+    expect(blocked.status).toBe(429);
+    expect(blocked.retryAfterSeconds).toBeGreaterThan(0);
+    clock.current = new Date(clock.current.getTime() + 1000);
+    const later = await service.verifyCode({ email: 'c@example.com', code, ip: '198.51.100.32' });
+    expect(later.status).toBe(200);
+  });
+
+  it('returns 503 for a correct code and a wrong code when signing keys are missing', async () => {
+    const { service, sender, codes } = harness({ jwt: null });
+    await service.requestCode({ email: 'd@example.com', ip: '198.51.100.40' });
+    const code = sender.sent[0]?.code ?? '';
+    const correct = await service.verifyCode({ email: 'd@example.com', code, ip: '198.51.100.41' });
+    const wrong = await service.verifyCode({ email: 'd@example.com', code: '000000', ip: '198.51.100.42' });
+    expect(correct).toMatchObject({ status: 503, body: { error: 'auth.unavailable' } });
+    expect(wrong).toMatchObject({ status: 503, body: { error: 'auth.unavailable' } });
+    expect(JSON.stringify(correct.body)).not.toContain(code);
+    const withKeys = new AuthService(
+      new MemorySessionDirectory(),
+      sender,
+      codes,
+      generateAuthJwtKeys(),
+      () => new Date('2026-04-01T00:00:00.000Z'),
+    );
+    const ok = await withKeys.verifyCode({ email: 'd@example.com', code, ip: '198.51.100.43' });
+    expect(ok.status).toBe(200);
+  });
+});
+
+describe('login email', () => {
+  it('uses the approved copy keys and does not put the code in the subject', async () => {
+    expect(AUTH_CODE_EMAIL_SUBJECT_KEY).toBe('auth.codeEmail.subject');
+    expect(AUTH_CODE_EMAIL_BODY_KEY).toBe('auth.codeEmail.body');
+    expect(AUTH_CODE_EMAIL_SUBJECT).toBe('Tu código para entrar a DueRecord');
+    expect(AUTH_CODE_EMAIL_SUBJECT).not.toContain('123456');
+    const body = authCodeEmailBody('123456');
+    expect(body).toContain('Tu código es: 123456.');
+    expect(body).not.toContain('http');
+    expect(body).not.toContain('@');
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const sender = new ResendAuthEmailSender({
+      apiKey: 're_test',
+      from: 'DueRecord <onboarding@resend.dev>',
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        return new Response('{}', { status: 200 });
+      }) as typeof fetch,
+    });
+    await sender.sendLoginCode({ to: 'person@example.com', code: '123456' });
+    const payload = JSON.parse(String(calls[0]?.init.body)) as {
+      subject: string;
+      text: string;
+      html?: string;
+      from: string;
+    };
+    expect(payload.subject).toBe(AUTH_CODE_EMAIL_SUBJECT);
+    expect(payload.subject).not.toContain('123456');
+    expect(payload.text).toBe(authCodeEmailBody('123456'));
+    expect(payload.text).not.toContain('person@example.com');
+    expect(payload.html).toBeUndefined();
+    expect(payload.from).toBe('DueRecord <onboarding@resend.dev>');
+    expect(calls[0]?.init.headers).toMatchObject({ Authorization: 'Bearer re_test' });
+  });
+
+  it('fails closed in production when Resend is not configured', async () => {
+    const { service } = harness({ sender: new UnconfiguredAuthEmailSender() });
+    const result = await service.requestCode({ email: 'e@example.com', ip: '198.51.100.50' });
+    expect(result).toMatchObject({ status: 503, body: { error: 'auth.unavailable' } });
+  });
+
+  it('compares a presented code with authCodesMatch', async () => {
+    const spy = vi.spyOn(authCodes.authCodeCompare, 'authCodesMatch');
+    const { service, sender } = harness({
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    await service.requestCode({ email: 'match@example.com', ip: '198.51.100.80' });
+    const code = sender.sent[0]?.code ?? '';
+    const wrong = await service.verifyCode({ email: 'match@example.com', code: '000000', ip: '198.51.100.81' });
+    expect(wrong.status).toBe(401);
+    expect(spy).toHaveBeenCalled();
+    spy.mockClear();
+    const ok = await service.verifyCode({ email: 'match@example.com', code, ip: '198.51.100.82' });
+    expect(ok.status).toBe(200);
+    expect(spy).toHaveBeenCalled();
+    const skipped = await service.verifyCode({ email: 'match@example.com', code: '12', ip: '198.51.100.83' });
+    expect(skipped.status).toBe(401);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it('stops one IP after three wrong verifies without locking the email', async () => {
+    const { service, sender } = harness({
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    await service.requestCode({ email: 'lock@example.com', ip: '203.0.113.1' });
+    const code = sender.sent[0]?.code ?? '';
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const wrong = await service.verifyCode({
+        email: 'lock@example.com',
+        code: '000000',
+        ip: '203.0.113.9',
+      });
+      expect(wrong.status).toBe(401);
+    }
+    const blocked = await service.verifyCode({ email: 'lock@example.com', code, ip: '203.0.113.9' });
+    expect(blocked.status).toBe(429);
+    const other = await service.verifyCode({ email: 'lock@example.com', code, ip: '203.0.113.10' });
+    expect(other.status).toBe(200);
+  });
+
+  it('retries a code after Resend returns 500 without starting the cooldown', async () => {
+    let calls = 0;
+    const sender = new ResendAuthEmailSender({
+      apiKey: 're_test',
+      from: 'DueRecord <verified@example.com>',
+      fetchImpl: (async () => {
+        calls += 1;
+        if (calls === 1) {
+          return new Response('no', { status: 500 });
+        }
+        return new Response('{}', { status: 200 });
+      }) as typeof fetch,
+    });
+    const { service, clock } = harness({
+      sender: sender as unknown as FakeAuthEmailSender,
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    const first = await service.requestCode({ email: 'retry@example.com', ip: '198.51.100.70' });
+    expect(first.status).toBe(503);
+    const second = await service.requestCode({ email: 'retry@example.com', ip: '198.51.100.71' });
+    expect(second.status).toBe(202);
+    expect(calls).toBe(2);
+    for (let index = 0; index < 4; index += 1) {
+      clock.current = new Date(clock.current.getTime() + 61_000);
+      const sent = await service.requestCode({
+        email: 'retry@example.com',
+        ip: `198.51.100.${72 + index}`,
+      });
+      expect(sent.status).toBe(202);
+    }
+    expect(calls).toBe(6);
+  });
+
+  it('EC-15.17 A key whose reservation has no stored response (still in progress, or left by a crash) never replays as 202 or as a stored success. It returns 409 idempotency_in_progress, and an expired reservation may be taken over with the same key and body. The client rule for that 409 is EC-15.2.', async () => {
+    const keys = new MemoryIdempotencyKeys();
+    const sender = new HoldingSender();
+    const { service } = harness({
+      sender,
+      idempotency: keys,
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    const email = 'held@example.com';
+    const key = 'held-reservation-1';
+    const first = service.requestCode({ email, idempotencyKey: key, ip: '198.51.100.80' });
+    await vi.waitFor(() => {
+      expect(keys.storedText()).toContain(key);
+    });
+    const held = await service.requestCode({ email, idempotencyKey: key, ip: '198.51.100.81' });
+    expect(held).toMatchObject({ status: 409, body: { error: 'idempotency_in_progress' } });
+    expect(sender.sent).toHaveLength(0);
+    expect(keys.storedText()).not.toContain('idempotency_in_progress');
+    sender.release();
+    const finished = await first;
+    expect(finished.status).toBe(202);
+    expect(sender.sent).toHaveLength(1);
+    const replay = await service.requestCode({ email, idempotencyKey: key, ip: '198.51.100.82' });
+    expect(replay.status).toBe(202);
+    expect(replay.body).toEqual(finished.body);
+    expect(sender.sent).toHaveLength(1);
+    expect(keys.storedText()).not.toContain('idempotency_in_progress');
+  });
+
+  it('returns 409 for an unfinished reservation and sends after it expires', async () => {
+    const keys = new MemoryIdempotencyKeys();
+    const { service, sender, clock } = harness({
+      idempotency: keys,
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    const email = 'crash@example.com';
+    const key = 'crash-reservation-1';
+    const emailHmac = keyedHmac(normalizeAuthEmail(email), SECRET, 'auth-email');
+    const planted = await keys.reserve({
+      emailHmac,
+      key,
+      method: 'POST',
+      route: 'POST /v1/auth/code',
+      requestHash: createHash('sha256').update(emailHmac).digest('hex'),
+      now: clock.current,
+      expiresAt: new Date(clock.current.getTime() + CODE_TTL_MS),
+    });
+    expect(planted.outcome).toBe('reserved');
+    const held = await service.requestCode({ email, idempotencyKey: key, ip: '198.51.100.77' });
+    expect(held).toMatchObject({
+      status: 409,
+      body: { error: 'idempotency_in_progress' },
+    });
+    expect(sender.sent).toHaveLength(0);
+    clock.current = new Date(clock.current.getTime() + 31_000);
+    const stillHeld = await service.requestCode({ email, idempotencyKey: key, ip: '198.51.100.78' });
+    expect(stillHeld).toMatchObject({
+      status: 409,
+      body: { error: 'idempotency_in_progress' },
+    });
+    expect(sender.sent).toHaveLength(0);
+    clock.current = new Date(clock.current.getTime() + CODE_TTL_MS);
+    const sent = await service.requestCode({ email, idempotencyKey: key, ip: '198.51.100.79' });
+    expect(sent.status).toBe(202);
+    expect(sender.sent).toHaveLength(1);
+  });
+
+  it('does not put Retry-After on a 202 and retries the same key after a 503', async () => {
+    let calls = 0;
+    const sender = new ResendAuthEmailSender({
+      apiKey: 're_test',
+      from: 'DueRecord <verified@example.com>',
+      fetchImpl: (async () => {
+        calls += 1;
+        if (calls === 2) {
+          return new Response('no', { status: 500 });
+        }
+        return new Response('{}', { status: 200 });
+      }) as typeof fetch,
+    });
+    const { service } = harness({
+      sender: sender as unknown as FakeAuthEmailSender,
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    const accepted = await service.requestCode({ email: 'accepted@example.com', ip: '198.51.100.39' });
+    expect(accepted.status).toBe(202);
+    expect(accepted.retryAfterSeconds).toBeUndefined();
+    const key = 'retry-after-503';
+    const failed = await service.requestCode({
+      email: 'idem503@example.com',
+      idempotencyKey: key,
+      ip: '198.51.100.40',
+    });
+    expect(failed).toMatchObject({ status: 503, body: { error: 'auth.unavailable' } });
+    const retried = await service.requestCode({
+      email: 'idem503@example.com',
+      idempotencyKey: key,
+      ip: '198.51.100.41',
+    });
+    expect(retried.status).toBe(202);
+    expect(retried.retryAfterSeconds).toBeUndefined();
+    expect(calls).toBe(3);
+  });
+
+  it('lets a delivered code clear an email that already hit the verify cap', async () => {
+    const { service, sender, clock } = harness({
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    await service.requestCode({ email: 'reset@example.com', ip: '203.0.113.1' });
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const wrong = await service.verifyCode({
+        email: 'reset@example.com',
+        code: '000000',
+        ip: `203.0.113.${attempt + 2}`,
+      });
+      expect(wrong.status).toBe(401);
+    }
+    const blocked = await service.verifyCode({
+      email: 'reset@example.com',
+      code: '000000',
+      ip: '203.0.113.20',
+    });
+    expect(blocked.status).toBe(429);
+    clock.current = new Date(clock.current.getTime() + 61_000);
+    const resent = await service.requestCode({ email: 'reset@example.com', ip: '203.0.113.21' });
+    expect(resent.status).toBe(202);
+    const code = sender.sent.at(-1)?.code ?? '';
+    const ok = await service.verifyCode({ email: 'reset@example.com', code, ip: '203.0.113.22' });
+    expect(ok.status).toBe(200);
+  });
+
+  it('sends a code only when the address is on the allow-list', async () => {
+    const previous = process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS;
+    process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS = '  Person@Example.com  ';
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const { service, sender, codes } = harness({
+        limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+      });
+      const listed = await service.requestCode({ email: '  PERSON@example.com  ', ip: '198.51.100.90' });
+      expect(listed.status).toBe(202);
+      expect(sender.sent).toEqual([{ to: 'person@example.com', code: expect.stringMatching(/^\d{6}$/) }]);
+      expect(JSON.parse(codes.storedText())).toHaveLength(1);
+      for (const [index, lookAlike] of ['personn@example.com', 'person@example.org'].entries()) {
+        const hidden = await service.requestCode({ email: lookAlike, ip: `198.51.100.${91 + index}` });
+        expect(hidden.status).toBe(202);
+        expect(hidden.body).toEqual(listed.body);
+        expect(sender.sent).toHaveLength(1);
+        expect(JSON.parse(codes.storedText())).toHaveLength(1);
+        expect(codes.storedText()).not.toContain(lookAlike);
+      }
+      const dumped = [log, info, warn, error]
+        .flatMap((spy) => spy.mock.calls.flat().map((part) => String(part)))
+        .join('\n');
+      expect(dumped).not.toContain('person@example.com');
+      expect(dumped).not.toContain('personn@example.com');
+      expect(dumped).not.toContain('person@example.org');
+    } finally {
+      log.mockRestore();
+      info.mockRestore();
+      warn.mockRestore();
+      error.mockRestore();
+      if (previous === undefined) {
+        delete process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS;
+      } else {
+        process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS = previous;
+      }
+    }
+  });
+
+  it('stops one IP after three code sends without locking the email', async () => {
+    const { service, sender, clock } = harness({
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (attempt > 0) {
+        clock.current = new Date(clock.current.getTime() + 61_000);
+      }
+      const sent = await service.requestCode({ email: 'pair@example.com', ip: '203.0.113.9' });
+      expect(sent.status).toBe(202);
+    }
+    clock.current = new Date(clock.current.getTime() + 61_000);
+    const blocked = await service.requestCode({ email: 'pair@example.com', ip: '203.0.113.9' });
+    expect(blocked.status).toBe(429);
+    clock.current = new Date(clock.current.getTime() + 61_000);
+    const other = await service.requestCode({ email: 'pair@example.com', ip: '203.0.113.10' });
+    expect(other.status).toBe(202);
+    expect(sender.sent.filter((message) => message.to === 'pair@example.com')).toHaveLength(4);
+  });
+
+  it('stays a 503 when failed-send cleanup throws', async () => {
+    const sender = new ResendAuthEmailSender({
+      apiKey: 're_test',
+      from: 'DueRecord <verified@example.com>',
+      fetchImpl: (async () => new Response('no', { status: 500 })) as typeof fetch,
+    });
+    const { service, codes } = harness({ sender: sender as unknown as FakeAuthEmailSender });
+    codes.deleteById = () => Promise.reject(new Error('cleanup failed'));
+    const result = await service.requestCode({ email: 'cleanup@example.com', ip: '198.51.100.60' });
+    expect(result).toMatchObject({ status: 503, body: { error: 'auth.unavailable' } });
+  });
+
+  it('matches an allow-list address after NFC normalization', async () => {
+    const previous = process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS;
+    process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS = 'caf\u00e9@example.com';
+    try {
+      const { service, sender } = harness({
+        limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+      });
+      const sent = await service.requestCode({ email: 'cafe\u0301@example.com', ip: '198.51.100.61' });
+      expect(sent.status).toBe(202);
+      expect(sender.sent).toHaveLength(1);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS;
+      } else {
+        process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS = previous;
+      }
+    }
+  });
+
+  it('lets parallel sends share one cooldown and then the hourly quota', async () => {
+    const { service, sender, clock } = harness({
+      limits: { emailSendLimit: 2, ipSendLimit: 50, verifyIpLimit: 50, windowMs: 60 * 60 * 1000 },
+    });
+    const burst = () =>
+      Promise.all(
+        Array.from({ length: 8 }, (_, index) =>
+          service.requestCode({ email: 'burst@example.com', ip: `203.0.113.${index + 1}` }),
+        ),
+      );
+    const first = await burst();
+    expect(first.every((result) => result.status === 202)).toBe(true);
+    expect(sender.sent).toHaveLength(1);
+    clock.current = new Date(clock.current.getTime() + 61_000);
+    const second = await burst();
+    expect(second.every((result) => result.status === 202)).toBe(true);
+    expect(sender.sent).toHaveLength(2);
+    clock.current = new Date(clock.current.getTime() + 61_000);
+    const third = await burst();
+    expect(third.filter((result) => result.status === 202)).toHaveLength(0);
+    expect(third.every((result) => result.status === 429)).toBe(true);
+    expect(sender.sent).toHaveLength(2);
+  });
+});

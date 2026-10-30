@@ -1,5 +1,5 @@
 import { Prisma, PrismaClient } from '@prisma/client';
-import type { LedgerStore, LedgerTx, ObligationSnapshot, PaymentSnapshot } from '../payments/ledger.js';
+import type { LedgerStore, LedgerTx, ObligationSnapshot, PaymentSnapshot, PeriodOutcomeSnapshot } from '../payments/ledger.js';
 import { centavosToLedgerNumber } from '../payments/wire-money.js';
 import type { ScheduleCadence } from '../obligations/schedule.js';
 
@@ -47,7 +47,11 @@ class PrismaLedgerTx implements LedgerTx {
         currency: 'MXN',
         paidAt: row.paidAt,
         status: 'recorded',
-        idempotencyKey: row.id,
+        idempotencyKey: row.idempotencyKey ?? row.id,
+        notes: row.notes ?? null,
+        method: row.method ?? null,
+        reference: row.reference ?? null,
+        markPartial: row.markPartial,
         createdAt: row.createdAt,
       },
     });
@@ -61,7 +65,8 @@ class PrismaLedgerTx implements LedgerTx {
   async lockPayment(id: string): Promise<PaymentSnapshot | null> {
     const rows = await this.tx.$queryRaw<PaymentRaw[]>`
       SELECT id, property_id, obligation_id, period_due_date, amount, currency, paid_at,
-             status::text AS status, voided_at, voided_by, void_reason, created_at, recorded_by_user_id
+             status::text AS status, voided_at, voided_by, void_reason, created_at,
+             recorded_by_user_id, mark_partial
       FROM payments
       WHERE id = CAST(${id} AS uuid)
       FOR UPDATE
@@ -85,12 +90,41 @@ class PrismaLedgerTx implements LedgerTx {
   async lockPayments(obligationId: string): Promise<PaymentSnapshot[]> {
     const rows = await this.tx.$queryRaw<PaymentRaw[]>`
       SELECT id, property_id, obligation_id, period_due_date, amount, currency, paid_at,
-             status::text AS status, voided_at, voided_by, void_reason, created_at, recorded_by_user_id
+             status::text AS status, voided_at, voided_by, void_reason, created_at,
+             recorded_by_user_id, mark_partial
       FROM payments
       WHERE obligation_id = CAST(${obligationId} AS uuid)
       FOR UPDATE
     `;
     return rows.map(toPaymentRaw);
+  }
+
+  async saveOutcome(row: PeriodOutcomeSnapshot): Promise<void> {
+    const periodDueDate = utcDate(row.periodDueDate);
+    await this.tx.obligationPeriodOutcome.upsert({
+      where: {
+        obligationId_periodDueDate: { obligationId: row.obligationId, periodDueDate },
+      },
+      create: {
+        obligationId: row.obligationId,
+        propertyId: row.propertyId,
+        periodDueDate,
+        outcome: row.outcome,
+        paymentId: row.paymentId,
+        overpaidAmount: BigInt(row.overpaidAmount),
+      },
+      update: {
+        outcome: row.outcome,
+        paymentId: row.paymentId,
+        overpaidAmount: BigInt(row.overpaidAmount),
+      },
+    });
+  }
+
+  async deleteOutcome(obligationId: string, periodDueDate: string): Promise<void> {
+    await this.tx.obligationPeriodOutcome.deleteMany({
+      where: { obligationId, periodDueDate: utcDate(periodDueDate) },
+    });
   }
 }
 
@@ -119,6 +153,7 @@ interface PaymentRaw {
   void_reason: string | null;
   created_at: Date;
   recorded_by_user_id: string;
+  mark_partial: boolean;
 }
 
 function toObligation(row: ObligationRaw): ObligationSnapshot {
@@ -148,6 +183,7 @@ function toPayment(row: {
   voidReason: string | null;
   createdAt: Date;
   recordedByUserId: string;
+  markPartial: boolean;
 }): PaymentSnapshot {
   return {
     id: row.id,
@@ -163,7 +199,7 @@ function toPayment(row: {
     voidReason: row.voidReason,
     createdAt: row.createdAt,
     recordedByUserId: row.recordedByUserId,
-    markPartial: false,
+    markPartial: row.markPartial,
   };
 }
 
@@ -182,7 +218,7 @@ function toPaymentRaw(row: PaymentRaw): PaymentSnapshot {
     voidReason: row.void_reason,
     createdAt: row.created_at,
     recordedByUserId: row.recorded_by_user_id,
-    markPartial: false,
+    markPartial: row.mark_partial,
   };
 }
 
@@ -200,4 +236,8 @@ function isoDate(value: Date): string {
 
 function utcDate(iso: string): Date {
   return new Date(`${iso}T00:00:00.000Z`);
+}
+
+export function ledgerTx(tx: Prisma.TransactionClient): LedgerTx {
+  return new PrismaLedgerTx(tx);
 }

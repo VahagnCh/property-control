@@ -1,6 +1,7 @@
 import { Body, Controller, Get, HttpCode, Inject, Param, Post, Req, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { AccessTokenGuard } from '../auth/access-token.guard.js';
+import { ConsentRequiredGuard } from '../auth/consent-required.guard.js';
 import { PropertyMembershipGuard } from '../auth/property-membership.guard.js';
 import { OcrEnabledGuard } from './ocr-enabled.guard.js';
 import { OcrService } from './ocr.service.js';
@@ -11,6 +12,7 @@ export class OcrController {
   constructor(@Inject(OcrService) private readonly ocr: OcrService) {}
 
   @Post('documents/:documentId/ocr-jobs')
+  @UseGuards(ConsentRequiredGuard)
   create(
     @Param('propertyId') propertyId: string,
     @Param('documentId') documentId: string,
@@ -33,6 +35,7 @@ export class OcrController {
 
   @Post('ocr-jobs/:ocrJobId/confirm')
   @HttpCode(200)
+  @UseGuards(ConsentRequiredGuard)
   confirm(
     @Param('propertyId') propertyId: string,
     @Param('ocrJobId') ocrJobId: string,

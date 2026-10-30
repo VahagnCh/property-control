@@ -249,6 +249,11 @@ ALTER TABLE aviso_versions
   ADD CONSTRAINT aviso_versions_text_not_empty CHECK (length("text") > 0);
 
 ALTER TABLE aviso_versions
+  DROP CONSTRAINT IF EXISTS aviso_versions_text_not_blank;
+ALTER TABLE aviso_versions
+  ADD CONSTRAINT aviso_versions_text_not_blank CHECK ("text" !~ '^[[:space:]]*$');
+
+ALTER TABLE aviso_versions
   DROP CONSTRAINT IF EXISTS aviso_versions_text_sha256_matches;
 ALTER TABLE aviso_versions
   ADD CONSTRAINT aviso_versions_text_sha256_matches CHECK (

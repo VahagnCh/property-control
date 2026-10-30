@@ -75,22 +75,18 @@ describe('API scaffold', () => {
     await app.close();
   });
 
-  it('GET /v1/properties is an empty scaffold list', async () => {
-    const response = await request(app.getHttpServer()).get('/v1/properties').expect(200);
-    expect(response.body).toEqual({
-      items: [],
-      stub: true,
-      module: 'properties',
-    });
+  it('GET /v1/properties requires an access token', async () => {
+    const response = await request(app.getHttpServer()).get('/v1/properties').expect(401);
+    expect(response.body.error).toBe('token_missing');
   });
 
-  it('POST /v1/properties/:id/payments is not implemented', async () => {
+  it('POST /v1/properties/:id/payments requires an access token', async () => {
     const server = app.getHttpServer();
     await request(server).post('/v1/properties/property-1/payments').send({ amount: '100.00' }).expect(400);
     await request(server)
       .post(`/v1/properties/${PROPERTY_ID}/payments`)
       .send({ amount: '100.00' })
-      .expect(501);
+      .expect(401);
   });
 
   it('has no payment DELETE route and exposes void, resume, and invites as 501', async () => {
@@ -106,7 +102,7 @@ describe('API scaffold', () => {
     await request(server).delete('/v1/properties/property-1/invites/invite-1').expect(400);
 
     await request(server).delete(`/v1/properties/${PROPERTY_ID}/payments/${PAYMENT_ID}`).expect(404);
-    await request(server).post(`/v1/properties/${PROPERTY_ID}/payments/${PAYMENT_ID}/void`).expect(501);
+    await request(server).post(`/v1/properties/${PROPERTY_ID}/payments/${PAYMENT_ID}/void`).expect(401);
     await request(server)
       .post(`/v1/properties/${PROPERTY_ID}/obligations/${OBLIGATION_ID}/resume`)
       .expect(501);

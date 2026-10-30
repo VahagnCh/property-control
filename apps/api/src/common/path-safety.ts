@@ -4,6 +4,12 @@ const UUID_RE =
 const LITERAL_SEGMENTS = new Set([
   'v1',
   'health',
+  'auth',
+  'code',
+  'verify',
+  'refresh',
+  'logout',
+  'session',
   'me',
   'home',
   'action-items',
@@ -44,6 +50,48 @@ export function pathOnly(url: string): string {
 
 export function isOcrPath(urlPath: string): boolean {
   return /\/ocr-jobs(?:\/|$)/.test(urlPath);
+}
+
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+
+/**
+ * Live property, obligation, and payment reads and writes, including void.
+ * Resume and delete stay 501 before the token is read.
+ */
+export function isLiveRecordPath(method: string, urlPath: string): boolean {
+  const verb = method.toUpperCase();
+  const path = stripOneTrailingSlash(pathOnly(urlPath));
+  if (path === '/v1/properties' && (verb === 'GET' || verb === 'POST')) {
+    return true;
+  }
+  if (new RegExp(`^/v1/properties/${UUID}$`, 'i').test(path) && (verb === 'GET' || verb === 'PATCH')) {
+    return true;
+  }
+  if (
+    new RegExp(`^/v1/properties/${UUID}/obligations$`, 'i').test(path) &&
+    (verb === 'GET' || verb === 'POST')
+  ) {
+    return true;
+  }
+  if (
+    new RegExp(`^/v1/properties/${UUID}/obligations/${UUID}$`, 'i').test(path) &&
+    (verb === 'GET' || verb === 'PATCH')
+  ) {
+    return true;
+  }
+  if (new RegExp(`^/v1/properties/${UUID}/payments$`, 'i').test(path) && (verb === 'GET' || verb === 'POST')) {
+    return true;
+  }
+  if (
+    new RegExp(`^/v1/properties/${UUID}/payments/${UUID}$`, 'i').test(path) &&
+    (verb === 'GET' || verb === 'PATCH')
+  ) {
+    return true;
+  }
+  if (new RegExp(`^/v1/properties/${UUID}/payments/${UUID}/void$`, 'i').test(path) && verb === 'POST') {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -97,6 +145,13 @@ export function earlyRequestStatus(url: string, ocrEnabled: boolean): 400 | 501 
     return 400;
   }
   return null;
+}
+
+export function stripOneTrailingSlash(path: string): string {
+  if (path.length > 1 && path.endsWith('/')) {
+    return path.slice(0, -1);
+  }
+  return path;
 }
 
 function normalizeLookalikes(value: string): string {
