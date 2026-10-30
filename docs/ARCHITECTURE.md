@@ -91,7 +91,7 @@ sequenceDiagram
   A->>D: Recompute the period outcome from recorded payments
   Note over A,D: A sum that covers the period advances one period.<br/>Partial does not. A void can move the date back.<br/>Excess is overpaid_amount on that period only.
   A->>D: Append an audit event
-  A-->>M: 201 Payment (200 on replay)
+  A-->>M: 201 Payment (stored 201 on replay)
   U->>M: Adjuntar comprobante (optional, later)
   M->>A: POST /v1/properties/:id/evidence
 ```
@@ -130,7 +130,7 @@ The obligation changes at the confirm step and nowhere earlier. See [OCR.md](OCR
 - Routes live under `/v1`, including `GET /v1/health`.
 - Soft delete sets `deletedAt`. A retention job hard-deletes after 30 days and removes the object.
 - A missing membership returns **404**, not 403, so the API does not leak which properties exist. A valid membership with the wrong role returns **403**. A viewer write, such as void, returns 403. A non-member and an unknown resource return 404.
-- `Idempotency-Key` scopes to `(property_id, idempotency_key)`.
+- A payment create key is unique per `(property_id, recorded_by_user_id, idempotency_key)`; an evidence create key per `(property_id, idempotency_key)`.
 - Reminder rows are unique on (parent, `scheduled_for`, `channel`) via two partial indexes. Delivery idempotency is `(reminder_id, scheduled_for, user_id, channel)`.
 - Audit events are append-only. A payment void is an audit event. Payments are not soft-deleted.
 - `amount` and `expected_amount` are BIGINT centavos. The API wire format is a decimal string such as `"1234.50"` plus currency MXN, never a float and never centavos.

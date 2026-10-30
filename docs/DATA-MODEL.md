@@ -103,7 +103,7 @@ An event that settles some or all of an obligation period. A record of something
 | `method` | Free text: "SPEI", "efectivo", "tarjeta". Descriptive only. |
 | `reference` | The folio |
 | `status` | `recorded` · `voided`. This is the stored status. The client labels `voided` as Anulado. |
-| `idempotency_key` | Unique with `property_id` for the create. |
+| `idempotency_key` | Unique with `property_id` and `recorded_by_user_id` for the create. |
 | `voided_at`, `voided_by`, `void_reason` | Set together by the void. `void_reason` is 1–500 characters after trim. All three are null while status is `recorded`. |
 
 There is no `deleted_at` on this table. A void keeps the row, the audit event, and the evidence.
@@ -243,7 +243,7 @@ A suggestion row is a proposal. It is not a write. The target entity changes onl
 
 ## IdempotencyRecord
 
-A generic store for mutating POSTs that do not have their own unique key. Payments and evidence use their table-local `(property_id, idempotency_key)` constraint instead. Unique on `(property_id, route_key, idempotency_key)`.
+A generic store for mutating POSTs that do not have their own unique key. Payments use their table-local `(property_id, recorded_by_user_id, idempotency_key)` constraint, and evidence uses `(property_id, idempotency_key)`. Unique on `(property_id, route_key, idempotency_key)`.
 
 ## Retention
 

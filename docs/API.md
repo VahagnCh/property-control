@@ -72,7 +72,7 @@ Accept checks run in this order, and the first match is the response. An earlier
 2. A used, revoked, superseded-by-resend, or expired token returns 410.
 3. An invitee who is already a member returns 409.
 
-A non-owner invite action (create, resend, or revoke) returns 403. A caller with no membership, and an unknown property, returns 404. Role `owner`, a blank email, or a missing role returns 422. See [EDGE_CASES.md](EDGE_CASES.md) section 8.
+A caller with no membership, and an unknown property, returns 404 before any 403. A non-owner invite action (create, resend, or revoke) returns 403. Role `owner`, a blank email, or a missing role returns 422. See [EDGE_CASES.md](EDGE_CASES.md) section 8.
 
 Every Property response includes `timezone`, an IANA string. The response type is `PropertyResponse` and the write body is `PropertyWriteDto` in `apps/api/src/properties/property.response.ts`. Omitted on create, `timezone` is `America/Mexico_City`. A name that is not in the tz database returns 422. The field is present on `POST` 201, `GET` one, `PATCH`, and each item of `GET /v1/properties`. Overdue and Home ranking use each property's timezone for "today". The one-year `paidAt` back-date limit is checked in that timezone, not in UTC.
 
@@ -122,7 +122,7 @@ POST   /v1/properties/:propertyId/payments
          Headers: Idempotency-Key: <string>          // required
          Body: { obligationId, amount, currency?, paidAt, periodDueDate?,
                  markPartial?, method?, reference?, notes? }
-         → 201 { payment, warnings } | 200 same body on replay
+         → 201 { payment, warnings } | stored 201 same body on replay
 GET    /v1/properties/:propertyId/payments/:paymentId          → 200 | 404
 PATCH  /v1/properties/:propertyId/payments/:paymentId          → 200 Payment
          Body: { notes?, method?, reference? }       // cannot void or unvoid
@@ -299,7 +299,7 @@ Every OCR 4xx body includes a stable `error` string next to `message`. Clients m
 
 Single-line text rejects every C0 character, including tab, CR, and LF, plus U+2028 and U+2029. A title that contains LF, CR, U+2028, or U+2029 is 422. The `notes` field is the multi-line exception: it allows LF, U+2028, and U+2029, and CR or CRLF is stored as LF before the length limit. That limit counts UTF-16 code units, the same measure as Mobile's counter: 1000 emoji pass and 1001 emoji fail. A notes value that is only CR becomes a line feed and is 422 because it is whitespace. C1, every bidi control (U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069), zero-width characters, U+00AD, U+180E, U+2061–U+2064, lone surrogates, NUL, DEL, and a tab in notes are still rejected. An invalid property `timezone` is **422** on write. A stored invalid timezone is **500** `invalid_stored_timezone` and does not fall back to `America/Mexico_City`. A blank timezone still defaults to `America/Mexico_City`.
 
-When the field is already saved, the replace audit event is `ocr.replaced` with metadata `{ suggestionId, field, action: "replace", actorUserId, previousValue, newValue }`. `previousValue` is the persisted server value. An unsaved Reemplazar writes no audit row. There is no `{ decision: "replaced", suggestedValue }` audit before the record is saved. On payment create, that field's audit source is `ocr_replace` with the `suggestionId`.
+When the field is already saved, the replace audit event is `ocr.replaced` with metadata `{ suggestionId, field, action: "replace", actorUserId, previousValue, newValue }`. Notes text is excluded from `previousValue` and `newValue`. `previousValue` is the persisted server value. An unsaved Reemplazar writes no audit row. There is no `{ decision: "replaced", suggestedValue }` audit before the record is saved. On payment create, that field's audit source is `ocr_replace` with the `suggestionId`.
 
 A successful accept or edit writes one applied-field audit, `{ source: "ocr", ocrJobId, suggestionId, field, actorUserId, confidence, edited, previousValue, newValue }`. `edited` is false for accept and true for edit. `previousValue` is null, because a saved non-null field cannot be accepted or edited. For a single-line field, `newValue` is the value written. Reject writes no applied-field audit. The audit stores neither raw document text nor `clientPriorValue`. Accept or edit of a saved value stays **409** and writes no audit.
 
@@ -368,7 +368,7 @@ For a normal route the order is:
 2. **401** for a missing, invalid, or expired token.
 3. **400** for a bad request, or **413** when the payload is too large.
 4. **404** `not_found` for a non-member or an unknown resource, including when that caller also lacks consent.
-5. **403** `viewer` for a viewer write. A viewer without consent who writes is `viewer`, not `consent_required`.
+5. **403** `viewer` for a viewer write. A viewer without consent who writes is `viewer`, not `consent_required`. Once PR #24 lands, that error code becomes `forbidden`, replacing `viewer`.
 6. **403** `consent_required` on writes only, after the checks above.
 
 Reads skip steps 5 and 6. A non-member read is still 404.
@@ -381,7 +381,7 @@ No consent route is registered. `GET /v1/me` stays **501**. The contract, for th
 
 `GET /v1/me` includes `consent: { required, avisoVersion, avisoUrl }`. `required` is true when the caller has no row for the configured `AVISO_VERSION`.
 
-`POST /v1/me/consent` takes `{ avisoVersion }`. `appVersion` comes from the client header or body. The first accept is **201** and stores `acceptedAt` on the server, in the same transaction as its audit entry. A repeat of the same version is **200** and returns the existing row. It does not change `acceptedAt` or `appVersion`, and it writes no second audit entry. Any other version, including an older published one, is **422** `aviso_version_mismatch`. A current version that is not published is **503** `aviso_unavailable`. The process also refuses to listen when that configured version has no row. Publishing a new aviso version makes `required` true again. The old row stays. Reads do not require consent. A write before the current consent is **403** `consent_required`, and only after 501, 401, 400, 413, 404, and the viewer check.
+`POST /v1/me/consent` takes `{ avisoVersion }`. `appVersion` comes only from the app-version header; the body is only `{ avisoVersion }`. The first accept is **201** and stores `acceptedAt` on the server, in the same transaction as its audit entry. A repeat of the same version is **200** and returns the existing row. It does not change `acceptedAt` or `appVersion`, and it writes no second audit entry. Any other version, including an older published one, is **422** `aviso_version_mismatch`. A current version that is not published is **503** `aviso_unavailable`. The process also refuses to listen when that configured version has no row. Publishing a new aviso version makes `required` true again. The old row stays. Reads do not require consent. A write before the current consent is **403** `consent_required`, and only after 501, 401, 400, 413, 404, and the viewer check.
 
 `AVISO_VERSION` must be a non-empty string and `AVISO_URL` must be an http(s) URL. `main.ts` checks both before it listens. The test app does not.
 
@@ -393,7 +393,7 @@ These tables have repositories and no HTTP routes.
 
 A refresh token slides for 30 days and carries an absolute cap of 90 days, copied on rotation and never extended. Reuse detection is one Postgres transaction: `UPDATE ... WHERE used_at IS NULL RETURNING`, then insert the successor. A second refresh within 30 seconds receives that same rotated pair, unless the successor has already been used. The column holds AES-256-GCM ciphertext of the successor, never the raw token. That ciphertext is cleared when the window ends or the successor has been used. After 30 seconds, or when the successor is already used, reuse revokes the whole family. An expired or already revoked token does not revoke the family.
 
-`idempotency_keys` is separate from the property-scoped `idempotency_records` described below. A key is scoped by the user (or an email HMAC) plus the HTTP method and route. The same key on a different route is a new request. The key is 8 to 128 characters of letters, digits, underscores, or hyphens, so a UUID v4 passes. Anything else is **400** `idempotency_key_invalid`. The same scope and key with a different request hash is **422** `idempotency_key_mismatch`. The same hash with a stored response is a replay. The same hash without a response is in progress. An expired row may be replaced. `user_id` is nullable. `email_hmac` is ready for auth-code idempotency and stores only the HMAC. Exactly one of the two is set.
+`idempotency_keys` is separate from the property-scoped `idempotency_records` described below. A key is scoped by the user (or an email HMAC) plus the HTTP method and route. The same key on a different route is a new request. The key is 8 to 128 characters of letters, digits, underscores, or hyphens, so a UUID v4 passes. Anything else is **400** `idempotency_key_invalid`. The same scope and key with a different request hash is **409** `idempotency_key_reused`. The same hash with a stored response is a replay. The same hash without a response is in progress. An expired row may be replaced. `user_id` is nullable. `email_hmac` is ready for auth-code idempotency and stores only the HMAC. Exactly one of the two is set.
 
 Auth-code attempts and rate-limit buckets are rows in Postgres. The attempt subject and the bucket key store a keyed HMAC, never the plain email. There is no Redis. A limited call will answer **429** with `Retry-After`. Nothing calls that repository from a route yet.
 
@@ -419,16 +419,16 @@ Test hosting is Render, Neon, Cloudflare R2, and Resend. The code stays provider
 | Active membership, role too low | 403 |
 | Soft-deleted child resource under a property the caller belongs to | 404 |
 | Missing `Idempotency-Key` on a payment create, a payment void, or an evidence create | 400 |
-| Same idempotency key, different body on a payment or evidence route | 409 |
-| Same user-scoped idempotency key, different request hash | 422 `idempotency_key_mismatch` |
-| Replay with the same key and body | 200 |
+| Same idempotency key, different body on a payment or evidence route | 409 `idempotency_key_reused` |
+| Same user-scoped idempotency key, different request hash | 409 `idempotency_key_reused` |
+| Replay with the same key and body | stored status and body; 201 for a create |
 | Void of an already-voided payment, N/A conflict, archive read-only, or invite of an active member | 409 |
 | Used, revoked, superseded-by-resend, or expired invite token | 410 |
 | Amount, currency, `paidAt`, `dueDay`, or `voidReason` rejected | 422 |
 
 ## Idempotency
 
-Required on `POST .../payments`, `POST .../payments/:paymentId/void`, `POST .../evidence`, and `POST .../evidence/upload-url`. Create uniqueness for a payment or an evidence row is `(property_id, idempotency_key)` on that table. Void uniqueness is `(property_id, route_key, idempotency_key)` on `idempotency_records`, with route key `POST /payments/:id/void`. First call creates and returns 201 for a create, or 200 for a void. A replay with the same body returns 200 and the original response, including the original `warnings` array, and does not run the duplicate check again. The same key with a different body is a 409. Use a UUID or another high-entropy string.
+Required on `POST .../payments`, `POST .../payments/:paymentId/void`, `POST .../evidence`, and `POST .../evidence/upload-url`. Create uniqueness for a payment is `(property_id, recorded_by_user_id, idempotency_key)`. Evidence uniqueness is `(property_id, idempotency_key)`. Void uniqueness is `(property_id, route_key, idempotency_key)` on `idempotency_records`, with route key `POST /payments/:id/void`. First call creates and returns 201 for a create, or 200 for a void. A replay with the same body returns the stored status and body, 201 for a create, including the original `warnings` array, and does not run the duplicate check again. The same key with a different body is **409** `idempotency_key_reused`. Use a UUID or another high-entropy string.
 
 ## Role matrix
 

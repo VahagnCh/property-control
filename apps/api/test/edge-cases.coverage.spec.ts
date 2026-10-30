@@ -22,6 +22,31 @@ function todoTitles(source: string): string[] {
   );
 }
 
+/** Section 15 rows, in spec order. Earlier ids stay where they are. */
+const section15Ids = [
+  'EC-15.1',
+  'EC-15.2',
+  'EC-15.3',
+  'EC-15.4',
+  'EC-15.5',
+  'EC-15.6',
+  'EC-15.7',
+  'EC-15.8',
+  'EC-15.9',
+  'EC-15.10',
+  'EC-15.11',
+  'EC-15.12',
+  'EC-15.13',
+  'EC-15.14',
+  'EC-15.15',
+  'EC-15.16',
+  'EC-15.17',
+] as const;
+
+function ruleId(rule: string): string {
+  return rule.slice(0, rule.indexOf(' '));
+}
+
 describe('edge-case spec coverage', () => {
   const spec = read('docs/EDGE_CASES.md');
   const tests = read('apps/api/test/edge-cases.spec.ts');
@@ -31,6 +56,17 @@ describe('edge-case spec coverage', () => {
   it('gives every EDGE_CASES rule a todo test with the same sentence', () => {
     expect(rules.length).toBeGreaterThan(0);
     expect(titles).toEqual(rules);
+  });
+
+  it('appends the section 15 coverage rows after EC-14.4', () => {
+    const ids = rules.map(ruleId);
+    const start = ids.indexOf('EC-15.1');
+    expect(start).toBeGreaterThan(0);
+    expect(ids[start - 1]).toBe('EC-14.4');
+    expect(ids.slice(start)).toEqual([...section15Ids]);
+    expect(ids.indexOf('EC-8.3')).toBe(ids.indexOf('EC-8.2') + 1);
+    expect(ids.indexOf('EC-9.1')).toBe(ids.indexOf('EC-8.3') + 1);
+    expect(ids.filter((id) => id.startsWith('EC-15.'))).toEqual([...section15Ids]);
   });
 
   it('keeps the payment, period, reminder, and invite schema aligned', () => {
