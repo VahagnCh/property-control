@@ -205,6 +205,43 @@ describe('login email', () => {
     expect(calls).toBe(6);
   });
 
+  it('does not put Retry-After on a 202 and retries the same key after a 503', async () => {
+    let calls = 0;
+    const sender = new ResendAuthEmailSender({
+      apiKey: 're_test',
+      from: 'DueRecord <verified@example.com>',
+      fetchImpl: (async () => {
+        calls += 1;
+        if (calls === 2) {
+          return new Response('no', { status: 500 });
+        }
+        return new Response('{}', { status: 200 });
+      }) as typeof fetch,
+    });
+    const { service } = harness({
+      sender: sender as unknown as FakeAuthEmailSender,
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    const accepted = await service.requestCode({ email: 'accepted@example.com', ip: '198.51.100.39' });
+    expect(accepted.status).toBe(202);
+    expect(accepted.retryAfterSeconds).toBeUndefined();
+    const key = 'retry-after-503';
+    const failed = await service.requestCode({
+      email: 'idem503@example.com',
+      idempotencyKey: key,
+      ip: '198.51.100.40',
+    });
+    expect(failed).toMatchObject({ status: 503, body: { error: 'auth.unavailable' } });
+    const retried = await service.requestCode({
+      email: 'idem503@example.com',
+      idempotencyKey: key,
+      ip: '198.51.100.41',
+    });
+    expect(retried.status).toBe(202);
+    expect(retried.retryAfterSeconds).toBeUndefined();
+    expect(calls).toBe(3);
+  });
+
   it('lets a delivered code clear an email that already hit the verify cap', async () => {
     const { service, sender, clock } = harness({
       limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },

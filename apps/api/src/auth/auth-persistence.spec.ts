@@ -127,6 +127,28 @@ describe('idempotency keys', () => {
     await expect(keys.reserve({ ...input, requestHash: 'hash-b' })).rejects.toBeInstanceOf(
       IdempotencyKeyReusedException,
     );
+    const emailKeys = new MemoryIdempotencyKeys();
+    const emailInput = idempotencyInput({
+      userId: null,
+      emailHmac: 'email-hmac',
+      key: 'code-key-1',
+      route: 'POST /v1/auth/code',
+    });
+    const emailReserved = await emailKeys.reserve(emailInput);
+    expect(emailReserved.outcome).toBe('reserved');
+    if (emailReserved.outcome === 'reserved') {
+      await emailKeys.complete(emailReserved.id, 202, { message: 'ok' });
+    }
+    try {
+      await emailKeys.reserve({ ...emailInput, requestHash: 'hash-b' });
+      throw new Error('expected a reused email key to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(IdempotencyKeyReusedException);
+      expect((error as IdempotencyKeyReusedException).getResponse()).toMatchObject({
+        statusCode: 409,
+        error: 'idempotency_key_reused',
+      });
+    }
     try {
       await keys.reserve({ ...input, requestHash: 'hash-b' });
     } catch (error) {

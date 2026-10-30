@@ -92,6 +92,8 @@ describe('email code auth', () => {
       .expect(202);
     expect(first.body).toEqual(AUTH_ACCEPTED_BODY);
     expect(second.body).toEqual(first.body);
+    expect(first.headers['retry-after']).toBeUndefined();
+    expect(second.headers['retry-after']).toBeUndefined();
     expect(JSON.stringify(first.body)).not.toContain('Unknown');
     const codes = app.get<MemoryAuthCodes>(AUTH_CODE_STORE);
     const stored = codes.storedText();
