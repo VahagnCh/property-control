@@ -57,6 +57,13 @@ export function appEnvIsProduction(env: NodeJS.ProcessEnv = process.env): boolea
   return !NON_PRODUCTION_APP_ENVS.has(value);
 }
 
+/** Production, including a missing or unknown APP_ENV, cannot boot on memory stores. */
+export function assertAuthDatabaseConfigured(env: NodeJS.ProcessEnv): void {
+  if (appEnvIsProduction(env) && !(env.DATABASE_URL?.trim())) {
+    throw new Error('DATABASE_URL is required in production.');
+  }
+}
+
 export function assertAuthEmailFrom(env: NodeJS.ProcessEnv): void {
   if (!isDefaultAuthEmailFrom(env)) {
     return;

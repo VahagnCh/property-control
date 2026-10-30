@@ -12,6 +12,7 @@ function publishedEnv(secret: string | undefined): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     AVISO_VERSION: '2026-10-21',
     AVISO_URL: 'https://example.com/aviso',
+    APP_ENV: 'development',
     AUTH_EMAIL_FROM: 'DueRecord <hello@example.com>',
   };
   if (secret !== undefined) {
@@ -102,6 +103,23 @@ describe('prepareBoot', () => {
     env.AUTH_EMAIL_FROM = 'DueRecord <onboarding@resend.dev>';
     await expect(prepareBoot(env, async () => true)).rejects.toThrow(/AUTH_EMAIL_FROM/);
     env.AUTH_EMAIL_FROM = 'DueRecord <hello@example.com>';
+    env.DATABASE_URL = 'postgresql://localhost/property_control';
+    await expect(prepareBoot(env, async () => true)).resolves.toBeUndefined();
+  });
+
+  it('requires a database when APP_ENV is production or unset', async () => {
+    const env = publishedEnv(validSecret);
+    env.APP_ENV = 'production';
+    delete env.DATABASE_URL;
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/DATABASE_URL/);
+    delete env.APP_ENV;
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/DATABASE_URL/);
+    env.APP_ENV = 'preview';
+    await expect(prepareBoot(env, async () => true)).rejects.toThrow(/DATABASE_URL/);
+    env.APP_ENV = 'staging';
+    await expect(prepareBoot(env, async () => true)).resolves.toBeUndefined();
+    env.APP_ENV = 'production';
+    env.DATABASE_URL = 'postgresql://localhost/property_control';
     await expect(prepareBoot(env, async () => true)).resolves.toBeUndefined();
   });
 

@@ -7,6 +7,9 @@ export const ACCESS_TOKEN_AUD = 'duerecord-app';
 export const ACCESS_TOKEN_SKEW_SECONDS = 60;
 /** Raw P-256 signature is r||s, 32 bytes each. */
 export const ES256_SIGNATURE_BYTES = 64;
+/** NIST P-256 order. A signature with s above half this order is malleable. */
+const P256_N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+const P256_HALF_N = P256_N >> 1n;
 
 export interface AuthJwtPublicKey {
   kid: string;
@@ -113,7 +116,7 @@ export function signAccessToken(
     key: config.privateKeyPem,
     dsaEncoding: 'ieee-p1363',
   });
-  return `${signingInput}.${Buffer.from(signature).toString('base64url')}`;
+  return `${signingInput}.${canonicalizeLowS(Buffer.from(signature)).toString('base64url')}`;
 }
 
 /**
@@ -148,7 +151,7 @@ export function verifyAccessToken(
   } catch {
     return { ok: false, reason: 'invalid' };
   }
-  if (signature.length !== ES256_SIGNATURE_BYTES) {
+  if (signature.length !== ES256_SIGNATURE_BYTES || !es256LowS(signature)) {
     return { ok: false, reason: 'invalid' };
   }
   const signingInput = `${encodedHeader}.${encodedPayload}`;
@@ -203,6 +206,30 @@ function decodeJson(segment: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function es256S(signature: Buffer): bigint {
+  return BigInt(`0x${signature.subarray(32, 64).toString('hex')}`);
+}
+
+/** Rejects the high-S form of an ECDSA signature, which verifies but is malleable. */
+export function es256LowS(signature: Buffer): boolean {
+  if (signature.length !== ES256_SIGNATURE_BYTES) {
+    return false;
+  }
+  const s = es256S(signature);
+  return s > 0n && s <= P256_HALF_N;
+}
+
+function canonicalizeLowS(signature: Buffer): Buffer {
+  const s = es256S(signature);
+  if (s <= P256_HALF_N) {
+    return signature;
+  }
+  const low = (P256_N - s).toString(16).padStart(64, '0');
+  const copy = Buffer.from(signature);
+  copy.set(Buffer.from(low, 'hex'), 32);
+  return copy;
 }
 
 function b64url(value: string): string {

@@ -273,4 +273,28 @@ describe('login email', () => {
       }
     }
   });
+
+  it('lets parallel sends share one cooldown and then the hourly quota', async () => {
+    const { service, sender, clock } = harness({
+      limits: { emailSendLimit: 2, ipSendLimit: 50, verifyIpLimit: 50, windowMs: 60 * 60 * 1000 },
+    });
+    const burst = () =>
+      Promise.all(
+        Array.from({ length: 8 }, (_, index) =>
+          service.requestCode({ email: 'burst@example.com', ip: `203.0.113.${index + 1}` }),
+        ),
+      );
+    const first = await burst();
+    expect(first.every((result) => result.status === 202)).toBe(true);
+    expect(sender.sent).toHaveLength(1);
+    clock.current = new Date(clock.current.getTime() + 61_000);
+    const second = await burst();
+    expect(second.every((result) => result.status === 202)).toBe(true);
+    expect(sender.sent).toHaveLength(2);
+    clock.current = new Date(clock.current.getTime() + 61_000);
+    const third = await burst();
+    expect(third.filter((result) => result.status === 202)).toHaveLength(0);
+    expect(third.every((result) => result.status === 429)).toBe(true);
+    expect(sender.sent).toHaveLength(2);
+  });
 });

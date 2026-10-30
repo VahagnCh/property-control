@@ -1,5 +1,5 @@
 import { assertAuthJwtConfig } from './auth/access-jwt.js';
-import { assertAuthEmailFrom } from './auth/auth-email.js';
+import { assertAuthDatabaseConfigured, assertAuthEmailFrom } from './auth/auth-email.js';
 import { serverSecret } from './auth/server-secret.js';
 import { loadAvisoConfig } from './consent/aviso-config.js';
 
@@ -14,6 +14,7 @@ export async function prepareBoot(
   serverSecret(env);
   assertAuthJwtConfig(env);
   assertAuthEmailFrom(env);
+  assertAuthDatabaseConfigured(env);
   const { avisoVersion } = loadAvisoConfig(env);
   const published = await avisoPublished(avisoVersion);
   if (!published) {

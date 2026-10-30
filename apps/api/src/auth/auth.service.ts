@@ -134,31 +134,42 @@ export class AuthService {
     if (reserved.kind === 'done') {
       return reserved.result;
     }
-    const latest = await this.codes.findLatest(emailHmac);
-    if (latest && now.getTime() - latest.createdAt.getTime() < RESEND_COOLDOWN_MS) {
+    const decision = await this.codes.withSendLock(emailHmac, async () => {
+      const latest = await this.codes.findLatest(emailHmac);
+      if (latest && now.getTime() - latest.createdAt.getTime() < RESEND_COOLDOWN_MS) {
+        return { kind: 'cooldown' as const };
+      }
+      const limited = await this.limitSends(emailHmac, input.ip, now);
+      if (limited) {
+        return { kind: 'limited' as const, limited };
+      }
+      const code = randomAuthCode();
+      const rowId = randomUUID();
+      await this.codes.invalidateActive(emailHmac, now);
+      await this.codes.insert({
+        id: rowId,
+        emailHmac,
+        codeHmac: authCodeHmac(code, this.secret()),
+        expiresAt: new Date(now.getTime() + CODE_TTL_MS),
+        usedAt: null,
+        attempts: 0,
+        createdAt: now,
+      });
+      return { kind: 'send' as const, code, rowId };
+    });
+    if (decision.kind === 'cooldown') {
       return this.finish(reserved.id, accepted());
     }
-    const limited = await this.limitSends(emailHmac, input.ip, now);
-    if (limited) {
-      return this.finish(reserved.id, limited);
+    if (decision.kind === 'limited') {
+      return this.finish(reserved.id, decision.limited);
     }
-    const code = randomAuthCode();
-    const rowId = randomUUID();
-    await this.codes.invalidateActive(emailHmac, now);
-    await this.codes.insert({
-      id: rowId,
-      emailHmac,
-      codeHmac: authCodeHmac(code, this.secret()),
-      expiresAt: new Date(now.getTime() + CODE_TTL_MS),
-      usedAt: null,
-      attempts: 0,
-      createdAt: now,
-    });
     try {
-      await this.sender.sendLoginCode({ to: email, code });
+      await this.sender.sendLoginCode({ to: email, code: decision.code });
     } catch {
-      await this.codes.deleteById(rowId);
-      await this.undoSends(emailHmac, input.ip, now);
+      await this.codes.withSendLock(emailHmac, async () => {
+        await this.codes.deleteById(decision.rowId);
+        await this.undoSends(emailHmac, input.ip, now);
+      });
       return this.finish(reserved.id, errorResult(503, 'auth.unavailable', 'Login email is not configured.'));
     }
     await this.limits().resetBucket({ subject: emailHmac, purpose: 'auth.verify' });
