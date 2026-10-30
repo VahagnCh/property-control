@@ -1305,6 +1305,56 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
     }
   });
 
+  it('replays an auth idempotency key from a fresh service', async () => {
+    const email = `idem-${randomUUID()}@example.com`;
+    const pepper = serverSecret();
+    const emailHmac = keyedHmac(email, pepper, 'auth-email');
+    const sender = new FakeAuthEmailSender();
+    let now = new Date('2026-04-01T00:00:00.000Z');
+    const service = () =>
+      new AuthService(
+        new MemorySessionDirectory(),
+        sender,
+        new PrismaAuthCodes(prisma),
+        generateAuthJwtKeys('idem'),
+        () => now,
+        { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+        new PrismaAuthUsers(prisma),
+        undefined,
+        new PrismaAuthAudit(prisma),
+        new PrismaRateLimits(prisma, pepper),
+        new PrismaIdempotencyKeys(prisma),
+      );
+    const key = `idem-${randomUUID()}`;
+    try {
+      const first = await service().requestCode({ email, idempotencyKey: key, ip: '198.51.100.10' });
+      expect(first.status).toBe(202);
+      expect(sender.sent).toHaveLength(1);
+      now = new Date(now.getTime() + 120_000);
+      const second = await service().requestCode({ email, idempotencyKey: key, ip: '198.51.100.11' });
+      expect(second).toMatchObject({ status: 202, body: first.body });
+      expect(sender.sent).toHaveLength(1);
+    } finally {
+      const subjects = [emailHmac, '198.51.100.10', '198.51.100.11'].map((subject) =>
+        authSubjectHmac(subject, pepper),
+      );
+      await prisma.authCode.deleteMany({ where: { emailHmac } });
+      await prisma.idempotencyKey.deleteMany({ where: { emailHmac } });
+      await prisma.authCodeAttempt.deleteMany({ where: { subject: { in: subjects } } });
+      await prisma.rateLimit.deleteMany({
+        where: {
+          bucketKey: {
+            in: [
+              bucketKey({ subject: subjects[0] ?? '', purpose: 'auth.code.email' }),
+              bucketKey({ subject: subjects[1] ?? '', purpose: 'auth.code.ip' }),
+              bucketKey({ subject: subjects[2] ?? '', purpose: 'auth.code.ip' }),
+            ],
+          },
+        },
+      });
+    }
+  });
+
   it('claims a code once and keeps the same user id in a new store', async () => {
     const codes = new PrismaAuthCodes(prisma);
     const emailHmac = keyedHmac('stable-login@example.com', 'pepper', 'auth-email');

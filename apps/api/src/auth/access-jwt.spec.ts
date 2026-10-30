@@ -1,14 +1,16 @@
-import { createHmac, createSign } from 'node:crypto';
+import { createHmac, createSign, createVerify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   ACCESS_TOKEN_AUD,
   ACCESS_TOKEN_ISS,
   ACCESS_TOKEN_TTL_SECONDS,
   assertAuthJwtConfig,
+  ES256_SIGNATURE_BYTES,
   generateAuthJwtKeys,
   signAccessToken,
   verifyAccessToken,
 } from './access-jwt.js';
+const P256_N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
 
 const NOW = new Date('2026-10-29T15:00:00.000Z');
 const keys = generateAuthJwtKeys('kid-1');
@@ -117,6 +119,29 @@ describe('ES256 access tokens', () => {
         AUTH_JWT_KID: 'left',
       }),
     ).toThrow(/does not match/);
+  });
+
+  it('rejects a high-S ECDSA signature', () => {
+    const token = signAccessToken(keys, { sub: 'user-1', sid: 'session-1', now: NOW });
+    const parts = token.split('.');
+    const raw = Buffer.from(parts[2] ?? '', 'base64url');
+    expect(raw).toHaveLength(ES256_SIGNATURE_BYTES);
+    const s = BigInt(`0x${raw.subarray(32).toString('hex')}`);
+    const highS = s > P256_N >> 1n ? s : P256_N - s;
+    const malleable = Buffer.from(raw);
+    malleable.set(Buffer.from(highS.toString(16).padStart(64, '0'), 'hex'), 32);
+    const signingInput = `${parts[0]}.${parts[1]}`;
+    expect(
+      createVerify('SHA256').update(signingInput).verify(
+        { key: keys.publicKeyPem, dsaEncoding: 'ieee-p1363' },
+        malleable,
+      ),
+    ).toBe(true);
+    expect(verifyAccessToken(keys, `${signingInput}.${malleable.toString('base64url')}`, NOW)).toEqual({
+      ok: false,
+      reason: 'invalid',
+    });
+    expect(verifyAccessToken(keys, token, NOW).ok).toBe(true);
   });
 
   it('rejects a tampered ES256 signature', () => {

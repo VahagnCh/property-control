@@ -6,7 +6,7 @@ import {
   ACCESS_TOKEN_VERIFIER,
   FailClosedAccessTokenVerifier,
 } from './access-token.verifier.js';
-import { AUTH_EMAIL, authEmailSenderFromEnv } from './auth-email.js';
+import { AUTH_EMAIL, authEmailSenderFromEnv, authUsesMemoryStore } from './auth-email.js';
 import { AUTH_CODE_STORE, MemoryAuthCodes } from './auth-codes.js';
 import { AuthController } from './auth.controller.js';
 import { AuthService, AUTH_IDEMPOTENCY, MemoryAuthUsers } from './auth.service.js';
@@ -135,13 +135,7 @@ export class AuthModule {}
 let authPrisma: PrismaClient | undefined;
 
 function authDatabase(): PrismaClient | null {
-  if (process.env.NODE_ENV === 'test') {
-    return null;
-  }
-  if (!process.env.DATABASE_URL) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('DATABASE_URL is required in production.');
-    }
+  if (authUsesMemoryStore(process.env)) {
     return null;
   }
   authPrisma ??= new PrismaClient();

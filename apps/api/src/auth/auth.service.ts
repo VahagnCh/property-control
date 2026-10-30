@@ -14,6 +14,7 @@ import {
   CODE_TTL_MS,
   MemoryAuthCodes,
   RESEND_COOLDOWN_MS,
+  SEND_EMAIL_IP_LIMIT,
   VERIFY_EMAIL_IP_LIMIT,
   VERIFY_FAILURES_BEFORE_LIMIT,
   authCodeCompare,
@@ -134,32 +135,46 @@ export class AuthService {
     if (reserved.kind === 'done') {
       return reserved.result;
     }
-    const latest = await this.codes.findLatest(emailHmac);
-    if (latest && now.getTime() - latest.createdAt.getTime() < RESEND_COOLDOWN_MS) {
+    const decision = await this.codes.withSendLock(emailHmac, async () => {
+      const latest = await this.codes.findLatest(emailHmac);
+      if (latest && now.getTime() - latest.createdAt.getTime() < RESEND_COOLDOWN_MS) {
+        return { kind: 'cooldown' as const };
+      }
+      const limited = await this.limitSends(emailHmac, input.ip, now);
+      if (limited) {
+        return { kind: 'limited' as const, limited };
+      }
+      const code = randomAuthCode();
+      const rowId = randomUUID();
+      await this.codes.invalidateActive(emailHmac, now);
+      await this.codes.insert({
+        id: rowId,
+        emailHmac,
+        codeHmac: authCodeHmac(code, this.secret()),
+        expiresAt: new Date(now.getTime() + CODE_TTL_MS),
+        usedAt: null,
+        attempts: 0,
+        createdAt: now,
+      });
+      return { kind: 'send' as const, code, rowId };
+    });
+    if (decision.kind === 'cooldown') {
       return this.finish(reserved.id, accepted());
     }
-    const limited = await this.limitSends(emailHmac, input.ip, now);
-    if (limited) {
-      return this.finish(reserved.id, limited);
+    if (decision.kind === 'limited') {
+      return this.finish(reserved.id, decision.limited);
     }
-    const code = randomAuthCode();
-    const rowId = randomUUID();
-    await this.codes.invalidateActive(emailHmac, now);
-    await this.codes.insert({
-      id: rowId,
-      emailHmac,
-      codeHmac: authCodeHmac(code, this.secret()),
-      expiresAt: new Date(now.getTime() + CODE_TTL_MS),
-      usedAt: null,
-      attempts: 0,
-      createdAt: now,
-    });
     try {
-      await this.sender.sendLoginCode({ to: email, code });
+      await this.sender.sendLoginCode({ to: email, code: decision.code });
     } catch {
-      await this.codes.deleteById(rowId);
-      await this.undoSends(emailHmac, input.ip, now);
-      return this.finish(reserved.id, errorResult(503, 'auth.unavailable', 'Login email is not configured.'));
+      try {
+        await this.codes.withSendLock(emailHmac, async () => {
+          await this.codes.deleteById(decision.rowId);
+          await this.undoSends(emailHmac, input.ip, now);
+        });
+      } finally {
+        return this.finish(reserved.id, errorResult(503, 'auth.unavailable', 'Login email is not configured.'));
+      }
     }
     await this.limits().resetBucket({ subject: emailHmac, purpose: 'auth.verify' });
     return this.finish(reserved.id, accepted());
@@ -364,6 +379,17 @@ export class AuthService {
     if (!address.allowed) {
       return rateLimited(address.retryAfterSeconds);
     }
+    const perAddress = await this.limits().record({
+      subject: `${emailHmac}\u001e${ip || 'unknown'}`,
+      purpose: 'auth.code.email_ip',
+      success: true,
+      now,
+      limit: SEND_EMAIL_IP_LIMIT,
+      windowMs: this.limitsConfig.windowMs,
+    });
+    if (!perAddress.allowed) {
+      return rateLimited(perAddress.retryAfterSeconds);
+    }
     const email = await this.limits().record({
       subject: emailHmac,
       purpose: 'auth.code.email',
@@ -386,6 +412,14 @@ export class AuthService {
       success: true,
       now,
       limit: this.limitsConfig.emailSendLimit,
+      windowMs,
+    });
+    await this.limits().undo({
+      subject: `${emailHmac}\u001e${ip || 'unknown'}`,
+      purpose: 'auth.code.email_ip',
+      success: true,
+      now,
+      limit: SEND_EMAIL_IP_LIMIT,
       windowMs,
     });
     await this.limits().undo({

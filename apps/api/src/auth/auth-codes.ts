@@ -1,11 +1,13 @@
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
-import { Mutex } from '../persistence/mutex.js';
+import { KeyedMutex, Mutex } from '../persistence/mutex.js';
 
 export const CODE_TTL_MS = 10 * 60 * 1000;
 export const RESEND_COOLDOWN_MS = 60 * 1000;
 export const VERIFY_FAILURES_BEFORE_LIMIT = 5;
 /** Wrong verifies one IP may spend against a single email before that IP stops. */
 export const VERIFY_EMAIL_IP_LIMIT = 3;
+/** Code sends one IP may spend against a single email before that IP stops. */
+export const SEND_EMAIL_IP_LIMIT = 3;
 
 export const AUTH_ACCEPTED_BODY = {
   message: 'Si el correo es válido, te enviamos un código.',
@@ -72,11 +74,14 @@ export interface AuthCodeStore {
   recordFailure(id: string): Promise<AuthCodeRow | null>;
   markUsed(id: string, now: Date): Promise<void>;
   deleteById(id: string): Promise<void>;
+  /** One sender at a time for this email, so cooldown and quota see prior inserts. */
+  withSendLock<T>(emailHmac: string, fn: () => Promise<T>): Promise<T>;
 }
 
 export class MemoryAuthCodes implements AuthCodeStore {
   private readonly rows: AuthCodeRow[] = [];
   private readonly mutex = new Mutex();
+  private readonly sendLocks = new KeyedMutex();
 
   /** Tests use this to prove the plain code and email were not stored. */
   storedText(): string {
@@ -173,6 +178,10 @@ export class MemoryAuthCodes implements AuthCodeStore {
         this.rows.splice(index, 1);
       }
     });
+  }
+
+  withSendLock<T>(emailHmac: string, fn: () => Promise<T>): Promise<T> {
+    return this.sendLocks.run(emailHmac, fn);
   }
 
   private latestLive(emailHmac: string, now: Date): AuthCodeRow | undefined {

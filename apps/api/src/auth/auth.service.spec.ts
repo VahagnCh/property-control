@@ -273,4 +273,79 @@ describe('login email', () => {
       }
     }
   });
+
+  it('stops one IP after three code sends without locking the email', async () => {
+    const { service, sender, clock } = harness({
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (attempt > 0) {
+        clock.current = new Date(clock.current.getTime() + 61_000);
+      }
+      const sent = await service.requestCode({ email: 'pair@example.com', ip: '203.0.113.9' });
+      expect(sent.status).toBe(202);
+    }
+    clock.current = new Date(clock.current.getTime() + 61_000);
+    const blocked = await service.requestCode({ email: 'pair@example.com', ip: '203.0.113.9' });
+    expect(blocked.status).toBe(429);
+    clock.current = new Date(clock.current.getTime() + 61_000);
+    const other = await service.requestCode({ email: 'pair@example.com', ip: '203.0.113.10' });
+    expect(other.status).toBe(202);
+    expect(sender.sent.filter((message) => message.to === 'pair@example.com')).toHaveLength(4);
+  });
+
+  it('stays a 503 when failed-send cleanup throws', async () => {
+    const sender = new ResendAuthEmailSender({
+      apiKey: 're_test',
+      from: 'DueRecord <verified@example.com>',
+      fetchImpl: (async () => new Response('no', { status: 500 })) as typeof fetch,
+    });
+    const { service, codes } = harness({ sender: sender as unknown as FakeAuthEmailSender });
+    codes.deleteById = () => Promise.reject(new Error('cleanup failed'));
+    const result = await service.requestCode({ email: 'cleanup@example.com', ip: '198.51.100.60' });
+    expect(result).toMatchObject({ status: 503, body: { error: 'auth.unavailable' } });
+  });
+
+  it('matches an allow-list address after NFC normalization', async () => {
+    const previous = process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS;
+    process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS = 'caf\u00e9@example.com';
+    try {
+      const { service, sender } = harness({
+        limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+      });
+      const sent = await service.requestCode({ email: 'cafe\u0301@example.com', ip: '198.51.100.61' });
+      expect(sent.status).toBe(202);
+      expect(sender.sent).toHaveLength(1);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS;
+      } else {
+        process.env.AUTH_EMAIL_ALLOWED_RECIPIENTS = previous;
+      }
+    }
+  });
+
+  it('lets parallel sends share one cooldown and then the hourly quota', async () => {
+    const { service, sender, clock } = harness({
+      limits: { emailSendLimit: 2, ipSendLimit: 50, verifyIpLimit: 50, windowMs: 60 * 60 * 1000 },
+    });
+    const burst = () =>
+      Promise.all(
+        Array.from({ length: 8 }, (_, index) =>
+          service.requestCode({ email: 'burst@example.com', ip: `203.0.113.${index + 1}` }),
+        ),
+      );
+    const first = await burst();
+    expect(first.every((result) => result.status === 202)).toBe(true);
+    expect(sender.sent).toHaveLength(1);
+    clock.current = new Date(clock.current.getTime() + 61_000);
+    const second = await burst();
+    expect(second.every((result) => result.status === 202)).toBe(true);
+    expect(sender.sent).toHaveLength(2);
+    clock.current = new Date(clock.current.getTime() + 61_000);
+    const third = await burst();
+    expect(third.filter((result) => result.status === 202)).toHaveLength(0);
+    expect(third.every((result) => result.status === 429)).toBe(true);
+    expect(sender.sent).toHaveLength(2);
+  });
 });

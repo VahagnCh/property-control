@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
+import { KeyedMutex } from '../persistence/mutex.js';
 import type { AuthAuditEvent, AuthAuditLog } from './auth-audit.js';
 import type { AuthCodeRow, AuthCodeStore, ReservedAttempt } from './auth-codes.js';
 import type { AuthUsers } from './auth.service.js';
@@ -38,7 +39,13 @@ export class PrismaAuthUsers implements AuthUsers {
 }
 
 export class PrismaAuthCodes implements AuthCodeStore {
+  private readonly sendLocks = new KeyedMutex();
+
   constructor(private readonly prisma: PrismaClient) {}
+
+  withSendLock<T>(emailHmac: string, fn: () => Promise<T>): Promise<T> {
+    return this.sendLocks.run(emailHmac, fn);
+  }
 
   async invalidateActive(emailHmac: string, now: Date): Promise<void> {
     await this.prisma.authCode.updateMany({
