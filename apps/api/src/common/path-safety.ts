@@ -4,6 +4,12 @@ const UUID_RE =
 const LITERAL_SEGMENTS = new Set([
   'v1',
   'health',
+  'auth',
+  'code',
+  'verify',
+  'refresh',
+  'logout',
+  'session',
   'me',
   'home',
   'action-items',

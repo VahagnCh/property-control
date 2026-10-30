@@ -24,6 +24,8 @@ const UUID = '11111111-1111-4111-8111-111111111111';
 const UUID_B = '22222222-2222-4222-8222-222222222222';
 
 const GUARDED_ROUTES = [
+  'GET /v1/auth/session',
+  'POST /v1/auth/logout',
   'GET /v1/properties/:propertyId/documents/:documentId/ocr-jobs',
   'GET /v1/properties/:propertyId/ocr-jobs/:ocrJobId',
   'POST /v1/properties/:propertyId/documents/:documentId/ocr-jobs',
@@ -46,6 +48,7 @@ const LIST_MODULES: Record<string, string> = {
 };
 
 const FAMILIES = [
+  'auth',
   'health',
   'me',
   'home',
@@ -123,6 +126,7 @@ function walk(stack: RouteLayer[], prefix = ''): string[] {
 }
 
 function familyOf(path: string): Family {
+  if (path === '/v1/auth' || path.startsWith('/v1/auth/')) return 'auth';
   if (path === '/v1/health' || path.startsWith('/v1/health/')) return 'health';
   if (path === '/v1/me' || path.startsWith('/v1/me/')) return 'me';
   if (path.includes('/home/')) return 'home';
@@ -362,7 +366,9 @@ describe('API P1', () => {
     const server = app.getHttpServer();
     const targets = routes.filter((route) => {
       const path = route.split(/\s+/)[1] ?? '';
-      if (isOcr(path) || path === '/health' || path === '/v1/health' || isListTemplate(route)) return false;
+      if (isOcr(path) || path.startsWith('/v1/auth') || path === '/health' || path === '/v1/health' || isListTemplate(route)) {
+        return false;
+      }
       return true;
     });
     expect(targets.length).toBeGreaterThan(0);
@@ -375,7 +381,7 @@ describe('API P1', () => {
     }
   });
 
-  it('pins AccessTokenGuard to the four OCR routes', () => {
+  it('pins AccessTokenGuard to the OCR routes and the live auth routes', () => {
     expect(routesUsing(app, AccessTokenGuard)).toEqual([...GUARDED_ROUTES].sort());
   });
 
@@ -388,6 +394,33 @@ describe('API P1', () => {
       seen.add(family);
       const concrete = fill(template);
       const ocr = isOcr(template);
+      if (family === 'auth') {
+        for (const token of [undefined, 'Bearer nope', 'Bearer expired']) {
+          const response = await send(server, method, concrete, {
+            token,
+            body: method === 'GET' ? undefined : '{}',
+            contentType: method === 'GET' ? undefined : 'application/json',
+          });
+          expect(response.status, `${route} ${token ?? 'no token'}`).toBe(template === '/v1/auth/code' ? 400 : 401);
+          expectNoSecret(response.body);
+        }
+        if (method !== 'GET') {
+          const empty = await send(server, method, concrete, { body: '', contentType: 'application/json' });
+          expect(empty.status, `${route} empty`).toBe(template === '/v1/auth/code' ? 400 : 401);
+          const bearerFirst = template === '/v1/auth/logout';
+          const targets = bearerFirst ? [concrete, '/v1/auth/logout/'] : [concrete];
+          for (const path of targets) {
+            const malformed = await send(server, method, path, { body: '{', contentType: 'application/json' });
+            expect(malformed.status, `${path} malformed`).toBe(bearerFirst ? 401 : 400);
+            const oversized = await send(server, method, path, {
+              body: `{"pad":"${'x'.repeat(40_000)}"}`,
+              contentType: 'application/json',
+            });
+            expect(oversized.status, `${path} oversized`).toBe(bearerFirst ? 401 : 413);
+          }
+        }
+        continue;
+      }
 
       for (const token of [undefined, 'Bearer nope', 'Bearer expired']) {
         const response = await send(server, method, concrete, {
@@ -562,6 +595,7 @@ describe('API P1 literal traversal and CORS allow-list', () => {
       { family: 'me', path: '/v1/me/../me', status: 400 },
       { family: 'home', path: '/v1/home/../home/action-items', status: 400 },
       { family: 'health', path: '/v1/health/../v1/health', status: 400 },
+      { family: 'auth', path: '/v1/auth/../auth/code', status: 400 },
       {
         family: 'ocr',
         path: `/v1/properties/../documents/${UUID_B}/ocr-jobs`,
