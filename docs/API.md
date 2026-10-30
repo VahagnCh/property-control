@@ -124,15 +124,17 @@ POST   /v1/properties/:propertyId/payments
                  markPartial?, method?, reference?, notes? }
          → 201 { payment, warnings } | 200 same body on replay
 GET    /v1/properties/:propertyId/payments/:paymentId          → 200 | 404
-PATCH  /v1/properties/:propertyId/payments/:paymentId          → 200 Payment
+PATCH  /v1/properties/:propertyId/payments/:paymentId          → 200 Payment | 409 payment_voided
          Body: { notes?, method?, reference? }       // cannot void or unvoid
 POST   /v1/properties/:propertyId/payments/:paymentId/void
          Headers: Idempotency-Key: <string>          // required
          Body: { voidReason }                        // trimmed length 1–500
-         → 200 Payment
+         → 200 Payment | 409 already_voided
 ```
 
-There is no `DELETE` for a payment. A correction is the void route. It sets `voidedAt`, `voidedBy`, and `voidReason`. A second void returns 409 and changes nothing. A void cannot be undone. The same Idempotency-Key returns the original void response. A viewer receives 403. A caller with no membership, including when the payment id is unknown, receives 404.
+There is no `DELETE` for a payment. A correction is the void route. It sets `voidedAt`, `voidedBy`, and `voidReason`. A second void of a payment that is already voided is **409** `already_voided` and changes nothing: the stored `voidReason`, `voidedAt`, and `voidedBy` stay as they were. A void cannot be undone. The same Idempotency-Key returns the original void response. A viewer receives 403. A caller with no membership, including when the payment id is unknown, receives 404.
+
+`PATCH` of a voided payment is **409** `payment_voided` for every edit, including notes, amount, method, reference, and status. That 409 is stored under the Idempotency-Key, and a replay returns the same body. No `payment.updated` audit entry is written, and the payment row does not change. Mobile copy keys are `pay.void.noEdit` and `pay.void.noEdit.cta`.
 
 This records a payment the person already made somewhere else. The API does not charge a card, debit an account, or hold a balance. `method` and `reference` are descriptive text — "SPEI", a folio — not instructions to a payment processor.
 
@@ -419,7 +421,7 @@ Login mail is Resend when `RESEND_API_KEY` is set, from `AUTH_EMAIL_FROM` (defau
 
 A refresh token slides for 30 days and carries an absolute cap of 90 days, copied on rotation and never extended. Reuse detection is one Postgres transaction: `UPDATE ... WHERE used_at IS NULL RETURNING`, then insert the successor. A second refresh within 30 seconds receives that same rotated pair, unless the successor has already been used. The column holds AES-256-GCM ciphertext of the successor, never the raw token. That ciphertext is cleared when the window ends or the successor has been used. After 30 seconds, or when the successor is already used, reuse revokes the whole family. An expired or already revoked token does not revoke the family.
 
-`idempotency_keys` is separate from the property-scoped `idempotency_records` described below. A key is scoped by the user (or an email HMAC) plus the HTTP method and route. The same key on a different route is a new request. The key is 8 to 128 characters of letters, digits, underscores, or hyphens, so a UUID v4 passes. Anything else is **400** `idempotency_key_invalid`. The same scope and key with a different request hash is **409** `idempotency_key_reused`. The same hash with a stored response is a replay of that stored status and body. Only **2xx** and **4xx** are stored. A **5xx** is not stored, so the same key can try again. The same hash without a response is in progress. An expired row may be replaced. `user_id` is nullable. `email_hmac` is ready for auth-code idempotency and stores only the HMAC. Exactly one of the two is set.
+`idempotency_keys` is separate from the property-scoped `idempotency_records` described below. A key is scoped by the user (or an email HMAC) plus the HTTP method and route. The same key on a different route is a new request. The key is 8 to 128 characters of letters, digits, underscores, or hyphens, so a UUID v4 passes. Anything else is **400** `idempotency_key_invalid`. The same scope and key with a different request hash is **409** `idempotency_key_reused`. The same hash with a stored response is a replay of that stored status and body. Only **2xx** and **4xx** are stored. A **5xx** reply is never stored, so the same key can try again. The same hash without a response is in progress. An expired row may be replaced. `user_id` is nullable. `email_hmac` is ready for auth-code idempotency and stores only the HMAC. Exactly one of the two is set.
 
 Auth-code attempts and rate-limit buckets are rows in Postgres. The attempt subject and the bucket key store a keyed HMAC, never the plain email. There is no Redis. A limited call will answer **429** with `Retry-After`. Nothing calls that repository from a route yet.
 
@@ -448,13 +450,15 @@ Test hosting is Render, Neon, Cloudflare R2, and Resend. The code stays provider
 | Same idempotency key, different body on a payment or evidence route | 409 `idempotency_key_reused` |
 | Same user-scoped idempotency key, different request hash | 409 `idempotency_key_reused` |
 | Replay with the same key and body | stored 2xx or 4xx |
-| Void of an already-voided payment, N/A conflict, archive read-only, or invite of an active member | 409 |
+| PATCH of a voided payment (`pay.void.noEdit`, `pay.void.noEdit.cta`) | 409 `payment_voided` |
+| Second void of an already voided payment | 409 `already_voided` |
+| N/A conflict, archive read-only, or invite of an active member | 409 |
 | Used, revoked, superseded-by-resend, or expired invite token | 410 |
 | Amount, currency, `paidAt`, `dueDay`, or `voidReason` rejected | 422 |
 
 ## Idempotency
 
-Required on property, obligation, and payment creates and updates, and on `POST .../payments/:paymentId/void`, `POST .../evidence`, and `POST .../evidence/upload-url`. Create uniqueness for a payment is `(property_id, recorded_by_user_id, idempotency_key)`. Evidence stays `(property_id, idempotency_key)`. The same payment key from another member is a separate payment. User-scoped keys live in `idempotency_keys` by user, method, and route. A replay returns the stored status and body and does not write again. The same key with a different body is **409** `idempotency_key_reused`. A 5xx is not stored. Use a UUID or another high-entropy string.
+Required on property, obligation, and payment creates and updates, and on `POST .../payments/:paymentId/void`, `POST .../evidence`, and `POST .../evidence/upload-url`. Create uniqueness for a payment is `(property_id, recorded_by_user_id, idempotency_key)`. Evidence stays `(property_id, idempotency_key)`. The same payment key from another member is a separate payment. User-scoped keys live in `idempotency_keys` by user, method, and route. A replay returns the stored status and body and does not write again. The same key with a different body is **409** `idempotency_key_reused`. A **5xx** reply is never stored. Use a UUID or another high-entropy string.
 
 ## Role matrix
 
