@@ -31,6 +31,18 @@ describe('idempotent writes', () => {
     expect(right).toMatchObject({ status: 201, body: { id: 'casa' }, replayed: true });
   });
 
+  it('does not store a 401, so the same key can succeed after a refresh', async () => {
+    const keys = new MemoryIdempotencyKeys();
+    const rejected = await runIdempotent(keys, input, async () => ({
+      status: 401,
+      body: { error: 'token_expired' },
+    }));
+    expect(rejected.status).toBe(401);
+    expect(keys.storedText()).not.toContain('token_expired');
+    const created = await runIdempotent(keys, input, async () => ({ status: 201, body: { id: 'casa' } }));
+    expect(created).toEqual({ status: 201, body: { id: 'casa' } });
+  });
+
   it('does not store a 5xx, so the same key can succeed on the next attempt', async () => {
     const keys = new MemoryIdempotencyKeys();
     await expect(

@@ -13,7 +13,8 @@ const WAIT_STEP_MS = 15;
 
 /**
  * One write per user, route, and key. A stored 2xx or 4xx is replayed.
- * A 5xx releases the reservation so the same key can run again.
+ * A 401 or 5xx releases the reservation so the same key can run again.
+ * The access-token guard runs before this layer, so a 401 never reserves a key.
  * A second caller with the same hash waits for that result instead of inserting twice.
  */
 export async function runIdempotent(

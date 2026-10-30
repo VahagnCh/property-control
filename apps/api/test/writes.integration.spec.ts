@@ -171,6 +171,42 @@ describe.skipIf(!enabled)('property, obligation, and payment writes', () => {
     expect(JSON.stringify(payment.body)).not.toMatch(/transfer|charge|balance|payout/i);
   });
 
+  it('does not store a 401, so the same key creates after the token is refreshed', async () => {
+    const server = app.getHttpServer();
+    const key = `refresh-${randomUUID()}`;
+    const body = { name: `Casa refresh ${randomUUID()}` };
+    const expired = signAccessToken(keys, {
+      sub: userA,
+      sid: randomUUID(),
+      now: new Date(Date.now() - 20 * 60 * 1000),
+    });
+    const rejected = await request(server)
+      .post('/v1/properties')
+      .set('Authorization', `Bearer ${expired}`)
+      .set('Idempotency-Key', key)
+      .send(body);
+    expect(rejected.status, JSON.stringify(rejected.body)).toBe(401);
+    expect(rejected.body.error).toBe('token_expired');
+    expect(await appDb.idempotencyKey.count({ where: { key } })).toBe(0);
+
+    const created = await request(server)
+      .post('/v1/properties')
+      .set(auth(userA))
+      .set('Idempotency-Key', key)
+      .send(body);
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    propertyIds.push(created.body.id as string);
+
+    const replay = await request(server)
+      .post('/v1/properties')
+      .set(auth(userA))
+      .set('Idempotency-Key', key)
+      .send(body);
+    expect(replay.status).toBe(201);
+    expect(replay.body.id).toBe(created.body.id);
+    expect(await appDb.property.count({ where: { id: created.body.id as string } })).toBe(1);
+  });
+
   it('replays the same key, rejects a different body, and does not cache a 5xx', async () => {
     const server = app.getHttpServer();
     const first = await request(server)

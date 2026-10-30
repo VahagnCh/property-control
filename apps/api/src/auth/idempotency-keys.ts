@@ -22,9 +22,9 @@ export type ReserveResult =
   | { outcome: 'replay'; responseStatus: number; responseBody: unknown }
   | { outcome: 'in_progress' };
 
-/** 2xx and 4xx are stored. 5xx is released so the same key can try again. */
+/** 2xx and 4xx are stored. 401 and 5xx are released so the same key can try again. */
 export function isReplayableStatus(status: number): boolean {
-  return status >= 200 && status < 500;
+  return status >= 200 && status < 500 && status !== 401;
 }
 
 export interface IdempotencyStore {
