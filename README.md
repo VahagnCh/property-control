@@ -153,7 +153,7 @@ pnpm api:dev
 
 Nest 12 ships as ESM, so `apps/api` is a native ES module: `"type": "module"`, `nodenext` resolution, and `.js` extensions on relative imports. `tsc` builds it and `tsx` runs it in watch mode.
 
-The process listens on port **3000** unless `PORT` is set. Copy `apps/api/.env.example` to `apps/api/.env` when you need `PORT`, `DATABASE_URL`, or `DIRECT_URL`. `main.ts` also requires `AVISO_VERSION` and an http(s) `AVISO_URL` before it listens. The test app does not load that check.
+The process listens on port **3000** unless `PORT` is set. Copy `apps/api/.env.example` to `apps/api/.env` when you need `PORT`, `DATABASE_URL`, `DIRECT_URL`, or `APP_ENV`. Production deploy sets `APP_ENV=production`. Staging sets `APP_ENV=staging`. A missing value is treated as production. `main.ts` also requires `AVISO_VERSION` and an http(s) `AVISO_URL` before it listens. The test app does not load that check.
 
 ```bash
 curl -s http://localhost:3000/health

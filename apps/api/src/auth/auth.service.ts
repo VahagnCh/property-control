@@ -14,6 +14,7 @@ import {
   CODE_TTL_MS,
   MemoryAuthCodes,
   RESEND_COOLDOWN_MS,
+  SEND_EMAIL_IP_LIMIT,
   VERIFY_EMAIL_IP_LIMIT,
   VERIFY_FAILURES_BEFORE_LIMIT,
   authCodeCompare,
@@ -166,11 +167,14 @@ export class AuthService {
     try {
       await this.sender.sendLoginCode({ to: email, code: decision.code });
     } catch {
-      await this.codes.withSendLock(emailHmac, async () => {
-        await this.codes.deleteById(decision.rowId);
-        await this.undoSends(emailHmac, input.ip, now);
-      });
-      return this.finish(reserved.id, errorResult(503, 'auth.unavailable', 'Login email is not configured.'));
+      try {
+        await this.codes.withSendLock(emailHmac, async () => {
+          await this.codes.deleteById(decision.rowId);
+          await this.undoSends(emailHmac, input.ip, now);
+        });
+      } finally {
+        return this.finish(reserved.id, errorResult(503, 'auth.unavailable', 'Login email is not configured.'));
+      }
     }
     await this.limits().resetBucket({ subject: emailHmac, purpose: 'auth.verify' });
     return this.finish(reserved.id, accepted());
@@ -375,6 +379,17 @@ export class AuthService {
     if (!address.allowed) {
       return rateLimited(address.retryAfterSeconds);
     }
+    const perAddress = await this.limits().record({
+      subject: `${emailHmac}\u001e${ip || 'unknown'}`,
+      purpose: 'auth.code.email_ip',
+      success: true,
+      now,
+      limit: SEND_EMAIL_IP_LIMIT,
+      windowMs: this.limitsConfig.windowMs,
+    });
+    if (!perAddress.allowed) {
+      return rateLimited(perAddress.retryAfterSeconds);
+    }
     const email = await this.limits().record({
       subject: emailHmac,
       purpose: 'auth.code.email',
@@ -397,6 +412,14 @@ export class AuthService {
       success: true,
       now,
       limit: this.limitsConfig.emailSendLimit,
+      windowMs,
+    });
+    await this.limits().undo({
+      subject: `${emailHmac}\u001e${ip || 'unknown'}`,
+      purpose: 'auth.code.email_ip',
+      success: true,
+      now,
+      limit: SEND_EMAIL_IP_LIMIT,
       windowMs,
     });
     await this.limits().undo({

@@ -6,6 +6,8 @@ export const RESEND_COOLDOWN_MS = 60 * 1000;
 export const VERIFY_FAILURES_BEFORE_LIMIT = 5;
 /** Wrong verifies one IP may spend against a single email before that IP stops. */
 export const VERIFY_EMAIL_IP_LIMIT = 3;
+/** Code sends one IP may spend against a single email before that IP stops. */
+export const SEND_EMAIL_IP_LIMIT = 3;
 
 export const AUTH_ACCEPTED_BODY = {
   message: 'Si el correo es válido, te enviamos un código.',

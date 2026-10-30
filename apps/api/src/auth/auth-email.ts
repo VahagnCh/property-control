@@ -1,3 +1,4 @@
+import { normalizeAuthEmail } from './auth-codes.js';
 import { UnconfiguredAuthEmailSender, ResendAuthEmailSender } from './resend-auth-email.js';
 
 /** Login mail. Production uses Resend. Tests and local dev use the fake when no key is set. */
@@ -23,14 +24,14 @@ export function authEmailFromEnv(env: NodeJS.ProcessEnv = process.env): string {
 /** True when From is unset or still the Resend onboarding sandbox sender. */
 export function isDefaultAuthEmailFrom(env: NodeJS.ProcessEnv = process.env): boolean {
   const from = env.AUTH_EMAIL_FROM?.trim().toLowerCase() ?? '';
-  return from.length === 0 || from.includes('onboarding@resend.dev');
+  return from.length === 0 || from.includes('@resend.dev');
 }
 
 const NON_PRODUCTION_APP_ENVS = new Set(['staging', 'development', 'test']);
 
-/** Trim, then lower-case. Allow-list checks use this exact form on both sides. */
+/** NFC, trim, then lower-case. Allow-list checks use this exact form on both sides. */
 export function normalizeAllowListEmail(value: string): string {
-  return value.trim().toLowerCase();
+  return normalizeAuthEmail(value);
 }
 
 /**
@@ -64,6 +65,16 @@ export function assertAuthDatabaseConfigured(env: NodeJS.ProcessEnv): void {
   }
 }
 
+/** Memory only when production does not apply, or when APP_ENV=test isolates the suite. */
+export function authUsesMemoryStore(env: NodeJS.ProcessEnv): boolean {
+  assertAuthDatabaseConfigured(env);
+  const databaseUrl = env.DATABASE_URL?.trim() ?? '';
+  if (databaseUrl.length === 0) {
+    return true;
+  }
+  return env.APP_ENV?.trim() === 'test';
+}
+
 export function assertAuthEmailFrom(env: NodeJS.ProcessEnv): void {
   if (!isDefaultAuthEmailFrom(env)) {
     return;
@@ -85,7 +96,7 @@ export function authEmailSenderFromEnv(env: NodeJS.ProcessEnv = process.env): Au
   if (apiKey) {
     return new ResendAuthEmailSender({ apiKey, from: authEmailFromEnv(env) });
   }
-  if (env.NODE_ENV === 'production') {
+  if (appEnvIsProduction(env)) {
     return new UnconfiguredAuthEmailSender();
   }
   return new FakeAuthEmailSender();
