@@ -76,6 +76,9 @@ describe('Trust checks', () => {
     expect(readApiBaseUrl('https://api.duerecord.invalid/', 'production')).toBe('https://api.duerecord.invalid');
     expect(readApiBaseUrl('http://127.0.0.1:4010', 'test')).toBe('http://127.0.0.1:4010');
     expect(readApiBaseUrl('http://10.0.2.2:3000', 'dev')).toBe('http://10.0.2.2:3000');
+    expect(readApiBaseUrl('http://localhost:3000', 'dev')).toBe('http://localhost:3000');
+    expect(readApiBaseUrl('http://[::1]:4010', 'test')).toBe('http://[::1]:4010');
+    expect(() => readApiBaseUrl('http://api.duerecord.invalid', 'dev')).toThrow(/https/);
     expect(() => readApiBaseUrl('https://api.duerecord.invalid/v1', 'production')).toThrow(/origin/);
     expect(() => readApiBaseUrl('https://api.duerecord.invalid/?token=s3cret', 'production')).toThrow(/origin/);
     expect(() => readApiBaseUrl('https://api.duerecord.invalid/#session', 'production')).toThrow(/origin/);
@@ -101,7 +104,7 @@ describe('Trust checks', () => {
   it('keeps tokens, idempotency keys, and bodies out of logs, errors, and Conectando', async () => {
     const access = 'access-secret-7f3a';
     const refresh = 'refresh-secret-7f3a';
-    const idem = 'idem-secret-7f3a';
+    const idem = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const bodyMarker = 'body-secret-7f3a';
     const leakUrl = 'https://evil.example/leak-7f3a';
     const leaks = [access, refresh, idem, bodyMarker, leakUrl];

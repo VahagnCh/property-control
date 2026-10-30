@@ -34,8 +34,22 @@ export function readApiBaseUrl(value: unknown, env: ApiRuntime): string {
   if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {
     throw new Error('API base URL must be an origin with no path, query, or fragment.');
   }
-  if (url.protocol === 'https:' || (url.protocol === 'http:' && env !== 'production')) {
+  if (url.protocol === 'https:') {
+    return url.origin;
+  }
+  if (url.protocol === 'http:' && env !== 'production' && isLoopback(url.hostname)) {
     return url.origin;
   }
   throw new Error('API base URL must use https.');
+}
+
+/** http is only for a dev loopback. Every other host must be https. */
+function isLoopback(hostname: string): boolean {
+  return (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '10.0.2.2' ||
+    hostname === '::1' ||
+    hostname === '[::1]'
+  );
 }

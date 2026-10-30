@@ -20,6 +20,14 @@ export type AuthTokens = {
   refreshToken: string;
 };
 
+/** The secure store could not be read. This is not a signed-out session. */
+export class TokenStoreUnavailableError extends Error {
+  constructor() {
+    super('TokenStoreUnavailableError');
+    this.name = 'TokenStoreUnavailableError';
+  }
+}
+
 export async function saveAuthTokens(tokens: AuthTokens): Promise<void> {
   const payload = JSON.stringify({
     accessToken: tokens.accessToken,
@@ -34,26 +42,40 @@ export async function saveAuthTokens(tokens: AuthTokens): Promise<void> {
 }
 
 export async function readAuthTokens(): Promise<AuthTokens | null> {
-  try {
-    const raw = await SecureStore.getItemAsync(SESSION_KEY, options);
-    const current = parseSession(raw);
-    if (current) {
-      await deleteLegacy();
-      return current;
-    }
-    if (raw) {
-      await SecureStore.deleteItemAsync(SESSION_KEY, options);
-    }
-    const accessToken = await SecureStore.getItemAsync(LEGACY_ACCESS_KEY, options);
-    const refreshToken = await SecureStore.getItemAsync(LEGACY_REFRESH_KEY, options);
-    if (accessToken && refreshToken) {
-      await saveAuthTokens({ accessToken, refreshToken });
-      return { accessToken, refreshToken };
-    }
+  const raw = await readItem(SESSION_KEY);
+  const current = parseSession(raw);
+  if (current) {
     await deleteLegacy();
-    return null;
+    return current;
+  }
+  if (raw) {
+    await deleteItem(SESSION_KEY);
+  }
+  const accessToken = await readItem(LEGACY_ACCESS_KEY);
+  const refreshToken = await readItem(LEGACY_REFRESH_KEY);
+  if (accessToken && refreshToken) {
+    await saveAuthTokens({ accessToken, refreshToken });
+    return { accessToken, refreshToken };
+  }
+  if (accessToken || refreshToken) {
+    await deleteLegacy();
+  }
+  return null;
+}
+
+async function readItem(key: string): Promise<string | null> {
+  try {
+    return await SecureStore.getItemAsync(key, options);
   } catch {
-    return null;
+    throw new TokenStoreUnavailableError();
+  }
+}
+
+async function deleteItem(key: string): Promise<void> {
+  try {
+    await SecureStore.deleteItemAsync(key, options);
+  } catch {
+    throw new TokenStoreUnavailableError();
   }
 }
 

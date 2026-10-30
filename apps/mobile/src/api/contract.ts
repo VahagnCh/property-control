@@ -63,8 +63,9 @@ export const API_ERROR_CODES = [
 
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
 
-/** 8–128 letters, digits, underscores, or hyphens. A UUID v4 passes. */
-export const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{8,128}$/;
+/** UUID v4. The only Idempotency-Key this client sends. */
+export const IDEMPOTENCY_KEY =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const HEALTH_PATH = '/v1/health';
 
