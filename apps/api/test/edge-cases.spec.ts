@@ -193,7 +193,7 @@ describe("DueRecord edge-case rules", () => {
 
   it.todo("EC-15.2 An unchanged body reuses its original idempotency key after a timeout, a network error, or a 5xx, regardless of the button label. A new key is issued only when the body changes or after a definite 2xx or 4xx.");
 
-  it.todo("EC-15.3 A GET retries once automatically, and only after a timeout or a network error. It never retries a 4xx or a signed-URL request. A write never auto-retries. A resend happens only when the user taps Reintentar, with the same key and the same body.");
+  it.todo("EC-15.3 A GET retries once automatically, and only after a timeout or a network error. It never retries a 4xx or a signed-URL request. A write never auto-retries, except that after a 401 the client does a single refresh and then resends the write once with the same Idempotency-Key and the same body. If that refresh or resend fails, there is no further automatic retry, and the user sees the normal error or Reintentar.");
 
   it.todo("EC-15.4 A voided payment is read-only. Any PATCH returns 409 payment_voided, that response is stored under the idempotency key, and the PATCH writes no audit. The UI shows no Editar. The race copy keys are pay.void.noEdit and pay.void.noEdit.cta (\"Ver pago\"). To fix a mistake the user records a new payment.");
 
@@ -203,7 +203,7 @@ describe("DueRecord edge-case rules", () => {
 
   it.todo("EC-15.7 A non-member receives 404 before any 403, and that response does not reveal whether the property exists.");
 
-  it.todo("EC-15.8 The refresh lifetime is 30 days idle and 90 days absolute, with a 30 second rotation grace. The client uses a single-flight refresh. Refresh clears the session only on 400 or 401.");
+  it.todo("EC-15.8 The refresh lifetime is 30 days idle and 90 days absolute, with a 30 second rotation grace. The client uses a single-flight refresh. A refresh ends the session only on a 401, or on a 400 or 401 carrying auth.refresh_invalid, auth.refresh_reused, token_invalid, or token_expired.");
 
   it.todo("EC-15.9 A verify attempt is reserved atomically before the code is compared, at a maximum of 5 per email, and at most 3 wrong verifies per (email, IP) within the 5 per email. A freshly delivered code resets the count. One IP can never lock out an account. Send limits are 20 per hour per IP and 5 per email, and the IP limit is checked first. A failed Resend send does not start the 60 second cooldown and does not consume quota. An unset or unknown APP_ENV is treated as production. The onboarding@resend.dev sender is refused at boot in production. Staging requires a recipient allow-list compared after trim and lowercase.");
 
@@ -213,4 +213,6 @@ describe("DueRecord edge-case rules", () => {
 
   it.todo("EC-15.12 A double void, two people voiding at the same time, returns 409. The client shows pay.void.noEdit with the call to action pay.void.noEdit.cta (\"Ver pago\"), which reloads the receipt in its anulado state.");
 
+
+  it.todo("EC-15.13 The client treats a token-storage read failure as unavailable, showing connecting or retry copy, and never as signed out. It never clears tokens because of that failure.");
 });
