@@ -96,12 +96,12 @@ Accept checks run in this order. The first match is the response, and an earlier
 1. An unknown token, or acceptance from the wrong account, returns 404.
 2. A used, revoked, superseded-by-resend, or expired token returns 410. Expiry is 7 days from sentAt. A resend restarts those 7 days.
 3. An invitee who is already a member returns 409.
-4. A non-owner invite action returns 403. A caller with no membership, and an unknown property, returns 404.
+4. A caller with no membership, and an unknown property, returns 404 before any 403, and that response does not reveal whether the property exists. A non-owner invite action returns 403.
 5. Only an owner can invite, by email, as member or viewer. Tokens are single-use. Acceptance requires the invited email.
 
 - **EC-8.1** An unknown token, or acceptance from an account whose email does not equal the invited email after both are trimmed and lowercased, returns 404. This check runs first, before any token state is revealed, and it leaves usedAt null. Acceptance requires the invited email.
 - **EC-8.2** A used, revoked, superseded-by-resend, or expired token returns 410 and does not create a membership. Expired means the server instant is greater than or equal to expiresAt, and expiresAt is sentAt plus 7 periods of 24 hours. Tokens are single-use, so a second accept returns 410. A resend sets revokedAt on the previous invite, inserts a new invite for the same email and role, and sets the new expiresAt to the new sentAt plus 7 periods of 24 hours, which restarts the 7 days. The previous token then returns 410. Resend of an invite whose usedAt is set returns 409. Resend of an invite whose revokedAt is set returns 410.
-- **EC-8.3** An invitee who is already a member returns 409 and does not insert an invite or another membership. A non-owner invite action returns 403. Only an owner can invite, by email, as member or viewer, with POST /v1/properties/:propertyId/invites and a JSON body of email plus that role. A caller with no active membership, and an unknown property, returns 404. The response includes the raw token once, plus the invite id, email, role, sentAt, and expiresAt, and it does not include tokenHash. The row stores tokenHash as the lowercase hex SHA-256 of the raw token and does not store the raw token. Role owner, a blank email, or a missing role returns 422. The stored email is trimmed and lowercased. A matching email creates an active PropertyMembership with the invite role, sets usedAt, and returns that membership.
+- **EC-8.3** An invitee who is already a member returns 409 and does not insert an invite or another membership. A caller with no active membership, and an unknown property, returns 404 before any 403, and that response does not reveal whether the property exists. A non-owner invite action returns 403. Only an owner can invite, by email, as member or viewer, with POST /v1/properties/:propertyId/invites and a JSON body of email plus that role. The response includes the raw token once, plus the invite id, email, role, sentAt, and expiresAt, and it does not include tokenHash. The row stores tokenHash as the lowercase hex SHA-256 of the raw token and does not store the raw token. Role owner, a blank email, or a missing role returns 422. The stored email is trimmed and lowercased. A matching email creates an active PropertyMembership with the invite role, sets usedAt, and returns that membership.
 
 ## 9. OCR replace
 
@@ -168,3 +168,19 @@ This section is the mobile client. Brief §11.4.
 - **EC-14.4** Without a session the link stops on sign-in. Ahora no and Cancelar drop it and open Inicio. The session flag is read once per mount. Tokens are stored by apps/mobile/src/auth/tokenStore.ts in expo-secure-store with WHEN_UNLOCKED_THIS_DEVICE_ONLY, and never in AsyncStorage. Query and fragment are removed before a route receives params. property-control:// is not handled.
 
 Follow-up: fetch the notification through the API, check membership, and keep this generic not-found for a foreign or unknown nid. [Notification detail: fetch via API with membership check](https://github.com/VahagnCh/property-control/issues/13).
+
+## 15. Follow-ups: idempotency, voided payments, auth, and notes
+
+These rules sit after sections 1 through 14. They do not replace those sections.
+
+- **EC-15.1** The same idempotency key with a different body returns 409 idempotency_key_reused. The server replays a stored 2xx and a stored 4xx, and it never stores a 5xx. The payment-row key is unique per (property_id, recorded_by_user_id, idempotency_key). A different member reusing a key, or a replay after the 24h store row expired, returns 409 idempotency_key_reused and never 500.
+- **EC-15.2** An unchanged body reuses its original idempotency key after a timeout, a network error, or a 5xx, regardless of the button label. A new key is issued only when the body changes or after a definite 2xx or 4xx.
+- **EC-15.3** A GET retries once automatically, and only after a timeout or a network error. It never retries a 4xx or a signed-URL request. A write never auto-retries. A resend happens only when the user taps Reintentar, with the same key and the same body.
+- **EC-15.4** A voided payment is read-only. Any PATCH returns 409 payment_voided, that response is stored under the idempotency key, and the PATCH writes no audit. The UI shows no Editar. The race copy keys are pay.void.noEdit and pay.void.noEdit.cta ("Ver pago"). To fix a mistake the user records a new payment.
+- **EC-15.5** voidReason stays readable on the payment. The audit log stores only {length, sha256} via sealAuditText.
+- **EC-15.6** The notes audit stores {length, sha256} of the NFC-normalized and LF-normalized text, and length counts UTF-16 code units. Notes reject bidi control characters and zero-width characters. CRLF and CR are normalized to LF.
+- **EC-15.7** A non-member receives 404 before any 403, and that response does not reveal whether the property exists.
+- **EC-15.8** The refresh lifetime is 30 days idle and 90 days absolute, with a 30 second rotation grace. The client uses a single-flight refresh. Refresh clears the session only on 400 or 401.
+- **EC-15.9** A verify attempt is reserved atomically before the code is compared, at a maximum of 5 per email, and at most 3 wrong verifies per IP count within that email's 5. A freshly delivered code resets that email's verify bucket. One IP can never lock out an account. Send limits are 20 per hour per IP and 5 per email, and the IP limit is checked first. A failed Resend send does not start the 60 second cooldown and does not consume quota.
+- **EC-15.10** Requests must arrive over HTTPS. Behind the proxy, X-Forwarded-Proto is trusted only from the configured proxy (§12.1 carve-out).
+- **EC-15.11** Logout and session routes check the bearer token first, including the trailing-slash path /v1/auth/logout/, so a missing token is 401 before any 400 or 413.

@@ -393,7 +393,7 @@ These tables have repositories and no HTTP routes.
 
 A refresh token slides for 30 days and carries an absolute cap of 90 days, copied on rotation and never extended. Reuse detection is one Postgres transaction: `UPDATE ... WHERE used_at IS NULL RETURNING`, then insert the successor. A second refresh within 30 seconds receives that same rotated pair, unless the successor has already been used. The column holds AES-256-GCM ciphertext of the successor, never the raw token. That ciphertext is cleared when the window ends or the successor has been used. After 30 seconds, or when the successor is already used, reuse revokes the whole family. An expired or already revoked token does not revoke the family.
 
-`idempotency_keys` is separate from the property-scoped `idempotency_records` described below. A key is scoped by the user (or an email HMAC) plus the HTTP method and route. The same key on a different route is a new request. The key is 8 to 128 characters of letters, digits, underscores, or hyphens, so a UUID v4 passes. Anything else is **400** `idempotency_key_invalid`. The same scope and key with a different request hash is **422** `idempotency_key_mismatch`. The same hash with a stored response is a replay. The same hash without a response is in progress. An expired row may be replaced. `user_id` is nullable. `email_hmac` is ready for auth-code idempotency and stores only the HMAC. Exactly one of the two is set.
+`idempotency_keys` is separate from the property-scoped `idempotency_records` described below. A key is scoped by the user (or an email HMAC) plus the HTTP method and route. The same key on a different route is a new request. The key is 8 to 128 characters of letters, digits, underscores, or hyphens, so a UUID v4 passes. Anything else is **400** `idempotency_key_invalid`. The same scope and key with a different request hash is **409** `idempotency_key_reused`. The same hash with a stored response is a replay. The same hash without a response is in progress. An expired row may be replaced. `user_id` is nullable. `email_hmac` is ready for auth-code idempotency and stores only the HMAC. Exactly one of the two is set.
 
 Auth-code attempts and rate-limit buckets are rows in Postgres. The attempt subject and the bucket key store a keyed HMAC, never the plain email. There is no Redis. A limited call will answer **429** with `Retry-After`. Nothing calls that repository from a route yet.
 
@@ -419,8 +419,8 @@ Test hosting is Render, Neon, Cloudflare R2, and Resend. The code stays provider
 | Active membership, role too low | 403 |
 | Soft-deleted child resource under a property the caller belongs to | 404 |
 | Missing `Idempotency-Key` on a payment create, a payment void, or an evidence create | 400 |
-| Same idempotency key, different body on a payment or evidence route | 409 |
-| Same user-scoped idempotency key, different request hash | 422 `idempotency_key_mismatch` |
+| Same idempotency key, different body on a payment or evidence route | 409 `idempotency_key_reused` |
+| Same user-scoped idempotency key, different request hash | 409 `idempotency_key_reused` |
 | Replay with the same key and body | 200 |
 | Void of an already-voided payment, N/A conflict, archive read-only, or invite of an active member | 409 |
 | Used, revoked, superseded-by-resend, or expired invite token | 410 |
@@ -428,7 +428,7 @@ Test hosting is Render, Neon, Cloudflare R2, and Resend. The code stays provider
 
 ## Idempotency
 
-Required on `POST .../payments`, `POST .../payments/:paymentId/void`, `POST .../evidence`, and `POST .../evidence/upload-url`. Create uniqueness for a payment or an evidence row is `(property_id, idempotency_key)` on that table. Void uniqueness is `(property_id, route_key, idempotency_key)` on `idempotency_records`, with route key `POST /payments/:id/void`. First call creates and returns 201 for a create, or 200 for a void. A replay with the same body returns 200 and the original response, including the original `warnings` array, and does not run the duplicate check again. The same key with a different body is a 409. Use a UUID or another high-entropy string.
+Required on `POST .../payments`, `POST .../payments/:paymentId/void`, `POST .../evidence`, and `POST .../evidence/upload-url`. Create uniqueness for a payment or an evidence row is `(property_id, idempotency_key)` on that table. Void uniqueness is `(property_id, route_key, idempotency_key)` on `idempotency_records`, with route key `POST /payments/:id/void`. First call creates and returns 201 for a create, or 200 for a void. A replay with the same body returns 200 and the original response, including the original `warnings` array, and does not run the duplicate check again. The same key with a different body is **409** `idempotency_key_reused`. Use a UUID or another high-entropy string.
 
 ## Role matrix
 
