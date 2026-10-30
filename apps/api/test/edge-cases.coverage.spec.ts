@@ -17,7 +17,7 @@ function specRules(markdown: string): string[] {
 }
 
 function todoTitles(source: string): string[] {
-  return [...source.matchAll(/it\.todo\("([\s\S]*?)"\);/g)].map((match) =>
+  return [...source.matchAll(/it\.todo\("((?:\\.|[^"\\])*)"\);/g)].map((match) =>
     JSON.parse(`"${match[1]}"`) as string,
   );
 }

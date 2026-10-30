@@ -6,6 +6,8 @@ Each rule below is one checkable statement. A test in `apps/api/test/edge-cases.
 
 The database stores money amounts on Obligation, Payment, and ObligationPeriodOutcome as integer centavos. The API wire format for those amounts is a decimal string such as "1234.50" plus a currency code. The currency is MXN only, and the wire value is never a float. `overpaidAmount` is the excess on that one period. It is not a balance, a credit, or an amount the next period can draw.
 
+Sections 10 through 13 were added on 21 Oct 2026. They are sections 9 through 12 of the product edge-case spec from that date. This file already uses section 9 for the OCR replace audit, so those rules start at section 10. Sections 1 through 8 are unchanged. Section 14 is the mobile notification links (brief §11.4).
+
 ## 1. Payments are void-only
 
 - **EC-1.1** There is no DELETE route for a payment, and the Payment model has no deletedAt column.
@@ -103,19 +105,66 @@ Accept checks run in this order. The first match is the response, and an earlier
 
 ## 9. OCR replace
 
-Confirm decisions are per field: accept, replace, reject, or edit. There is no silent prefill at any confidence. accept or edit of a saved non-null value returns 409 field_already_set. replace is the only decision that overwrites it. A bulk accept-all shape returns 422. The API rejects clientPriorValue with 422 and does not store unsaved typed text.
+Confirm decisions are per field: accept, replace, reject, or edit. There is no silent prefill at any confidence. accept or edit of a saved non-null value returns 409 field_already_set. replace is the only decision that overwrites it. A bulk accept-all shape returns 422. The API rejects clientPriorValue with 422 and does not store unsaved typed text. Only saved state is audited.
 
 - **EC-9.1** When a saved field already has a persisted value, replace writes an audit with the server-side previous value, the new value, action replace, the suggestionId, and the actor. accept or edit returns 409 with error field_already_set and does not mark the suggestion accepted. reject leaves the value unchanged.
-- **EC-9.2** Before a record is saved, a replace audit stores only the suggestionId, the field, decision replaced, and the suggested value. It does not store a client-typed previous value. On save, the payment create audit records source ocr_replace and the suggestionId. A request that contains clientPriorValue returns 422. A bulk accept-all returns 422.
+- **EC-9.2** A replace is audited only when the record is saved, not before. The audit event name is ocr.replaced, not ocr_replace. Unsaved Reemplazar writes no audit. On save, that audit records ocr.replaced and the suggestionId, and it does not store a client-typed previous value. A request that contains clientPriorValue returns 422. A bulk accept-all returns 422. The notes and maintenance description audit stores only {length, sha256} in before_state and after_state, from the NFC-normalized, LF-normalized text. length is UTF-16 code units, sha256 is the hex SHA-256 of those bytes, and the raw text is never stored.
 
-## 10. Mobile notification links
+## 10. Express consent
 
-This section is the mobile client. It does not add an API test id.
+Product spec section 9 (21 Oct 2026, brief rev f.3 §4.7). The screen is express consent for the current aviso. The consent guard order is 401 token, 404 membership, 403 viewer, 403 consent_required. EC-10.4 places 501 and then 400 or 413 ahead of that order.
 
-- A `duerecord://notificaciones/<uuid>` link opens a stub screen. The same path on an Expo Go `exp://…/--/` link does too, only while the dev-prefix check allows `exp://`. The nid is an 8-4-4-4-12 hex id. The path is exactly those two segments. `..`, an empty segment, a trailing slash, or a host or port opens Inicio.
-- The stub shows the same not-found copy for every nid: “Esta notificación ya no está disponible”, “Puede que se haya eliminado o que no tengas acceso.”, and “Ir a Inicio”. The call to action opens Inicio. The screen does not render the nid or any other text taken from the URL.
-- Without a session the link stops on sign-in. Ahora no and Cancelar drop it and open Inicio. The pending nid stays in memory for that sign-in step and is not written to disk, AsyncStorage, or the rendered tree. The session flag is read once per mount. There is no session subscription yet. Tokens, when stored, use `src/auth/tokenStore.ts` (`expo-secure-store`) and never AsyncStorage.
-- Query and fragment are removed before a route receives params. `property-control://` is not handled. The Expo Go prefix is registered, and `exp://` / `exps://` links are parsed, only while running in Expo Go or a dev build. A store or TestFlight build registers `duerecord://` only and ignores `exp://`.
-- The React Navigation screen map does not register `notificaciones/:nid`. `getStateFromPath` does not route `notificaciones/Llama-al-5555` or a nid that is a uuid plus `%3Ftoken%3Dabc`. Notification routing stays in AppShell. A valid uuid still does not become a web route.
-- The held nid is cleared when the stub opens and when Ahora no or Cancelar drops the link. Sign-in keeps it until then. It is not rendered.
-- Follow-up: fetch the notification through the API, check membership, and keep this generic not-found for a foreign or unknown nid. [Notification detail: fetch via API with membership check](https://github.com/VahagnCh/property-control/issues/13).
+- **EC-10.1** The consent screen shows whenever consent.required is true. That covers first sign-in, any sign-in after Ahora no, and any sign-in after an aviso version change. The checkbox starts unchecked, and Continuar stays disabled until it is checked.
+- **EC-10.2** Ahora no shows the copy "Sin tu consentimiento no podemos guardar pagos ni comprobantes." It then signs the user out and saves nothing.
+- **EC-10.3** POST /v1/me/consent body is only {avisoVersion}. appVersion comes from the app-version header. A client-sent acceptedAt is ignored, and the server stores acceptedAt. The full text of each aviso version is stored, and that table is insert-only. The current version returns 201 and appends one record of the user, the aviso version, the server acceptedAt, and the app version, in the same transaction as its audit entry. Posting that same version again returns 200 with the existing record and no new record. It does not change acceptedAt or appVersion, and it writes no second audit entry. Posting a version that is not current, including an older published version, returns 422 with error aviso_version_mismatch. Records are never overwritten.
+- **EC-10.4** The full guard order is 501, then 401, then 400 or 413, then 404 membership, then 403 viewer, then 403 consent_required. Reads are allowed before consent. A property, obligation, payment, or evidence write made before the current consent returns 403 consent_required only after those earlier gates. A route that is still a stub returns 501 before the token is read. A missing, invalid, or expired token returns 401. A bad request returns 400 and a payload that is too large returns 413. A non-member, or an unknown resource, returns 404, including when that caller also lacks consent. A viewer write returns 403 viewer, not consent_required. POST /v1/properties has no membership check, so after 501, 401, and 400 or 413, a user who has not consented receives 403 consent_required and cannot create a property.
+- **EC-10.5** Reads do not require consent, and they skip the viewer check. GET /v1/me is one of those reads. With a valid token and no current consent it returns the profile, including consent { required, avisoVersion, avisoUrl }, and it does not return consent_required. consent.required is true when the caller has no row for the configured AVISO_VERSION. A non-member read of a property resource is still 404.
+- **EC-10.6** A new aviso version sets consent.required back to true. Writes then return 403 consent_required again until the user accepts that version. The earlier consent row stays and is not overwritten.
+- **EC-10.7** In the app, a 403 consent_required goes straight back to the consent screen and shows no toast.
+- **EC-10.8** On a new account, Continuar stays blocked until the box is checked. After the user accepts and then signs out and signs back in, the consent screen does not appear again while consent.required is false and that aviso version is unchanged.
+- **EC-10.9** Retirar consentimiento and account deletion are separate MVP backlog items. Both are required before public launch, and neither is in the Nov 5 build.
+
+## 11. Free test build: cold start and sign-in requests
+
+Product spec section 10 (21 Oct 2026). EC-11.5 is the settled rule for POST /v1/auth/code and is final. It does not change the payment idempotency rules in EC-1.9 and EC-7.4. A payment-create replay stays 200. An auth-code replay stays the original 202.
+
+- **EC-11.1** GET /v1/health runs a database query, so one call wakes both the API and the database. Success returns 200 and a JSON object whose only field is status set to ok. A failed query returns 503 and a JSON object whose only field is status set to unavailable. Those two bodies include no version, no host, and no error detail. The route is rate-limited, and a request past the limit returns 429 with a Retry-After header instead of either of those bodies. Responses are never cached and send Cache-Control no-store.
+- **EC-11.2** The health check runs at launch, when the app returns to the foreground after more than 10 minutes in the background, and before a write only if more than 10 minutes have passed since the last API response. Otherwise a write sends no separate check. A write button tapped before the health check has passed shows Conectando… and sends only once the check passes. Every other request keeps the 15 s timeout. The copy keys are common.connecting at 3 s, common.connecting.slow at 8 s, and common.connecting.failed with Reintentar at 90 s.
+- **EC-11.3** Every write button stays in the Conectando state until the health check passes. A write is never sent while the API is still in a cold start.
+- **EC-11.4** On the free build, a first open that completes within 90 s behind Conectando is a pass, and reaching common.connecting.failed at 90 s is a fail.
+- **EC-11.5** The phone never retries POST /v1/auth/code automatically, and the route honors Idempotency-Key. The key is 8 to 128 characters of letters, digits, underscores, or hyphens, matching [A-Za-z0-9_-], and anything else returns 400 idempotency_key_invalid. Reintentar sends the same key. The same key for the same email within 10 minutes returns the original 202, creates no new code, sends no second email, and does not consume another rate-limit hit. A new key comes from Reenviar ("Enviar otro código"), returns a fresh code, invalidates the earlier code, and counts toward the rate limit. The key is stored against a keyed HMAC of the normalized email, and the raw email is never stored. The same key with a different email is a new request: it returns 202, and the response reveals nothing about whether the key was already used or whether either account exists. A 429 response includes Retry-After. The success response is 202 whether or not the account exists. Codes, tokens, and emails never appear in logs.
+- **EC-11.6** The line auth.code.latest (Si pediste más de un código, usa el del correo más reciente.) is shown under auth.code.body only after Reenviar (auth.code.resend). It is not shown on the first visit and it is not shown after Reintentar. An older code is rejected with auth.code.wrong.
+- **EC-11.7** A safe GET auto-retries once, and only after a timeout or a network error. It never retries a 4xx, including 401, 403, 404, and 429. A 401 goes through the single-flight refresh. A safe GET never retries a signed file URL request; it asks for a fresh URL instead. Writes never auto-retry. Retrying a write requires the user to tap Reintentar, which resends the same body with the same Idempotency-Key (AC-PAY-22).
+- **EC-11.8** The legacy /health route is removed. No health response, including a 429, carries a version, a host, or an error detail.
+
+## 12. OCR suggestion: Reemplazar / Mantener
+
+Product spec section 11 (21 Oct 2026, PR #2 review). These are the client undo rules. Only saved state is audited. The client undo is never audited. EC-9.1 and EC-9.2 stay the server audit rules for replace.
+
+- **EC-12.1** Reemplazar saves the field's current value as the undo, keyed by suggestion id and field. It saves that value again only when the field does not already hold the OCR value, so tapping Reemplazar two or three times keeps the value from before the first tap.
+- **EC-12.2** Mantener restores the saved undo value, or the saved value when the field was already saved, sends reject, and then clears the undo.
+- **EC-12.3** Typing 5.00, then Reemplazar, then Mantener, then typing 6.00, then Reemplazar, then Mantener ends on 6.00. Typing a new value between two Reemplazar taps saves that newly typed value as the undo.
+- **EC-12.4** Reemplazar, then editing the same field, then Mantener restores the value from before the Reemplazar tap and sends reject.
+- **EC-12.5** Copying the form object or editing another field never changes the stored undo for a field.
+- **EC-12.6** Remount persistence is deferred to the record-payment screen PR, which stores the undo with the decisions, keyed by suggestion id + field, and adds a remount test. Until then the undo lives in row state and is never sent.
+- **EC-12.7** Confirm and reject request bodies never carry typed or saved text, previousValue, or clientPriorValue.
+- **EC-12.8** Only Reemplazar sends replace, and the latest choice wins. The undo is held in screen or row state, never in module state. Mantener restores the value from before the first tap, or savedValue, sends reject, and clears the undo. Known low: typing the OCR value by hand after Reemplazar looks like a repeat tap.
+
+## 13. Consent: aviso missing on the server
+
+Product spec section 12 (21 Oct 2026). A missing published row for the configured aviso is not the version-mismatch 422 in EC-10.3.
+
+- **EC-13.1** The server fails at boot when the configured AVISO_VERSION has no published row, and it does not start listening. At runtime a missing current aviso returns 503 with error aviso_unavailable and logs an alert that contains no PII. POST /v1/me/consent returns that 503 now. GET /v1/me returning 503 is a tracked follow-up. That missing-aviso response is never 422.
+- **EC-13.2** On the phone, a 503 shows consent.unavailable (No pudimos cargar el Aviso de privacidad. Inténtalo de nuevo en unos minutos.) with Reintentar and Ahora no. The checkbox never unchecks in a loop, nothing is saved, and Ahora no signs the user out.
+- **EC-13.3** Only a 422 aviso_version_mismatch shows consent.updated. A 503 never shows consent.updated.
+
+## 14. Mobile notification links
+
+This section is the mobile client. Brief §11.4.
+
+- **EC-14.1** A pending notification link is kept in memory only and is never persisted (brief §11.4). The held nid is AppShell state only. It is never written to SecureStore or AsyncStorage. The held nid is cleared when the stub opens and when Ahora no or Cancelar drops the link.
+- **EC-14.2** Production, store, and TestFlight builds register and accept only duerecord://. A duerecord://notificaciones/<uuid> link opens a stub screen. The nid is an 8-4-4-4-12 hex id. The path is exactly those two segments. A dot-dot segment, an empty segment, a trailing slash, or a host or port opens Inicio. exp:// and exps:// are accepted only while running in Expo Go or a dev build. The dev-prefix gate covers both exp:// and exps://. The navigation map does not register notificaciones/:nid. Routing stays in AppShell.
+- **EC-14.3** The stub shows the same not-found copy for every nid. notif.notFound.title is Esta notificación ya no está disponible. notif.notFound.body is Puede que se haya eliminado o que no tengas acceso. notif.notFound.cta is Ir a Inicio. The call to action opens Inicio. The screen does not render the nid or any other text taken from the URL.
+- **EC-14.4** Without a session the link stops on sign-in. Ahora no and Cancelar drop it and open Inicio. The session flag is read once per mount. Tokens are stored by apps/mobile/src/auth/tokenStore.ts in expo-secure-store with WHEN_UNLOCKED_THIS_DEVICE_ONLY, and never in AsyncStorage. Query and fragment are removed before a route receives params. property-control:// is not handled.
+
+Follow-up: fetch the notification through the API, check membership, and keep this generic not-found for a foreign or unknown nid. [Notification detail: fetch via API with membership check](https://github.com/VahagnCh/property-control/issues/13).

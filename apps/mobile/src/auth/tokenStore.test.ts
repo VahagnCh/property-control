@@ -103,9 +103,10 @@ describe('auth token store', () => {
     expect(SecureStore.setItemAsync).not.toHaveBeenCalled();
   });
 
-  it('returns null when secure store read fails and does not rethrow the stored value', async () => {
+  it('throws when secure store read fails and does not rethrow the stored value', async () => {
     (SecureStore.getItemAsync as jest.Mock).mockRejectedValue(new Error(`boom ${ACCESS}`));
-    await expect(readAuthTokens()).resolves.toBeNull();
+    await expect(readAuthTokens()).rejects.toMatchObject({ name: 'TokenStoreUnavailableError' });
+    expect(SecureStore.deleteItemAsync).not.toHaveBeenCalled();
   });
 
   it('does not import AsyncStorage, and no mobile source does', () => {

@@ -1,4 +1,6 @@
+import { fetch as expoFetch } from 'expo/fetch';
 import type { AuthTokens, TokenStore } from '../auth/tokenStore';
+import { TokenStoreUnavailableError } from '../auth/tokenStore';
 import { CONNECTING_LABEL } from '../copy/userFacing';
 import { createIdempotencyKey } from '../outbox/idempotency';
 import {
@@ -27,13 +29,27 @@ import { assertCalendarDate, assertDecimalMoney, canonicalPesoAmount, paidAtOnPr
 /** Every request, including health and refresh, aborts at 15 seconds. */
 export const REQUEST_TIMEOUT_MS = 15_000;
 
+const REFRESH_END_CODES = new Set([
+  'auth.refresh_invalid',
+  'auth.refresh_reused',
+  'token_invalid',
+  'token_expired',
+]);
+
+/** True only when the request URL is the configured API origin. */
+export function mayAttachAuthorization(requestUrl: string, baseUrl: string): boolean {
+  try {
+    return new URL(requestUrl).origin === new URL(baseUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
 /** EC-11.2: a write calls GET /v1/health only after this long with no API response. */
 export const HEALTH_STALE_MS = 10 * 60 * 1000;
 
 type PendingWrite = {
   key: string;
-  fingerprint: string;
-  definiteFailure: boolean;
 };
 
 export type ConnectionSnapshot = {
@@ -84,14 +100,14 @@ export class ApiClient {
   private refreshInFlight: Promise<void> | null = null;
   private healthInFlight: Promise<void> | null = null;
   private connectionSnapshot: ConnectionSnapshot = IDLE_CONNECTION;
-  private pendingWrite: PendingWrite | null = null;
+  private readonly pendingWrites = new Map<string, PendingWrite>();
   private readonly sessionListeners = new Set<(event: ApiClientEvent) => void>();
   private readonly connectionListeners = new Set<(snapshot: ConnectionSnapshot) => void>();
 
   constructor(options: ApiClientOptions) {
     this.baseUrl = readApiBaseUrl(options.baseUrl, options.env);
     this.tokenStore = options.tokenStore;
-    this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    this.fetchImpl = options.fetchImpl ?? expoFetch;
     this.now = options.now ?? (() => Date.now());
     this.randomUUID = options.randomUUID ?? createIdempotencyKey;
   }
@@ -143,17 +159,20 @@ export class ApiClient {
       const first = await transport(sent);
       if (first.status !== 401 || path === HEALTH_PATH) {
         if (write) {
-          this.noteWriteResponse(first);
+          this.noteWriteResponse(method, path, options?.body, first);
         }
         return this.finish<T>(first);
       }
       await this.refresh();
       const second = await transport(sent);
       if (write) {
-        this.noteWriteResponse(second);
+        this.noteWriteResponse(method, path, options?.body, second);
       }
       return this.finish<T>(second);
     } catch (error) {
+      if (error instanceof TokenStoreUnavailableError) {
+        throw new ConnectingFailedError(write ? idempotencyKey : null);
+      }
       if (!write) {
         throw error;
       }
@@ -287,7 +306,15 @@ export class ApiClient {
   }
 
   private async refreshOnce(): Promise<void> {
-    const current = await this.tokenStore.read();
+    let current: AuthTokens | null;
+    try {
+      current = await this.tokenStore.read();
+    } catch (error) {
+      if (error instanceof TokenStoreUnavailableError) {
+        throw new ConnectingFailedError(null);
+      }
+      throw error;
+    }
     if (!current) {
       await this.endSession();
       throw new SessionExpiredError();
@@ -318,18 +345,35 @@ export class ApiClient {
       });
       if (response.status >= 200 && response.status < 300) {
         const next = readRefreshPair(response.body);
-        await this.tokenStore.save(next);
+        await this.saveRotated(next);
         return 'ok';
       }
-      if (response.status === 400 || response.status === 401) {
+      const code = readErrorCode(response.body, response.status);
+      if (response.status === 401 || (response.status === 400 && REFRESH_END_CODES.has(code))) {
         return 'rejected';
       }
       return 'unavailable';
     } catch (error) {
+      if (error instanceof TokenStoreUnavailableError) {
+        throw error;
+      }
       if (isUnreachable(error)) {
         return 'network';
       }
       return 'unavailable';
+    }
+  }
+
+  /** One retry of the rotated pair. A failed save does not clear the previous session. */
+  private async saveRotated(tokens: AuthTokens): Promise<void> {
+    try {
+      await this.tokenStore.save(tokens);
+    } catch {
+      try {
+        await this.tokenStore.save(tokens);
+      } catch {
+        throw new TokenStoreUnavailableError();
+      }
     }
   }
 
@@ -353,32 +397,29 @@ export class ApiClient {
    * A definite 2xx or 4xx releases it. Writes are not retried automatically.
    */
   private keyForWrite(method: HttpMethod, path: string, body: unknown): string {
-    const fingerprint = canonicalJson({ method, path, body: body ?? null });
-    const pending = this.pendingWrite;
-    if (pending && pending.fingerprint === fingerprint && !pending.definiteFailure) {
+    const fingerprint = writeFingerprint(method, path, body);
+    const pending = this.pendingWrites.get(fingerprint);
+    if (pending) {
       return pending.key;
     }
     const key = this.randomUUID();
     if (!IDEMPOTENCY_KEY.test(key)) {
       throw new ApiClientError('idempotency_key_invalid', 'common.error', 400);
     }
-    this.pendingWrite = { key, fingerprint, definiteFailure: false };
+    this.pendingWrites.set(fingerprint, { key });
     return key;
   }
 
-  private noteWriteResponse(response: WireResponse): void {
-    if (!this.pendingWrite) {
+  private noteWriteResponse(method: HttpMethod, path: string, body: unknown, response: WireResponse): void {
+    const fingerprint = writeFingerprint(method, path, body);
+    if (!this.pendingWrites.has(fingerprint)) {
       return;
     }
-    if (response.status >= 200 && response.status < 300) {
-      this.pendingWrite = null;
-      return;
-    }
-    if (response.status >= 500) {
-      return;
-    }
-    if (response.status >= 400) {
-      this.pendingWrite = { ...this.pendingWrite, definiteFailure: true };
+    if (
+      (response.status >= 200 && response.status < 300) ||
+      (response.status >= 400 && response.status < 500)
+    ) {
+      this.pendingWrites.delete(fingerprint);
     }
   }
 
@@ -417,6 +458,9 @@ export class ApiClient {
     if (input.auth) {
       const tokens = await this.tokenStore.read();
       if (tokens?.accessToken) {
+        if (!mayAttachAuthorization(url, this.baseUrl)) {
+          throw new ApiClientError('invalid_path', 'common.error', null);
+        }
         headers.Authorization = `Bearer ${tokens.accessToken}`;
       }
     }
@@ -432,7 +476,7 @@ export class ApiClient {
     try {
       const response = await Promise.race([pending, timeout.promise]);
       if (isRedirect(response) || !responseStaysOnOrigin(response.url, this.baseUrl)) {
-        throw new ApiClientError('network', 'common.error', null);
+        throw new ApiClientError('redirect', 'common.connecting.failed', null);
       }
       this.lastResponseAt = this.now();
       const text = await response.text();
@@ -522,6 +566,10 @@ function responseStaysOnOrigin(responseUrl: string | undefined, baseUrl: string)
   } catch {
     return false;
   }
+}
+
+function writeFingerprint(method: HttpMethod, path: string, body: unknown): string {
+  return canonicalJson({ method, path, body: body ?? null });
 }
 
 function canonicalJson(value: unknown): string {

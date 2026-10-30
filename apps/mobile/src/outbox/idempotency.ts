@@ -1,3 +1,5 @@
+import { randomUUID as expoRandomUUID } from 'expo-crypto';
+
 export type IdempotentWrite = {
   key: string;
   attempts: number;
@@ -8,16 +10,20 @@ export type SubmitGate = {
   inFlight: boolean;
 };
 
+const UUID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 /**
- * Guarded UUID. This does not use Math.random, and it does not import
- * expo-crypto while globalThis.crypto.randomUUID is present.
+ * UUID v4. Uses global crypto.randomUUID when it exists, otherwise expo-crypto.
+ * Never Math.random.
  */
 export function createIdempotencyKey(): string {
   const randomUUID = globalThis.crypto?.randomUUID;
-  if (typeof randomUUID !== 'function') {
+  const key = typeof randomUUID === 'function' ? randomUUID.call(globalThis.crypto) : expoRandomUUID();
+  if (!UUID_V4.test(key)) {
     throw new Error('crypto.randomUUID is not available');
   }
-  return randomUUID.call(globalThis.crypto);
+  return key;
 }
 
 /**

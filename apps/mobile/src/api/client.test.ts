@@ -1,12 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import { COPY, copyText } from '../copy/userFacing';
-import { HEALTH_STALE_MS, REQUEST_TIMEOUT_MS, createApiClient, type ApiClient } from './client';
+import { HEALTH_STALE_MS, REQUEST_TIMEOUT_MS, createApiClient, mayAttachAuthorization, type ApiClient } from './client';
 import { API_ERROR_CODES, REFRESH_PATH } from './contract';
 import { IdempotencyKeyReusedError, copyKeyForApiError } from './errors';
 import { OBLIGATION_ID, PROPERTY_ID, paymentCreated, propertyFixture } from './testing/fixtures';
 import { createContractFakeServer, type FakeServer } from './testing/fakeServer';
-import type { TokenStore } from '../auth/tokenStore';
+import { TokenStoreUnavailableError, type TokenStore } from '../auth/tokenStore';
 
 const BASE = 'http://127.0.0.1:4010';
 const PROPERTY_PATH = `/v1/properties/${PROPERTY_ID}`;
@@ -54,6 +54,10 @@ function setup(options?: {
 
 function paymentInput(paidAt: Date | string = '2026-10-29', amount = '1234.50') {
   return { obligationId: OBLIGATION_ID, amount, paidAt };
+}
+
+function v4(n: number): string {
+  return `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 }
 
 async function waitUntil(ready: () => boolean): Promise<void> {
@@ -277,7 +281,7 @@ describe('API client', () => {
       const { server, client } = setup({
         randomUUID: () => {
           minted += 1;
-          return `minted-key-${minted}-abcd`;
+          return v4(minted);
         },
       });
       const keys: string[] = [];
@@ -301,9 +305,9 @@ describe('API client', () => {
       await flushMicrotasks();
       await jest.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
       await pending;
-      expect(caught?.idempotencyKey).toBe('minted-key-1-abcd');
+      expect(caught?.idempotencyKey).toBe(v4(1));
       await client.createPayment(PROPERTY_ID, paymentInput());
-      expect(keys).toEqual(['minted-key-1-abcd', 'minted-key-1-abcd']);
+      expect(keys).toEqual([v4(1), v4(1)]);
       expect(minted).toBe(1);
       expect(server.calls('GET', '/v1/health').every((call) => call.headers['idempotency-key'] === undefined)).toBe(
         true,
@@ -318,7 +322,7 @@ describe('API client', () => {
     const { server, client } = setup({
       randomUUID: () => {
         minted += 1;
-        return `minted-key-${minted}-abcd`;
+        return v4(minted);
       },
     });
     const keys: string[] = [];
@@ -329,7 +333,7 @@ describe('API client', () => {
     });
     await client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '10.00'));
     await client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '11.00'));
-    expect(keys).toEqual(['minted-key-1-abcd', 'minted-key-2-abcd']);
+    expect(keys).toEqual([v4(1), v4(2)]);
     expect(minted).toBe(2);
   });
 
@@ -338,7 +342,7 @@ describe('API client', () => {
     const { server, client } = setup({
       randomUUID: () => {
         minted += 1;
-        return `minted-key-${minted}-abcd`;
+        return v4(minted);
       },
     });
     const keys: string[] = [];
@@ -354,7 +358,7 @@ describe('API client', () => {
     });
     await expect(client.createPayment(PROPERTY_ID, paymentInput())).rejects.toMatchObject({ status: 503 });
     await client.createPayment(PROPERTY_ID, paymentInput());
-    expect(keys).toEqual(['minted-key-1-abcd', 'minted-key-1-abcd']);
+    expect(keys).toEqual([v4(1), v4(1)]);
     expect(minted).toBe(1);
   });
 
@@ -363,7 +367,7 @@ describe('API client', () => {
     const { server, client } = setup({
       randomUUID: () => {
         minted += 1;
-        return `minted-key-${minted}-abcd`;
+        return v4(minted);
       },
     });
     const keys: string[] = [];
@@ -608,9 +612,9 @@ describe('API client', () => {
     expect(copyKeyForApiError('not_a_real_code', 422)).toBe('common.error');
   });
 
-  it('treats a 302 to a foreign host as a network error and does not leak the request', async () => {
+  it('treats a 302 to a foreign host as a redirect and does not leak or retry it', async () => {
     const access = 'access-secret-7f3a';
-    const idem = 'idem-secret-7f3a';
+    const idem = v4(9);
     const bodyMarker = 'body-secret-7f3a';
     let textReads = 0;
     const seen: Array<{ url: string; redirect?: RequestRedirect; authorization: string }> = [];
@@ -654,10 +658,236 @@ describe('API client', () => {
     expect(seen[0]?.redirect).toBe('manual');
     expect(seen[0]?.authorization).toBe(`Bearer ${access}`);
     expect(textReads).toBe(0);
+    expect(error).toMatchObject({ code: 'redirect', message: COPY['common.connecting.failed'] });
     expect((error as Error).message).not.toContain(access);
     expect((error as Error).message).not.toContain(bodyMarker);
     expect((error as Error).message).not.toContain('evil.example');
+    expect((error as Error).message).not.toMatch(/sesión expirada/i);
     expect(JSON.stringify(error)).not.toContain('evil.example');
+
+    seen.length = 0;
+    const reads = createApiClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      env: 'test',
+      tokenStore: memoryStore({ accessToken: access, refreshToken: 'refresh-secret-7f3a' }),
+      fetchImpl: async (input, init) => {
+        seen.push({
+          url: String(input),
+          redirect: init?.redirect,
+          authorization: new Headers(init?.headers).get('authorization') ?? '',
+        });
+        return { status: 302, type: 'opaqueredirect', url: 'https://evil.example/collect', text: async () => '' } as Response;
+      },
+    });
+    await expect(reads.getProperty(PROPERTY_ID)).rejects.toMatchObject({ code: 'redirect' });
+    expect(seen).toHaveLength(1);
+  });
+
+  it('reuses A key after B succeeds when Reintentar is tapped on A', async () => {
+    jest.useFakeTimers();
+    try {
+      let minted = 0;
+      const { server, client } = setup({
+        randomUUID: () => {
+          minted += 1;
+          return v4(minted);
+        },
+      });
+      const keys: Array<{ amount: string; key: string }> = [];
+      const attempts = new Map<string, number>();
+      server.route('POST', PAYMENT_PATH, (request) => {
+        const parsed = JSON.parse(request.bodyText ?? '{}') as { amount: string; paidAt: string };
+        const amount = parsed.amount;
+        const seen = (attempts.get(amount) ?? 0) + 1;
+        attempts.set(amount, seen);
+        keys.push({ amount, key: request.headers['idempotency-key'] ?? '' });
+        if (amount === '10.00' && seen === 1) {
+          return { status: 201, hang: true };
+        }
+        return { status: 201, body: paymentCreated(parsed.amount, parsed.paidAt) };
+      });
+      let caught: { idempotencyKey?: string } | undefined;
+      const pending = client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '10.00')).then(
+        () => undefined,
+        (error: { idempotencyKey?: string }) => {
+          caught = error;
+        },
+      );
+      await flushMicrotasks();
+      await jest.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
+      await pending;
+      expect(caught?.idempotencyKey).toBe(v4(1));
+      await client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '11.00'));
+      await client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '10.00'));
+      await client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '12.00'));
+      const keyFor = (amount: string) => keys.filter((item) => item.amount === amount).map((item) => item.key);
+      expect(keyFor('10.00')).toEqual([v4(1), v4(1)]);
+      expect(keyFor('11.00')).toEqual([v4(2)]);
+      expect(keyFor('12.00')).toEqual([v4(3)]);
+      expect(minted).toBe(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('resends a write once after refresh and does not retry if that resend fails', async () => {
+    const { server, client } = setup();
+    const keys: string[] = [];
+    let posts = 0;
+    server.route('POST', REFRESH_PATH, () => ({
+      status: 200,
+      body: { accessToken: 'access-2', refreshToken: 'refresh-2' },
+    }));
+    server.route('POST', PAYMENT_PATH, (request) => {
+      posts += 1;
+      keys.push(request.headers['idempotency-key'] ?? '');
+      return { status: 401, body: { statusCode: 401, error: 'token_expired', message: 'Token expired.' } };
+    });
+    await expect(client.createPayment(PROPERTY_ID, paymentInput())).rejects.toMatchObject({ status: 401 });
+    expect(posts).toBe(2);
+    expect(keys[0]).toBe(keys[1]);
+    expect(server.calls('POST', REFRESH_PATH)).toHaveLength(1);
+  });
+
+  it('keeps the session when the token store cannot be read and sends no request', async () => {
+    let clears = 0;
+    const calls: string[] = [];
+    const client = createApiClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      env: 'test',
+      tokenStore: {
+        async read() {
+          throw new TokenStoreUnavailableError();
+        },
+        async save() {
+          return undefined;
+        },
+        async clear() {
+          clears += 1;
+        },
+      },
+      fetchImpl: async (input) => {
+        calls.push(String(input));
+        return new Response(JSON.stringify(propertyFixture), { status: 200 });
+      },
+    });
+    const error = await client.getProperty(PROPERTY_ID).then(
+      () => {
+        throw new Error('expected a rejection');
+      },
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({
+      code: 'connecting_failed',
+      copyKey: 'common.connecting.failed',
+      message: COPY['common.connecting.failed'],
+      retryLabel: 'Reintentar',
+    });
+    expect((error as Error).message).not.toMatch(/sesión expirada|sign-out|cerrar sesión/i);
+    expect(clears).toBe(0);
+    expect(calls).toEqual([]);
+  });
+
+  it('retries a rotated token save once and does not wipe the session if it still fails', async () => {
+    const { server, tokens } = setup();
+    let saves = 0;
+    let clears = 0;
+    const client = createApiClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      env: 'test',
+      tokenStore: {
+        async read() {
+          return tokens.current();
+        },
+        async save() {
+          saves += 1;
+          throw new Error('disk');
+        },
+        async clear() {
+          clears += 1;
+        },
+      },
+      fetchImpl: server.fetch,
+    });
+    server.route('GET', PROPERTY_PATH, (request) => {
+      if (request.headers.authorization === 'Bearer access-2') {
+        return { status: 200, body: propertyFixture };
+      }
+      return { status: 401, body: { statusCode: 401, error: 'token_expired', message: 'Token expired.' } };
+    });
+    server.route('POST', REFRESH_PATH, () => ({
+      status: 200,
+      body: { accessToken: 'access-2', refreshToken: 'refresh-2' },
+    }));
+    const error = await client.getProperty(PROPERTY_ID).then(
+      () => {
+        throw new Error('expected a rejection');
+      },
+      (caught: unknown) => caught,
+    );
+    expect(saves).toBe(2);
+    expect(clears).toBe(0);
+    expect(tokens.current()).toEqual({ accessToken: ACCESS, refreshToken: REFRESH });
+    expect(error).toMatchObject({
+      code: 'connecting_failed',
+      message: COPY['common.connecting.failed'],
+      retryLabel: 'Reintentar',
+    });
+    expect((error as Error).message).not.toMatch(/sesión expirada/i);
+  });
+
+  it('ends the session only for a refresh 401 or a 400 with a refresh error code', async () => {
+    const kept = setup();
+    const keptEvents: string[] = [];
+    kept.client.subscribe((event) => {
+      keptEvents.push(event.type);
+    });
+    kept.server.route('GET', PROPERTY_PATH, () => ({
+      status: 401,
+      body: { statusCode: 401, error: 'token_expired', message: 'Token expired.' },
+    }));
+    kept.server.route('POST', REFRESH_PATH, () => ({
+      status: 400,
+      body: { statusCode: 400, error: 'idempotency_key_invalid', message: 'no' },
+    }));
+    await expect(kept.client.getProperty(PROPERTY_ID)).rejects.toMatchObject({
+      code: 'auth.unavailable',
+      copyKey: 'common.connecting.failed',
+    });
+    expect(kept.tokens.current()).toEqual({ accessToken: ACCESS, refreshToken: REFRESH });
+    expect(keptEvents).toEqual([]);
+
+    const ended = setup();
+    const endedEvents: string[] = [];
+    ended.client.subscribe((event) => {
+      endedEvents.push(event.type);
+    });
+    ended.server.route('GET', PROPERTY_PATH, () => ({
+      status: 401,
+      body: { statusCode: 401, error: 'token_expired', message: 'Token expired.' },
+    }));
+    ended.server.route('POST', REFRESH_PATH, () => ({
+      status: 400,
+      body: { statusCode: 400, error: 'auth.refresh_invalid', message: 'The refresh token is not valid.' },
+    }));
+    await expect(ended.client.getProperty(PROPERTY_ID)).rejects.toMatchObject({ code: 'sign_in_required' });
+    expect(ended.tokens.current()).toBeNull();
+    expect(endedEvents).toEqual(['sign-in-required']);
+    expect((endedEvents.join(' '))).not.toMatch(/sesión expirada/i);
+  });
+
+  it('attaches Authorization only when the request origin is the API origin', () => {
+    expect(mayAttachAuthorization('http://127.0.0.1:4010/v1/me', 'http://127.0.0.1:4010')).toBe(true);
+    expect(mayAttachAuthorization('https://evil.example/v1/me', 'http://127.0.0.1:4010')).toBe(false);
+  });
+
+  it('uses expo/fetch and ignores a switch back to the React Native fetch', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'client.ts'), 'utf8');
+    expect(source).toContain("from 'expo/fetch'");
+    expect(source).not.toContain('globalThis.fetch');
+    const marker = ['EXPO', 'PUBLIC', 'USE_RN_FETCH'].join('_');
+    expect(process.env[marker]).toBeFalsy();
+    expect(source.includes(marker)).toBe(false);
   });
 
   it('never writes tokens outside SecureStore', () => {
