@@ -1,4 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
+import { copyText } from '../copy/userFacing';
 
 /**
  * Auth tokens live in the platform secure store (Keychain on iOS, Keystore on Android).
@@ -36,7 +37,7 @@ export async function saveAuthTokens(tokens: AuthTokens): Promise<void> {
   try {
     await SecureStore.setItemAsync(SESSION_KEY, payload, options);
   } catch {
-    throw new Error('Could not store the session.');
+    throw new Error(copyText('common.error'));
   }
   await deleteLegacy();
 }
@@ -85,8 +86,7 @@ export async function clearAuthTokens(): Promise<void> {
 }
 
 /**
- * Session storage for the API client. Login screens are not built yet, so
- * callers depend on this interface instead of a sign-in route.
+ * Session storage for the API client and the email-code sign-in screen.
  * The production value is `secureTokenStore`, which uses expo-secure-store only.
  */
 export interface TokenStore {

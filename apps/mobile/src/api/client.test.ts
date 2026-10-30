@@ -658,7 +658,11 @@ describe('API client', () => {
     expect(seen[0]?.redirect).toBe('manual');
     expect(seen[0]?.authorization).toBe(`Bearer ${access}`);
     expect(textReads).toBe(0);
-    expect(error).toMatchObject({ code: 'redirect', message: COPY['common.connecting.failed'] });
+    expect(error).toMatchObject({
+      code: 'redirect',
+      message: COPY['common.connecting.failed'],
+      retryLabel: 'Reintentar',
+    });
     expect((error as Error).message).not.toContain(access);
     expect((error as Error).message).not.toContain(bodyMarker);
     expect((error as Error).message).not.toContain('evil.example');
@@ -679,8 +683,84 @@ describe('API client', () => {
         return { status: 302, type: 'opaqueredirect', url: 'https://evil.example/collect', text: async () => '' } as Response;
       },
     });
-    await expect(reads.getProperty(PROPERTY_ID)).rejects.toMatchObject({ code: 'redirect' });
+    await expect(reads.getProperty(PROPERTY_ID)).rejects.toMatchObject({
+      code: 'redirect',
+      retryLabel: 'Reintentar',
+    });
     expect(seen).toHaveLength(1);
+
+    seen.length = 0;
+    textReads = 0;
+    const temporary = createApiClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      env: 'test',
+      tokenStore: memoryStore({ accessToken: access, refreshToken: 'refresh-secret-7f3a' }),
+      fetchImpl: async (input, init) => {
+        seen.push({
+          url: String(input),
+          redirect: init?.redirect,
+          authorization: new Headers(init?.headers).get('authorization') ?? '',
+        });
+        return {
+          status: 307,
+          headers: new Headers({ location: 'https://evil.example/collect' }),
+          text: async () => {
+            textReads += 1;
+            return 'followed';
+          },
+        } as Response;
+      },
+    });
+    await expect(temporary.getProperty(PROPERTY_ID)).rejects.toMatchObject({
+      code: 'redirect',
+      retryLabel: 'Reintentar',
+      message: COPY['common.connecting.failed'],
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.redirect).toBe('manual');
+    expect(textReads).toBe(0);
+  });
+
+  it('shows Reintentar when the refresh token is missing and does not end the session', async () => {
+    let clears = 0;
+    const events: string[] = [];
+    const client = createApiClient({
+      baseUrl: 'http://127.0.0.1:4010',
+      env: 'test',
+      tokenStore: {
+        async read() {
+          return null;
+        },
+        async save() {
+          return undefined;
+        },
+        async clear() {
+          clears += 1;
+        },
+      },
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ statusCode: 401, error: 'token_expired', message: 'Token expired.' }), {
+          status: 401,
+        }),
+    });
+    client.subscribe((event) => {
+      events.push(event.type);
+    });
+    const error = await client.getProperty(PROPERTY_ID).then(
+      () => {
+        throw new Error('expected a rejection');
+      },
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({
+      code: 'connecting_failed',
+      copyKey: 'common.connecting.failed',
+      message: COPY['common.connecting.failed'],
+      retryLabel: 'Reintentar',
+    });
+    expect(clears).toBe(0);
+    expect(events).toEqual([]);
+    expect((error as Error).message).not.toMatch(/sesión expirada/i);
   });
 
   it('reuses A key after B succeeds when Reintentar is tapped on A', async () => {

@@ -56,6 +56,7 @@ export const API_ERROR_CODES = [
   'amount_invalid',
   'auth.email_invalid',
   'auth.code_invalid',
+  'auth.rate_limited',
   'auth.refresh_invalid',
   'auth.refresh_reused',
   'auth.unavailable',
@@ -70,11 +71,25 @@ export const IDEMPOTENCY_KEY =
 export const HEALTH_PATH = '/v1/health';
 
 /**
- * `POST /v1/auth/refresh` as documented for email-code sessions.
- * The request body is `{ refreshToken }`. The response includes
- * `accessToken` and `refreshToken`. Login screens are not in this client yet.
+ * Email-code session routes from docs/API.md.
+ * `POST /v1/auth/code` accepts an optional Idempotency-Key.
+ * `POST /v1/auth/verify` does not. A 401 `auth.code_invalid` is not a refresh.
  */
+export const AUTH_CODE_PATH = '/v1/auth/code';
+export const AUTH_VERIFY_PATH = '/v1/auth/verify';
+export const AUTH_LOGOUT_PATH = '/v1/auth/logout';
+export const AUTH_SESSION_PATH = '/v1/auth/session';
 export const REFRESH_PATH = '/v1/auth/refresh';
+
+/** Documented resend cooldown. A 202 does not include Retry-After. */
+export const AUTH_RESEND_COOLDOWN_SECONDS = 60;
+
+/** A login code is valid for 10 minutes from the accepted request. */
+export const AUTH_CODE_TTL_MS = 10 * 60 * 1000;
+
+export const AUTH_ACCESS_EXPIRES_IN = 900;
+
+export const AUTH_CODE_ACCEPTED_MESSAGE = 'Si el correo es válido, te enviamos un código.';
 
 export type HealthBody = { status: 'ok' } | { status: 'unavailable' };
 
@@ -112,6 +127,27 @@ export type RefreshRequestBody = {
 export type RefreshResponseBody = {
   accessToken: string;
   refreshToken: string;
+};
+
+export type AuthCodeRequestBody = {
+  email: string;
+};
+
+export type AuthVerifyRequestBody = {
+  email: string;
+  code: string;
+};
+
+export type AuthTokenResponseBody = {
+  tokenType: 'Bearer';
+  accessToken: string;
+  expiresIn: 900;
+  refreshToken: string;
+};
+
+export type AuthSessionBody = {
+  sub: string;
+  sid: string;
 };
 
 /** Decimal peso string plus MXN. Never a JSON number. */

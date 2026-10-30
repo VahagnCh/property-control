@@ -1,9 +1,17 @@
 import { fetch as expoFetch } from 'expo/fetch';
+import { normalizeAuthEmail } from '../auth/emailAddress';
 import type { AuthTokens, TokenStore } from '../auth/tokenStore';
 import { TokenStoreUnavailableError } from '../auth/tokenStore';
 import { CONNECTING_LABEL } from '../copy/userFacing';
 import { createIdempotencyKey } from '../outbox/idempotency';
+import { setSessionExpired, setSessionSignedIn, setSessionSignedOut, setSessionUnavailable } from '../session/readSession';
 import {
+  AUTH_ACCESS_EXPIRES_IN,
+  AUTH_CODE_PATH,
+  AUTH_LOGOUT_PATH,
+  AUTH_RESEND_COOLDOWN_SECONDS,
+  AUTH_SESSION_PATH,
+  AUTH_VERIFY_PATH,
   HEALTH_PATH,
   IDEMPOTENCY_KEY,
   REFRESH_PATH,
@@ -80,6 +88,7 @@ type SendInput = {
 type WireResponse = {
   status: number;
   body: unknown;
+  retryAfterSeconds: number | null;
 };
 
 const IDLE_CONNECTION: ConnectionSnapshot = {
@@ -101,6 +110,7 @@ export class ApiClient {
   private healthInFlight: Promise<void> | null = null;
   private connectionSnapshot: ConnectionSnapshot = IDLE_CONNECTION;
   private readonly pendingWrites = new Map<string, PendingWrite>();
+  private lastRetryAfterSeconds: number | null = null;
   private readonly sessionListeners = new Set<(event: ApiClientEvent) => void>();
   private readonly connectionListeners = new Set<(snapshot: ConnectionSnapshot) => void>();
 
@@ -135,42 +145,45 @@ export class ApiClient {
     path: string,
     options?: { body?: unknown },
   ): Promise<T> {
-    if (this.signedOut) {
+    const anonymous = isAnonymousPath(path);
+    if (this.signedOut && !anonymous) {
       throw new SessionExpiredError();
     }
     const write = isWriteMethod(method) && path !== REFRESH_PATH;
+    const idempotent = write && path !== AUTH_VERIFY_PATH && path !== AUTH_LOGOUT_PATH;
     assertDecimalMoney(options?.body);
-    const idempotencyKey = write ? this.keyForWrite(method, path, options?.body) : null;
+    const idempotencyKey = idempotent ? this.keyForWrite(method, path, options?.body) : null;
     const transport = write ? this.send.bind(this) : this.sendRead.bind(this);
     try {
       if (write) {
         await this.ensureFresh();
       }
-      if (this.signedOut) {
+      if (this.signedOut && !anonymous) {
         throw new SessionExpiredError();
       }
       const sent = {
         method,
         path,
         body: options?.body,
-        auth: path !== HEALTH_PATH,
+        auth: !anonymous,
         idempotencyKey,
       };
       const first = await transport(sent);
-      if (first.status !== 401 || path === HEALTH_PATH) {
-        if (write) {
+      if (first.status !== 401 || !this.shouldRefresh(path, first)) {
+        if (idempotent) {
           this.noteWriteResponse(method, path, options?.body, first);
         }
         return this.finish<T>(first);
       }
       await this.refresh();
       const second = await transport(sent);
-      if (write) {
+      if (idempotent) {
         this.noteWriteResponse(method, path, options?.body, second);
       }
       return this.finish<T>(second);
     } catch (error) {
       if (error instanceof TokenStoreUnavailableError) {
+        setSessionUnavailable();
         throw new ConnectingFailedError(write ? idempotencyKey : null);
       }
       if (!write) {
@@ -240,6 +253,81 @@ export class ApiClient {
     return readPaymentResponse(response);
   }
 
+  /**
+   * `POST /v1/auth/code` is a write. Reintentar reuses the pending key and body.
+   * A changed email is a different fingerprint, so it mints a new key.
+   * Reenviar código is a new request: it drops any held key for that email
+   * first. A 202 or a 4xx already drops the key, so the next send mints one.
+   * A timeout, a network error, or a 5xx keeps the key. There is no auto-retry.
+   */
+  async requestCode(
+    email: string,
+    mode: 'send' | 'retry' | 'resend' = 'send',
+  ): Promise<{ accepted: true; resendAfterSeconds: number }> {
+    const body = { email: normalizeAuthEmail(email) };
+    if (mode === 'resend') {
+      this.pendingWrites.delete(writeFingerprint('POST', AUTH_CODE_PATH, body));
+    }
+    await this.request('POST', AUTH_CODE_PATH, { body });
+    const header = this.lastRetryAfterSeconds;
+    return {
+      accepted: true,
+      resendAfterSeconds: header == null ? AUTH_RESEND_COOLDOWN_SECONDS : header,
+    };
+  }
+
+  /**
+   * A 401 `auth.code_invalid` does not refresh and does not clear the store.
+   * Tokens are saved as one SecureStore item only after the documented 200.
+   */
+  async verifyCode(email: string, code: string): Promise<{ expiresIn: 900 }> {
+    const body = await this.request<unknown>('POST', AUTH_VERIFY_PATH, {
+      body: { email: normalizeAuthEmail(email), code },
+    });
+    const session = readVerifiedSession(body);
+    try {
+      await this.tokenStore.save({ accessToken: session.accessToken, refreshToken: session.refreshToken });
+    } catch {
+      setSessionUnavailable();
+      throw new ConnectingFailedError(null);
+    }
+    this.signedOut = false;
+    this.signInEmitted = false;
+    setSessionSignedIn();
+    return { expiresIn: AUTH_ACCESS_EXPIRES_IN };
+  }
+
+  /** Best-effort server logout. The local item is removed only when clear succeeds. */
+  async logout(): Promise<void> {
+    try {
+      await this.send({
+        method: 'POST',
+        path: AUTH_LOGOUT_PATH,
+        auth: true,
+        idempotencyKey: null,
+      });
+    } catch (error) {
+      if (error instanceof TokenStoreUnavailableError) {
+        setSessionUnavailable();
+        throw new ConnectingFailedError(null);
+      }
+    }
+    try {
+      await this.tokenStore.clear();
+    } catch {
+      setSessionUnavailable();
+      throw new ConnectingFailedError(null);
+    }
+    this.signedOut = true;
+    this.signInEmitted = true;
+    setSessionSignedOut();
+  }
+
+  async readServerSession(): Promise<{ sub: string; sid: string }> {
+    const body = await this.request<unknown>('GET', AUTH_SESSION_PATH);
+    return readAuthSessionBody(body);
+  }
+
   private async ensureFresh(): Promise<void> {
     if (!this.needsHealth()) {
       return;
@@ -290,8 +378,10 @@ export class ApiClient {
   /**
    * One refresh for every caller that arrives while it is in flight.
    * A network error is retried once with the same refresh token.
-   * Only 400 and 401 clear the session. A 5xx, including auth.unavailable,
-   * leaves the tokens in place.
+   * Only a 401, or a 400 with one of the four refresh codes
+   * (auth.refresh_invalid, auth.refresh_reused, token_invalid, token_expired),
+   * ends the session. A 5xx, including auth.unavailable, leaves the tokens in place.
+   * A missing refresh token does not end the session; that error shows Reintentar.
    */
   private refresh(): Promise<void> {
     if (this.signedOut) {
@@ -316,8 +406,7 @@ export class ApiClient {
       throw error;
     }
     if (!current) {
-      await this.endSession();
-      throw new SessionExpiredError();
+      throw new ConnectingFailedError(null);
     }
     const refreshToken = current.refreshToken;
     let outcome = await this.postRefresh(refreshToken);
@@ -377,9 +466,17 @@ export class ApiClient {
     }
   }
 
+  private shouldRefresh(path: string, response: WireResponse): boolean {
+    if (isAnonymousPath(path)) {
+      return false;
+    }
+    return readErrorCode(response.body, response.status) !== 'auth.code_invalid';
+  }
+
   private async endSession(): Promise<void> {
     this.signedOut = true;
     await this.tokenStore.clear();
+    setSessionExpired();
     if (this.signInEmitted) {
       return;
     }
@@ -431,7 +528,12 @@ export class ApiClient {
     if (response.status === 409 && code === 'idempotency_key_reused') {
       throw new IdempotencyKeyReusedError();
     }
-    throw new ApiClientError(code, copyKeyForApiError(code, response.status), response.status);
+    throw new ApiClientError(
+      code,
+      copyKeyForApiError(code, response.status),
+      response.status,
+      response.retryAfterSeconds,
+    );
   }
 
   /** GETs retry once after a timeout or network error. Writes do not. */
@@ -480,7 +582,9 @@ export class ApiClient {
       }
       this.lastResponseAt = this.now();
       const text = await response.text();
-      return { status: response.status, body: parseJson(text) };
+      const retryAfterSeconds = readRetryAfter(response.headers);
+      this.lastRetryAfterSeconds = retryAfterSeconds;
+      return { status: response.status, body: parseJson(text), retryAfterSeconds };
     } catch (error) {
       if (error instanceof ApiClientError) {
         throw error;
@@ -570,6 +674,57 @@ function responseStaysOnOrigin(responseUrl: string | undefined, baseUrl: string)
 
 function writeFingerprint(method: HttpMethod, path: string, body: unknown): string {
   return canonicalJson({ method, path, body: body ?? null });
+}
+
+function isAnonymousPath(path: string): boolean {
+  return path === HEALTH_PATH || path === AUTH_CODE_PATH || path === AUTH_VERIFY_PATH || path === REFRESH_PATH;
+}
+
+function readRetryAfter(headers: Headers | undefined): number | null {
+  if (!headers || typeof headers.get !== 'function') {
+    return null;
+  }
+  const raw = headers.get('retry-after');
+  if (raw == null) {
+    return null;
+  }
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return null;
+  }
+  const seconds = Number(trimmed);
+  if (!Number.isSafeInteger(seconds) || seconds > 86_400) {
+    return null;
+  }
+  return seconds;
+}
+
+function readVerifiedSession(body: unknown): { accessToken: string; refreshToken: string } {
+  if (!body || typeof body !== 'object') {
+    throw new ApiClientError('token_invalid', 'common.error', null);
+  }
+  const record = body as Record<string, unknown>;
+  if (record.tokenType !== 'Bearer' || record.expiresIn !== AUTH_ACCESS_EXPIRES_IN) {
+    throw new ApiClientError('token_invalid', 'common.error', null);
+  }
+  if (typeof record.accessToken !== 'string' || record.accessToken === '') {
+    throw new ApiClientError('token_invalid', 'common.error', null);
+  }
+  if (typeof record.refreshToken !== 'string' || record.refreshToken === '') {
+    throw new ApiClientError('token_invalid', 'common.error', null);
+  }
+  return { accessToken: record.accessToken, refreshToken: record.refreshToken };
+}
+
+function readAuthSessionBody(body: unknown): { sub: string; sid: string } {
+  if (!body || typeof body !== 'object') {
+    throw new ApiClientError('token_invalid', 'common.error', null);
+  }
+  const record = body as Record<string, unknown>;
+  if (typeof record.sub !== 'string' || record.sub === '' || typeof record.sid !== 'string' || record.sid === '') {
+    throw new ApiClientError('token_invalid', 'common.error', null);
+  }
+  return { sub: record.sub, sid: record.sid };
 }
 
 function canonicalJson(value: unknown): string {

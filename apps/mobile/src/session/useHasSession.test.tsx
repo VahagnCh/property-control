@@ -1,18 +1,7 @@
-import { render, screen } from '@testing-library/react-native';
+import { act, render, screen } from '@testing-library/react-native';
 import { Text } from 'react-native';
-import * as session from './readSession';
+import { resetSessionState, setSessionSignedIn } from './readSession';
 import { useHasSession } from './useHasSession';
-
-jest.mock('./readSession', () => {
-  let reads = 0;
-  return {
-    readSession: () => {
-      reads += 1;
-      return false;
-    },
-    __readCount: () => reads,
-  };
-});
 
 function Probe() {
   const hasSession = useHasSession();
@@ -20,14 +9,21 @@ function Probe() {
 }
 
 describe('useHasSession', () => {
-  it('reads the session once per mount and not again on rerender', () => {
+  beforeEach(() => {
+    resetSessionState();
+  });
+
+  it('updates when the session changes and a rerender does not drop that update', () => {
     const view = render(<Probe />);
     expect(screen.getByText('signed-out')).toBeTruthy();
-    const reads = (session as unknown as { __readCount: () => number }).__readCount();
-    expect(reads).toBeGreaterThan(0);
     view.rerender(<Probe />);
-    view.rerender(<Probe />);
-    expect((session as unknown as { __readCount: () => number }).__readCount()).toBe(reads);
     expect(screen.getByText('signed-out')).toBeTruthy();
+
+    act(() => {
+      setSessionSignedIn();
+    });
+    expect(screen.getByText('signed-in')).toBeTruthy();
+    view.rerender(<Probe />);
+    expect(screen.getByText('signed-in')).toBeTruthy();
   });
 });

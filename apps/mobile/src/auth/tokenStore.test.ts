@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import * as SecureStore from 'expo-secure-store';
+import { COPY } from '../copy/userFacing';
 import { clearAuthTokens, readAuthTokens, saveAuthTokens } from './tokenStore';
 
 jest.mock('expo-secure-store', () => ({
@@ -82,9 +83,15 @@ describe('auth token store', () => {
 
   it('does not leave a half-written session when the single write fails', async () => {
     (SecureStore.setItemAsync as jest.Mock).mockRejectedValueOnce(new Error(`disk ${ACCESS}`));
-    await expect(saveAuthTokens({ accessToken: ACCESS, refreshToken: REFRESH })).rejects.toThrow(
-      'Could not store the session.',
+    const error = await saveAuthTokens({ accessToken: ACCESS, refreshToken: REFRESH }).then(
+      () => {
+        throw new Error('expected a rejection');
+      },
+      (caught: unknown) => caught,
     );
+    expect((error as Error).message).toBe(COPY['common.error']);
+    expect((error as Error).message).not.toContain(ACCESS);
+    expect(JSON.stringify(error)).not.toContain(ACCESS);
     expect(SecureStore.setItemAsync).toHaveBeenCalledTimes(1);
     const stored = JSON.parse((SecureStore.setItemAsync as jest.Mock).mock.calls[0][1] as string) as {
       accessToken: string;
@@ -101,6 +108,28 @@ describe('auth token store', () => {
     await expect(readAuthTokens()).resolves.toBeNull();
     expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith('duerecord.auth.access', expect.any(Object));
     expect(SecureStore.setItemAsync).not.toHaveBeenCalled();
+  });
+
+  it('maps a legacy migration save failure to catalog copy', async () => {
+    (SecureStore.getItemAsync as jest.Mock).mockImplementation(async (key: string) => {
+      if (key === 'duerecord.auth.access') {
+        return ACCESS;
+      }
+      if (key === 'duerecord.auth.refresh') {
+        return REFRESH;
+      }
+      return null;
+    });
+    (SecureStore.setItemAsync as jest.Mock).mockRejectedValue(new Error(`disk ${ACCESS}`));
+    await expect(readAuthTokens()).rejects.toThrow(COPY['common.error']);
+    try {
+      await readAuthTokens();
+    } catch (error) {
+      expect((error as Error).message).toBe(COPY['common.error']);
+      expect((error as Error).message).not.toContain(ACCESS);
+      expect((error as Error).message).not.toContain(REFRESH);
+      expect(JSON.stringify(error)).not.toContain(ACCESS);
+    }
   });
 
   it('throws when secure store read fails and does not rethrow the stored value', async () => {

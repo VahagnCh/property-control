@@ -1,3 +1,4 @@
+import { COPY } from '../copy/userFacing';
 import {
   beginIdempotentWrite,
   createIdempotencyKey,
@@ -47,6 +48,29 @@ describe('idempotency keys', () => {
     expect(retried.accepted).toBe(true);
     expect(retried.gate.key).toBe('submit-1');
     expect(calls).toBe(1);
+  });
+
+  it('maps a value that is not a UUID to catalog copy', () => {
+    const original = globalThis.crypto;
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: { randomUUID: () => 'not-a-uuid' },
+    });
+    try {
+      const error = (() => {
+        try {
+          createIdempotencyKey();
+          return undefined;
+        } catch (caught) {
+          return caught;
+        }
+      })();
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(COPY['common.error']);
+      expect((error as Error).message).not.toMatch(/uuid|crypto/i);
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', { configurable: true, value: original });
+    }
   });
 
   it('creates a uuid when no random function is injected', () => {

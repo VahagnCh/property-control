@@ -1,4 +1,5 @@
 import { randomUUID as expoRandomUUID } from 'expo-crypto';
+import { copyText } from '../copy/userFacing';
 
 export type IdempotentWrite = {
   key: string;
@@ -21,7 +22,7 @@ export function createIdempotencyKey(): string {
   const randomUUID = globalThis.crypto?.randomUUID;
   const key = typeof randomUUID === 'function' ? randomUUID.call(globalThis.crypto) : expoRandomUUID();
   if (!UUID_V4.test(key)) {
-    throw new Error('crypto.randomUUID is not available');
+    throw new Error(copyText('common.error'));
   }
   return key;
 }

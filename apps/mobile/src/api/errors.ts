@@ -20,6 +20,12 @@ const COPY_BY_CODE: Partial<Record<string, CopyKey>> = {
   next_due_date_out_of_range: 'obligation.nextDueDate.invalid',
   not_found: 'common.notFound',
   idempotency_key_reused: 'idempotency.keyReused',
+  'auth.email_invalid': 'auth.email.invalid',
+  'auth.code_invalid': 'auth.code.wrong',
+  'auth.rate_limited': 'auth.code.wait',
+  'auth.unavailable': 'common.connecting.failed',
+  'auth.refresh_invalid': 'auth.session.expired',
+  'auth.refresh_reused': 'auth.session.expired',
 };
 
 const KNOWN_ERROR_CODES = new Set<string>(API_ERROR_CODES);
@@ -49,13 +55,22 @@ export class ApiClientError extends Error {
   readonly code: string;
   readonly copyKey: CopyKey;
   readonly status: number | null;
+  readonly retryAfterSeconds: number | null;
+  readonly retryLabel: string | null;
 
-  constructor(code: string, copyKey: CopyKey, status: number | null) {
+  constructor(
+    code: string,
+    copyKey: CopyKey,
+    status: number | null,
+    retryAfterSeconds: number | null = null,
+  ) {
     super(copyText(copyKey));
     this.name = 'ApiClientError';
     this.code = code;
     this.copyKey = copyKey;
     this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
+    this.retryLabel = copyKey === 'common.connecting.failed' ? SCREEN_STATE_COPY.retry : null;
   }
 }
 
@@ -80,7 +95,7 @@ export class ConnectingFailedError extends ApiClientError {
 
 export class SessionExpiredError extends ApiClientError {
   constructor() {
-    super('sign_in_required', 'common.error', 401);
+    super('sign_in_required', 'auth.session.expired', 401);
     this.name = 'SessionExpiredError';
   }
 }

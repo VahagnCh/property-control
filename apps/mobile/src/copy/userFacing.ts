@@ -77,7 +77,29 @@ export const COPY = {
   'notif.notFound.cta': 'Ir a Inicio',
   'common.notFound': 'No encontramos esto, o no tienes acceso.',
   'common.error': 'No se pudo completar la acción. Inténtalo de nuevo.',
+  'common.connecting': 'Conectando…',
+  'common.connecting.slow': 'La primera conexión del día puede tardar hasta un minuto.',
   'common.connecting.failed': 'No pudimos conectar. Revisa tu conexión e inténtalo de nuevo.',
+  'common.retry': 'Reintentar',
+  'auth.email.title': 'Entra a DueRecord',
+  'auth.email.body': 'Te enviaremos un código de 6 dígitos a tu correo.',
+  'auth.email.label': 'Correo electrónico',
+  'auth.email.cta': 'Enviar código',
+  'auth.email.invalid': 'Escribe un correo válido.',
+  'auth.email.webUnavailable': 'En el navegador no se puede iniciar sesión. Abre DueRecord en el teléfono.',
+  'auth.code.title': 'Revisa tu correo',
+  'auth.code.body': 'Si {email} puede entrar a DueRecord, te enviamos un código de 6 dígitos. Vence en 10 minutos.',
+  'auth.code.latest': 'Si pediste más de un código, usa el del correo más reciente.',
+  'auth.code.spamHint': '¿No llegó? Revisa tu carpeta de spam o correo no deseado.',
+  'auth.code.cta': 'Entrar',
+  'auth.code.wrong': 'El código no es correcto o ya no sirve. Revísalo o pide uno nuevo.',
+  'auth.code.resend': 'Enviar otro código',
+  'auth.code.resendWait': 'Puedes pedir otro código en {s} s.',
+  'auth.code.wait': 'Demasiados intentos. Espera unos minutos y pide un código nuevo.',
+  'auth.code.changeEmail': 'Usar otro correo',
+  'auth.code.expiresAt': 'Vence a las {time}, hora de la Ciudad de México ({date}).',
+  'auth.network': 'No pudimos conectarnos. Revisa tu conexión e inténtalo de nuevo.',
+  'auth.session.expired': 'Tu sesión terminó. Entra de nuevo.',
   'idempotency.keyReused': 'Esa solicitud ya se usó con otros datos. Revísala e inténtalo de nuevo.',
 } as const;
 
@@ -85,6 +107,14 @@ export type CopyKey = keyof typeof COPY;
 
 export function copyText(key: CopyKey): string {
   return COPY[key];
+}
+
+/** Fills `{name}` placeholders. The replacement is inserted as text, not a pattern. */
+export function fillCopy(template: string, values: Record<string, string>): string {
+  return template.replace(/\{(\w+)\}/g, (match, name: string) => {
+    const value = values[name];
+    return value === undefined ? match : value;
+  });
 }
 
 export const OCR_REPLACE_KEEP_LABEL = 'Mantener lo que escribí';

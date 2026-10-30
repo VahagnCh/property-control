@@ -1,4 +1,9 @@
 import {
+  AUTH_CODE_ACCEPTED_MESSAGE,
+  AUTH_CODE_PATH,
+  AUTH_LOGOUT_PATH,
+  AUTH_SESSION_PATH,
+  AUTH_VERIFY_PATH,
   IDEMPOTENCY_KEY,
   REFRESH_PATH,
   type ApiErrorBody,
@@ -30,6 +35,7 @@ export type RecordedRequest = {
 export type RouteResult = {
   status: number;
   body?: unknown;
+  headers?: Record<string, string>;
   delayMs?: number;
   hang?: boolean;
   networkError?: boolean;
@@ -78,15 +84,40 @@ export class FakeServer {
     if (result.networkError) {
       throw new TypeError('Failed to fetch');
     }
+    const headers = {
+      'cache-control': 'no-store',
+      ...(result.body === undefined ? {} : { 'content-type': 'application/json' }),
+      ...(result.headers ?? {}),
+    };
+    if (result.status === 204) {
+      return new Response(null, { status: 204, headers });
+    }
     const raw = result.body === undefined ? '' : JSON.stringify(result.body);
     return new Response(raw, {
       status: result.status,
-      headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+      headers,
     });
   };
 
   private installContractRoutes(): void {
     this.route('GET', '/v1/health', () => ({ status: 200, body: healthOk }));
+    this.route('POST', AUTH_CODE_PATH, () => ({
+      status: 202,
+      body: { message: AUTH_CODE_ACCEPTED_MESSAGE },
+    }));
+    this.route('POST', AUTH_VERIFY_PATH, (request) => verifyFromContract(request));
+    this.route('POST', AUTH_LOGOUT_PATH, (request) => {
+      if (!request.headers.authorization?.startsWith('Bearer ')) {
+        return { status: 401, body: errorBody(401, 'token_missing', 'Missing token.') };
+      }
+      return { status: 204 };
+    });
+    this.route('GET', AUTH_SESSION_PATH, (request) => {
+      if (!request.headers.authorization?.startsWith('Bearer ')) {
+        return { status: 401, body: errorBody(401, 'token_missing', 'Missing token.') };
+      }
+      return { status: 200, body: { sub: 'user-1', sid: 'sid-1' } };
+    });
     this.route('POST', REFRESH_PATH, (request) => refreshFromContract(request));
     this.route('GET', `/v1/properties/${PROPERTY_ID}`, () => ({ status: 200, body: propertyFixture }));
     this.route('POST', `/v1/properties/${PROPERTY_ID}/payments`, (request) => paymentFromContract(request));
@@ -95,6 +126,24 @@ export class FakeServer {
 
 export function createContractFakeServer(): FakeServer {
   return new FakeServer();
+}
+
+function verifyFromContract(request: RecordedRequest): RouteResult {
+  const parsed = parse(request.bodyText);
+  const code =
+    parsed && typeof parsed === 'object' && 'code' in parsed ? (parsed as { code?: unknown }).code : undefined;
+  if (typeof code === 'string' && /^\d{6}$/.test(code)) {
+    return {
+      status: 200,
+      body: {
+        tokenType: 'Bearer',
+        accessToken: 'access-from-verify',
+        expiresIn: 900,
+        refreshToken: 'rt_from-verify',
+      },
+    };
+  }
+  return { status: 401, body: errorBody(401, 'auth.code_invalid', 'The code is not valid.') };
 }
 
 function refreshFromContract(request: RecordedRequest): RouteResult {
