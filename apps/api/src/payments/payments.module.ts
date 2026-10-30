@@ -32,11 +32,9 @@ export class PaymentsController {
     @Body() body: unknown,
     @Res({ passthrough: true }) res: Response,
   ) {
-    return this.records.createPayment(subject(request), propertyId(request), idempotencyKey, routeOf(request), body).then(
-      (result) => {
-        res.status(result.replayed && result.status === 201 ? 200 : result.status);
-        return result.body;
-      },
+    return reply(
+      res,
+      this.records.createPayment(subject(request), propertyId(request), idempotencyKey, routeOf(request), body),
     );
   }
 

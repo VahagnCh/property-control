@@ -33,7 +33,7 @@ In the product's priority order:
 | Membership enforcement | The 404-not-403 policy on every property-scoped route |
 | Persistence per module | Replace the 501 placeholders, module by module |
 | Period outcome engine | Reconcile paid, partial, and overpaidAmount from non-voided payments. Advance one period from the dueDay anchor, move nextDueDate back on void, and skip dates inside a pause. Rules: [EDGE_CASES.md](EDGE_CASES.md). |
-| Idempotency | `(property_id, idempotency_key)` on payment and evidence creates, with replay returning 200 |
+| Idempotency | `(property_id, idempotency_key)` on payment and evidence creates, with a replay returning the stored status |
 | Storage module | Signed PUT and GET after authorization, and object deletion on hard delete |
 | Retention module | The daily 30-day soft-to-hard delete job |
 | Audit writer | Append-only, on every sensitive change including OCR confirmations |

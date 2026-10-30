@@ -60,7 +60,7 @@ const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
  */
 export function isLiveRecordPath(method: string, urlPath: string): boolean {
   const verb = method.toUpperCase();
-  const path = pathOnly(urlPath);
+  const path = stripOneTrailingSlash(pathOnly(urlPath));
   if (path === '/v1/properties' && (verb === 'GET' || verb === 'POST')) {
     return true;
   }
@@ -145,6 +145,13 @@ export function earlyRequestStatus(url: string, ocrEnabled: boolean): 400 | 501 
     return 400;
   }
   return null;
+}
+
+export function stripOneTrailingSlash(path: string): string {
+  if (path.length > 1 && path.endsWith('/')) {
+    return path.slice(0, -1);
+  }
+  return path;
 }
 
 function normalizeLookalikes(value: string): string {

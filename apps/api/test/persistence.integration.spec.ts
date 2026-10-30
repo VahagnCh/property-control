@@ -802,6 +802,44 @@ describe.skipIf(!enabled)('persistence against Postgres', () => {
     }
   });
 
+  it('keeps an unfinished idempotency row in progress until it expires', async () => {
+    const fixture = await createFixture(prisma);
+    try {
+      const keys = new PrismaIdempotencyKeys(prisma);
+      const start = new Date('2026-10-21T12:00:00.000Z');
+      const key = randomUUID();
+      const input = {
+        userId: fixture.userId,
+        key,
+        method: 'POST',
+        route: 'POST /v1/properties',
+        requestHash: 'hash-a',
+        now: start,
+        expiresAt: new Date(start.getTime() + 60_000),
+      };
+      expect((await keys.reserve(input)).outcome).toBe('reserved');
+      expect((await keys.reserve({ ...input, now: new Date(start.getTime() + 31_000) })).outcome).toBe('in_progress');
+      const afterExpiry = new Date(start.getTime() + 60_001);
+      const taken = await keys.reserve({
+        ...input,
+        now: afterExpiry,
+        expiresAt: new Date(afterExpiry.getTime() + 60_000),
+      });
+      expect(taken.outcome).toBe('reserved');
+      if (taken.outcome === 'reserved') {
+        await keys.complete(taken.id, 201, { id: 'casa' });
+      }
+      const replay = await keys.reserve({
+        ...input,
+        now: afterExpiry,
+        expiresAt: new Date(afterExpiry.getTime() + 60_000),
+      });
+      expect(replay).toMatchObject({ outcome: 'replay', responseStatus: 201, responseBody: { id: 'casa' } });
+    } finally {
+      await deleteFixture(prisma, fixture);
+    }
+  });
+
   it('stores auth-code rate limits in Postgres and returns Retry-After', async () => {
     const limits = new PrismaRateLimits(prisma, TEST_SERVER_SECRET);
     const email = `person-${randomUUID()}@example.com`;

@@ -27,6 +27,15 @@ export function isReplayableStatus(status: number): boolean {
   return status >= 200 && status < 500 && status !== 401;
 }
 
+/** A 409 idempotency_in_progress is not a stored response. The client retries the same key. */
+export function isInProgressConflict(body: unknown): boolean {
+  return Boolean(
+    body &&
+      typeof body === 'object' &&
+      (body as { error?: unknown }).error === 'idempotency_in_progress',
+  );
+}
+
 export interface IdempotencyStore {
   reserve(input: IdempotencyInput): Promise<ReserveResult>;
   complete(id: string, responseStatus: number, responseBody: unknown): Promise<void>;
@@ -91,6 +100,9 @@ export class MemoryIdempotencyKeys implements IdempotencyStore {
   }
 
   complete(id: string, responseStatus: number, responseBody: unknown): Promise<void> {
+    if (isInProgressConflict(responseBody)) {
+      return Promise.resolve();
+    }
     if (!isReplayableStatus(responseStatus)) {
       return this.release(id);
     }
@@ -132,6 +144,9 @@ export class PrismaIdempotencyKeys implements IdempotencyStore {
   }
 
   async complete(id: string, responseStatus: number, responseBody: unknown): Promise<void> {
+    if (isInProgressConflict(responseBody)) {
+      return;
+    }
     if (!isReplayableStatus(responseStatus)) {
       await this.release(id);
       return;
@@ -154,7 +169,7 @@ function reserveStored(rows: Map<string, StoredKey>, raw: IdempotencyInput): Res
   const mapKey = scopeKey(scope, input);
   const existing = rows.get(mapKey);
   if (existing && existing.expiresAt > input.now) {
-    return decision(existing, input.requestHash);
+    return decideReservation(existing, input);
   }
   if (existing) {
     rows.delete(mapKey);
@@ -186,13 +201,14 @@ async function reservePrisma(tx: Prisma.TransactionClient, raw: IdempotencyInput
         : { emailHmac: scope.subject, method: input.method, route: input.route, key: input.key },
   });
   if (existing && existing.expiresAt > input.now) {
-    return decision(
+    return decideReservation(
       {
         requestHash: existing.requestHash,
         responseStatus: existing.responseStatus,
         responseBody: existing.responseBody,
+        createdAt: existing.createdAt,
       },
-      input.requestHash,
+      input,
     );
   }
   if (existing) {
@@ -214,11 +230,11 @@ async function reservePrisma(tx: Prisma.TransactionClient, raw: IdempotencyInput
   return { outcome: 'reserved', id: created.id };
 }
 
-function decision(
-  existing: { requestHash: string; responseStatus: number | null; responseBody: unknown },
-  requestHash: string,
+function decideReservation(
+  existing: { requestHash: string; responseStatus: number | null; responseBody: unknown; createdAt: Date },
+  input: IdempotencyInput,
 ): ReserveResult {
-  if (existing.requestHash !== requestHash) {
+  if (existing.requestHash !== input.requestHash) {
     throw new IdempotencyKeyReusedException();
   }
   if (existing.responseStatus !== null) {

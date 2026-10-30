@@ -493,18 +493,21 @@ describe('API P1', () => {
       }
 
       if (method === 'GET') continue;
-      const empty = await send(server, method, concrete, { body: '', contentType: 'application/json' });
-      expect(empty.status, `${family} empty ${route}`).toBe(isLive(route) ? 401 : 501);
-      expectNoSecret(empty.body);
-      const malformed = await send(server, method, concrete, { body: '{', contentType: 'application/json' });
-      expect(malformed.status, `${family} malformed json ${route}`).toBe(isLive(route) ? 401 : ocr ? 501 : 400);
-      expectNoSecret(malformed.body);
-      const oversized = await send(server, method, concrete, {
-        body: `{"pad":"${'x'.repeat(40_000)}"}`,
-        contentType: 'application/json',
-      });
-      expect(oversized.status, `${family} oversized ${route}`).toBe(isLive(route) ? 401 : ocr ? 501 : 413);
-      expectNoSecret(oversized.body);
+      const writeTargets = isLive(route) ? [concrete, `${concrete}/`] : [concrete];
+      for (const path of writeTargets) {
+        const empty = await send(server, method, path, { body: '', contentType: 'application/json' });
+        expect(empty.status, `${path} empty`).toBe(isLive(route) ? 401 : 501);
+        expectNoSecret(empty.body);
+        const malformed = await send(server, method, path, { body: '{', contentType: 'application/json' });
+        expect(malformed.status, `${path} malformed json`).toBe(isLive(route) ? 401 : ocr ? 501 : 400);
+        expectNoSecret(malformed.body);
+        const oversized = await send(server, method, path, {
+          body: `{"pad":"${'x'.repeat(40_000)}"}`,
+          contentType: 'application/json',
+        });
+        expect(oversized.status, `${path} oversized`).toBe(isLive(route) ? 401 : ocr ? 501 : 413);
+        expectNoSecret(oversized.body);
+      }
     }
     expect([...seen].sort()).toEqual([...FAMILIES].sort());
   });

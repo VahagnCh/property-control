@@ -1,6 +1,6 @@
 import { ConflictException, HttpException } from '@nestjs/common';
 import type { IdempotencyInput, IdempotencyStore, ReserveResult } from '../auth/idempotency-keys.js';
-import { isReplayableStatus } from '../auth/idempotency-keys.js';
+import { isInProgressConflict, isReplayableStatus } from '../auth/idempotency-keys.js';
 
 export interface IdempotentResult {
   status: number;
@@ -16,6 +16,7 @@ const WAIT_STEP_MS = 15;
  * A 401 or 5xx releases the reservation so the same key can run again.
  * The access-token guard runs before this layer, so a 401 never reserves a key.
  * A second caller with the same hash waits for that result instead of inserting twice.
+ * 409 idempotency_in_progress is not stored, so a later retry can receive the stored result.
  */
 export async function runIdempotent(
   store: IdempotencyStore,
@@ -23,7 +24,7 @@ export async function runIdempotent(
   work: () => Promise<IdempotentResult>,
 ): Promise<IdempotentResult> {
   const claimed = await claim(store, input);
-    if (claimed.outcome === 'replay') {
+  if (claimed.outcome === 'replay') {
     return { status: claimed.responseStatus, body: claimed.responseBody, replayed: true };
   }
   if (claimed.outcome !== 'reserved') {
@@ -35,6 +36,9 @@ export async function runIdempotent(
   }
   try {
     const result = await work();
+    if (isInProgressConflict(result.body)) {
+      return result;
+    }
     if (!isReplayableStatus(result.status)) {
       await store.release(claimed.id);
       return result;
@@ -43,6 +47,9 @@ export async function runIdempotent(
     return result;
   } catch (error) {
     const http = httpFailure(error);
+    if (http && isInProgressConflict(http.body)) {
+      throw error;
+    }
     if (http && isReplayableStatus(http.status)) {
       await store.complete(claimed.id, http.status, http.body);
     } else {

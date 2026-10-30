@@ -14,7 +14,7 @@ import { AVISO_TEXT } from '../src/consent/aviso-text.js';
 import { redactedTextState } from '../src/ocr/audit-text.js';
 import { AvisoVersionConflictError, publishAvisoVersion } from '../src/persistence/seed-data.js';
 import { database } from '../src/persistence/database.js';
-import { RecordsService } from '../src/writes/records.service.js';
+import { RecordsService, requestHash } from '../src/writes/records.service.js';
 
 const enabled = Boolean(process.env.DATABASE_URL && process.env.DIRECT_URL);
 
@@ -359,6 +359,125 @@ describe.skipIf(!enabled)('property, obligation, and payment writes', () => {
       .send({ name: 'Cafe\u0301' });
     expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
     expect(renamed.body.name).toBe('Café');
+  });
+
+  it('seals the property name and address and shares a trailing-slash key', async () => {
+    const server = app.getHttpServer();
+    const name = `Casa ${randomUUID()}`;
+    const address = `Calle ${randomUUID()} 12`;
+    const key = `slash-${randomUUID()}`;
+    const created = await request(server)
+      .post('/v1/properties')
+      .set(auth(userA))
+      .set('Idempotency-Key', key)
+      .send({ name, addressLine: address });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const propertyId = created.body.id as string;
+    propertyIds.push(propertyId);
+    const replay = await request(server)
+      .post('/v1/properties/')
+      .set(auth(userA))
+      .set('Idempotency-Key', key)
+      .send({ name, addressLine: address });
+    expect(replay.status).toBe(201);
+    expect(replay.body.id).toBe(propertyId);
+    const renamed = `Casa ${randomUUID()} b`;
+    const moved = `Avenida ${randomUUID()} 4`;
+    const updated = await request(server)
+      .patch(`/v1/properties/${propertyId}`)
+      .set(auth(userA))
+      .set('Idempotency-Key', `seal-${randomUUID()}`)
+      .send({ name: renamed, addressLine: moved });
+    expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+    const audits = await appDb.auditEvent.findMany({
+      where: { entityId: propertyId, action: { in: ['property.created', 'property.updated'] } },
+    });
+    const dumped = JSON.stringify(audits);
+    expect(dumped).not.toContain(name);
+    expect(dumped).not.toContain(address);
+    expect(dumped).not.toContain(renamed);
+    expect(dumped).not.toContain(moved);
+    const createdAudit = audits.find((row) => row.action === 'property.created');
+    const updatedAudit = audits.find((row) => row.action === 'property.updated');
+    expect(createdAudit?.metadata).toMatchObject({
+      name: redactedTextState(name),
+      addressLine: redactedTextState(address),
+    });
+    expect(updatedAudit?.metadata).toMatchObject({
+      name: { before: redactedTextState(name), after: redactedTextState(renamed) },
+      addressLine: { before: redactedTextState(address), after: redactedTextState(moved) },
+    });
+  });
+
+  it('returns 409 for an unfinished write reservation and creates after it expires', async () => {
+    const server = app.getHttpServer();
+    const name = `Casa held ${randomUUID()}`;
+    const body = { name };
+    const heldKey = `held-${randomUUID()}`;
+    await appDb.idempotencyKey.create({
+      data: {
+        id: randomUUID(),
+        userId: userA,
+        key: heldKey,
+        method: 'POST',
+        route: 'POST /v1/properties',
+        requestHash: requestHash(body),
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    const held = await request(server)
+      .post('/v1/properties')
+      .set(auth(userA))
+      .set('Idempotency-Key', heldKey)
+      .send(body);
+    expect(held.status, JSON.stringify(held.body)).toBe(409);
+    expect(held.body.error).toBe('idempotency_in_progress');
+    expect(await appDb.property.count({ where: { name } })).toBe(0);
+
+    const expiredName = `Casa expired ${randomUUID()}`;
+    const expiredBody = { name: expiredName };
+    const expiredKey = `expired-${randomUUID()}`;
+    await appDb.idempotencyKey.create({
+      data: {
+        id: randomUUID(),
+        userId: userA,
+        key: expiredKey,
+        method: 'POST',
+        route: 'POST /v1/properties',
+        requestHash: requestHash(expiredBody),
+        createdAt: new Date(Date.now() - 60_000),
+        expiresAt: new Date(Date.now() - 1000),
+      },
+    });
+    const taken = await request(server)
+      .post('/v1/properties')
+      .set(auth(userA))
+      .set('Idempotency-Key', expiredKey)
+      .send(expiredBody);
+    expect(taken.status, JSON.stringify(taken.body)).toBe(201);
+    propertyIds.push(taken.body.id as string);
+    expect(taken.body.name).toBe(expiredName);
+  }, 20_000);
+
+  it('stores a non-object body under the idempotency key', async () => {
+    const server = app.getHttpServer();
+    const key = `array-${randomUUID()}`;
+    const first = await request(server)
+      .post('/v1/properties')
+      .set(auth(userA))
+      .set('Content-Type', 'application/json')
+      .set('Idempotency-Key', key)
+      .send('[]');
+    expect(first.status, JSON.stringify(first.body)).toBe(400);
+    expect(first.body.error).toBe('bad_request');
+    const replay = await request(server)
+      .post('/v1/properties')
+      .set(auth(userA))
+      .set('Content-Type', 'application/json')
+      .set('Idempotency-Key', key)
+      .send('[]');
+    expect(replay.status).toBe(400);
+    expect(replay.body).toEqual(first.body);
   });
 
   it('lets the owner publish an aviso and rejects an insert from the app role', async () => {

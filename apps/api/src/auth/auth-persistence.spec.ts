@@ -16,6 +16,8 @@ function idempotencyInput(overrides: Partial<{
   method: string;
   route: string;
   requestHash: string;
+  now: Date;
+  expiresAt: Date;
 }> = {}) {
   return {
     userId: USER,
@@ -180,6 +182,24 @@ describe('idempotency keys', () => {
         });
       }
     }
+  });
+
+  it('keeps an unfinished reservation in progress until it expires', async () => {
+    const keys = new MemoryIdempotencyKeys();
+    const start = new Date('2026-10-29T12:00:00.000Z');
+    const reserved = await keys.reserve(
+      idempotencyInput({ now: start, expiresAt: new Date(start.getTime() + 60_000) }),
+    );
+    expect(reserved.outcome).toBe('reserved');
+    const stillOpen = await keys.reserve(
+      idempotencyInput({ now: new Date(start.getTime() + 31_000), expiresAt: new Date(start.getTime() + 60_000) }),
+    );
+    expect(stillOpen.outcome).toBe('in_progress');
+    const afterExpiry = new Date(start.getTime() + 60_001);
+    const taken = await keys.reserve(
+      idempotencyInput({ now: afterExpiry, expiresAt: new Date(afterExpiry.getTime() + 60_000) }),
+    );
+    expect(taken.outcome).toBe('reserved');
   });
 
   it('treats the same key on another route as a new request', async () => {

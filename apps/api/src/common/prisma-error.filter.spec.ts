@@ -9,12 +9,30 @@ describe('Prisma error filter', () => {
       new Prisma.PrismaClientKnownRequestError('new row contains secret-note and Captura duplicada', {
         code: 'P2002',
         clientVersion: 'test',
+        meta: { target: ['property_id', 'recorded_by_user_id', 'idempotency_key'] },
       }),
     );
     expect(body.status).toBe(409);
     expect(body.json).toMatchObject({ error: 'idempotency_key_reused' });
     expect(JSON.stringify(body.json)).not.toContain('secret-note');
     expect(JSON.stringify(body.json)).not.toContain('Captura');
+  });
+
+  it('maps a non-idempotency unique clash to conflict', () => {
+    const body = capture(
+      new Prisma.PrismaClientKnownRequestError('new row contains secret-note', {
+        code: 'P2002',
+        clientVersion: 'test',
+        meta: { target: ['property_id', 'user_id'] },
+      }),
+    );
+    expect(body.status).toBe(409);
+    expect(body.json).toEqual({
+      statusCode: 409,
+      error: 'conflict',
+      message: 'The request conflicts with an existing record.',
+    });
+    expect(JSON.stringify(body.json)).not.toContain('secret-note');
   });
 
   it('hides other constraint failures', () => {

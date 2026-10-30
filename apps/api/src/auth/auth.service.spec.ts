@@ -1,13 +1,31 @@
+import { createHash } from 'node:crypto';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { generateAuthJwtKeys } from './access-jwt.js';
 import { MemoryAuthAudit } from './auth-audit.js';
 import * as authCodes from './auth-codes.js';
-import { MemoryAuthCodes } from './auth-codes.js';
+import { CODE_TTL_MS, MemoryAuthCodes, normalizeAuthEmail } from './auth-codes.js';
 import { FakeAuthEmailSender } from './auth-email.js';
 import { AuthService } from './auth.service.js';
+import { MemoryIdempotencyKeys } from './idempotency-keys.js';
 import { AUTH_CODE_EMAIL_BODY_KEY, AUTH_CODE_EMAIL_SUBJECT, AUTH_CODE_EMAIL_SUBJECT_KEY, authCodeEmailBody } from './login-email.js';
 import { ResendAuthEmailSender, UnconfiguredAuthEmailSender } from './resend-auth-email.js';
+import { keyedHmac } from './server-secret.js';
 import { MemorySessionDirectory, type AuthLimits } from './session-directory.js';
+
+class HoldingSender extends FakeAuthEmailSender {
+  private releaseHold: (() => void) | null = null;
+  private readonly hold = new Promise<void>((resolve) => {
+    this.releaseHold = resolve;
+  });
+
+  override sendLoginCode(input: { to: string; code: string }): Promise<void> {
+    return this.hold.then(() => super.sendLoginCode(input));
+  }
+
+  release(): void {
+    this.releaseHold?.();
+  }
+}
 
 const SECRET = Buffer.alloc(32, 3).toString('base64');
 
@@ -19,11 +37,13 @@ function harness(options?: {
   limits?: AuthLimits;
   jwt?: ReturnType<typeof generateAuthJwtKeys> | null;
   sender?: FakeAuthEmailSender | UnconfiguredAuthEmailSender;
+  idempotency?: MemoryIdempotencyKeys;
 }) {
   const codes = new MemoryAuthCodes();
   const sender = options?.sender ?? new FakeAuthEmailSender();
   const audit = new MemoryAuthAudit();
   const clock = { current: new Date('2026-04-01T00:00:00.000Z') };
+  const idempotency = options?.idempotency ?? new MemoryIdempotencyKeys();
   const service = new AuthService(
     new MemorySessionDirectory(),
     sender,
@@ -35,8 +55,9 @@ function harness(options?: {
     undefined,
     audit,
     undefined,
+    idempotency,
   );
-  return { service, codes, sender: sender as FakeAuthEmailSender, audit, clock };
+  return { service, codes, sender: sender as FakeAuthEmailSender, audit, clock, idempotency };
 }
 
 describe('auth send limits', () => {
@@ -203,6 +224,73 @@ describe('login email', () => {
       expect(sent.status).toBe(202);
     }
     expect(calls).toBe(6);
+  });
+
+  it('EC-15.17 A key whose reservation has no stored response (still in progress, or left by a crash) never replays as 202 or as a stored success. It returns 409 idempotency_in_progress, and an expired reservation may be taken over with the same key and body. The client rule for that 409 is EC-15.2.', async () => {
+    const keys = new MemoryIdempotencyKeys();
+    const sender = new HoldingSender();
+    const { service } = harness({
+      sender,
+      idempotency: keys,
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    const email = 'held@example.com';
+    const key = 'held-reservation-1';
+    const first = service.requestCode({ email, idempotencyKey: key, ip: '198.51.100.80' });
+    await vi.waitFor(() => {
+      expect(keys.storedText()).toContain(key);
+    });
+    const held = await service.requestCode({ email, idempotencyKey: key, ip: '198.51.100.81' });
+    expect(held).toMatchObject({ status: 409, body: { error: 'idempotency_in_progress' } });
+    expect(sender.sent).toHaveLength(0);
+    expect(keys.storedText()).not.toContain('idempotency_in_progress');
+    sender.release();
+    const finished = await first;
+    expect(finished.status).toBe(202);
+    expect(sender.sent).toHaveLength(1);
+    const replay = await service.requestCode({ email, idempotencyKey: key, ip: '198.51.100.82' });
+    expect(replay.status).toBe(202);
+    expect(replay.body).toEqual(finished.body);
+    expect(sender.sent).toHaveLength(1);
+    expect(keys.storedText()).not.toContain('idempotency_in_progress');
+  });
+
+  it('returns 409 for an unfinished reservation and sends after it expires', async () => {
+    const keys = new MemoryIdempotencyKeys();
+    const { service, sender, clock } = harness({
+      idempotency: keys,
+      limits: { emailSendLimit: 5, ipSendLimit: 20, verifyIpLimit: 20, windowMs: 60 * 60 * 1000 },
+    });
+    const email = 'crash@example.com';
+    const key = 'crash-reservation-1';
+    const emailHmac = keyedHmac(normalizeAuthEmail(email), SECRET, 'auth-email');
+    const planted = await keys.reserve({
+      emailHmac,
+      key,
+      method: 'POST',
+      route: 'POST /v1/auth/code',
+      requestHash: createHash('sha256').update(emailHmac).digest('hex'),
+      now: clock.current,
+      expiresAt: new Date(clock.current.getTime() + CODE_TTL_MS),
+    });
+    expect(planted.outcome).toBe('reserved');
+    const held = await service.requestCode({ email, idempotencyKey: key, ip: '198.51.100.77' });
+    expect(held).toMatchObject({
+      status: 409,
+      body: { error: 'idempotency_in_progress' },
+    });
+    expect(sender.sent).toHaveLength(0);
+    clock.current = new Date(clock.current.getTime() + 31_000);
+    const stillHeld = await service.requestCode({ email, idempotencyKey: key, ip: '198.51.100.78' });
+    expect(stillHeld).toMatchObject({
+      status: 409,
+      body: { error: 'idempotency_in_progress' },
+    });
+    expect(sender.sent).toHaveLength(0);
+    clock.current = new Date(clock.current.getTime() + CODE_TTL_MS);
+    const sent = await service.requestCode({ email, idempotencyKey: key, ip: '198.51.100.79' });
+    expect(sent.status).toBe(202);
+    expect(sender.sent).toHaveLength(1);
   });
 
   it('does not put Retry-After on a 202 and retries the same key after a 503', async () => {

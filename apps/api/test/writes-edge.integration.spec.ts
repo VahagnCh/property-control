@@ -95,14 +95,15 @@ describe.skipIf(!enabled)('payment periods, void, and duplicates', () => {
         await tx.$queryRaw`SELECT set_config('session_replication_role', 'replica', true)`;
         await tx.auditEvent.deleteMany({ where: { actorUserId: { in: ids } } });
         await tx.consent.deleteMany({ where: { userId: { in: ids } } });
-        await tx.obligationPeriodOutcome.deleteMany({ where: { propertyId } });
-        await tx.payment.deleteMany({ where: { propertyId } });
+        await tx.obligationPeriodOutcome.deleteMany({ where: { propertyId: { in: [propertyId, ...extraIds] } } });
+        await tx.payment.deleteMany({ where: { propertyId: { in: [propertyId, ...extraIds] } } });
         await tx.idempotencyKey.deleteMany({ where: { userId: { in: ids } } });
-        await tx.membershipInvite.deleteMany({ where: { propertyId } });
-        await tx.obligation.deleteMany({ where: { propertyId } });
+        await tx.membershipInvite.deleteMany({ where: { propertyId: { in: [propertyId, ...extraIds] } } });
+        await tx.obligation.deleteMany({ where: { propertyId: { in: [propertyId, ...extraIds] } } });
         await tx.propertyMembership.deleteMany({ where: { userId: { in: ids } } });
-        if (propertyId) {
-          await tx.property.deleteMany({ where: { id: propertyId } });
+        const propertyIds = [propertyId, ...extraIds].filter((id) => id.length > 0);
+        if (propertyIds.length > 0) {
+          await tx.property.deleteMany({ where: { id: { in: propertyIds } } });
         }
         await tx.user.deleteMany({ where: { id: { in: ids } } });
       });
@@ -229,7 +230,7 @@ describe.skipIf(!enabled)('payment periods, void, and duplicates', () => {
       periodDueDate: due.past,
       paidAt,
     });
-    expect(replayedCreate.status).toBe(200);
+    expect(replayedCreate.status).toBe(201);
     expect(await db.payment.count({ where: { obligationId: pastId } })).toBe(1);
     expect((await db.payment.findUnique({ where: { id: paymentId } }))?.status).toBe('voided');
 
@@ -286,6 +287,106 @@ describe.skipIf(!enabled)('payment periods, void, and duplicates', () => {
     expect(JSON.stringify(audit)).not.toContain('Captura duplicada');
   });
 
+  it('does not apply an edit that loses the race with a void', async () => {
+    const server = app.getHttpServer();
+    const pairs = 25;
+    const paymentIds: string[] = [];
+    for (let index = 0; index < pairs; index += 1) {
+      const created = await pay(server, `race-create-${index}-${randomUUID()}`, {
+        amount: '10.00',
+        periodDueDate: due.current,
+      });
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+      paymentIds.push(created.body.payment.id as string);
+    }
+    const results = await Promise.all(
+      paymentIds.map(async (paymentId, index) => {
+        const note = `nota-${index}`;
+        const [edit, voided] = await Promise.all([
+          request(server)
+            .patch(`/v1/properties/${propertyId}/payments/${paymentId}`)
+            .set(auth(tokens, ownerId))
+            .set('Idempotency-Key', `race-edit-${index}-${randomUUID()}`)
+            .send({ notes: note }),
+          voidPayment(server, paymentId, `race-void-${index}-${randomUUID()}`, { voidReason: `carrera ${index}` }),
+        ]);
+        return { paymentId, note, edit, voided };
+      }),
+    );
+    for (const { paymentId, note, edit, voided } of results) {
+      expect(voided.status, JSON.stringify(voided.body)).toBe(200);
+      expect([200, 409]).toContain(edit.status);
+      const row = await db.payment.findUnique({ where: { id: paymentId } });
+      expect(row?.status).toBe('voided');
+      if (edit.status === 409) {
+        expect(edit.body).toMatchObject({
+          statusCode: 409,
+          error: 'payment_voided',
+          message: 'A voided payment cannot be changed.',
+        });
+        expect(row?.notes).toBeNull();
+        expect(await db.auditEvent.count({ where: { entityId: paymentId, action: 'payment.updated' } })).toBe(0);
+      } else {
+        expect(row?.notes).toBe(note);
+        const updated = await db.auditEvent.findFirst({ where: { entityId: paymentId, action: 'payment.updated' } });
+        const voidAudit = await db.auditEvent.findFirst({ where: { entityId: paymentId, action: 'payment.voided' } });
+        expect(updated?.createdAt.getTime()).toBeLessThanOrEqual(voidAudit?.createdAt.getTime() ?? 0);
+      }
+    }
+  }, 60_000);
+
+  it('returns the same 404 for a foreign obligation and a foreign void', async () => {
+    const server = app.getHttpServer();
+    const other = await request(server)
+      .post('/v1/properties')
+      .set(auth(tokens, ownerId))
+      .set('Idempotency-Key', `idor-home-${randomUUID()}`)
+      .send({ name: 'Otra casa', timezone: TZ });
+    expect(other.status, JSON.stringify(other.body)).toBe(201);
+    const otherPropertyId = other.body.id as string;
+    extraIds.push(otherPropertyId);
+    const obligation = await request(server)
+      .post(`/v1/properties/${otherPropertyId}/obligations`)
+      .set(auth(tokens, ownerId))
+      .set('Idempotency-Key', `idor-obligation-${randomUUID()}`)
+      .send({
+        category: 'other',
+        title: 'Ajena',
+        expectedAmount: '10.00',
+        dueDay: 15,
+        scheduleAnchor: due.anchor,
+        nextDueDate: due.current,
+      });
+    expect(obligation.status, JSON.stringify(obligation.body)).toBe(201);
+    const foreignObligationId = obligation.body.id as string;
+    const hiddenPayment = await pay(server, `idor-pay-${randomUUID()}`, {
+      obligationId: foreignObligationId,
+      amount: '10.00',
+      periodDueDate: due.current,
+    });
+    const foreignPayment = await request(server)
+      .post(`/v1/properties/${otherPropertyId}/payments`)
+      .set(auth(tokens, ownerId))
+      .set('Idempotency-Key', `idor-foreign-pay-${randomUUID()}`)
+      .send({
+        obligationId: foreignObligationId,
+        amount: '10.00',
+        paidAt: new Date().toISOString(),
+        periodDueDate: due.current,
+      });
+    expect(foreignPayment.status, JSON.stringify(foreignPayment.body)).toBe(201);
+    const hiddenVoid = await request(server)
+      .post(`/v1/properties/${propertyId}/payments/${foreignPayment.body.payment.id as string}/void`)
+      .set(auth(tokens, ownerId))
+      .set('Idempotency-Key', `idor-void-${randomUUID()}`)
+      .send({ voidReason: 'No es de esta casa' });
+    const notFound = { statusCode: 404, error: 'not_found', message: 'Not found.' };
+    expect(hiddenPayment.status).toBe(404);
+    expect(hiddenVoid.status).toBe(404);
+    expect(hiddenPayment.body).toEqual(notFound);
+    expect(hiddenVoid.body).toEqual(hiddenPayment.body);
+  });
+
   it('warns about a near duplicate and does not warn again on replay', async () => {
     const server = app.getHttpServer();
     const firstPaid = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
@@ -312,9 +413,21 @@ describe.skipIf(!enabled)('payment periods, void, and duplicates', () => {
       periodDueDate: due.current,
       paidAt: secondPaid.toISOString(),
     });
-    expect(replay.status).toBe(200);
+    expect(replay.status).toBe(201);
     expect(replay.body.warnings).toEqual(second.body.warnings);
     expect(await db.payment.count({ where: { obligationId, amount: 4000n, status: 'recorded' } })).toBe(2);
+    const voidedMatch = await voidPayment(server, first.body.payment.id as string, `dup-void-${randomUUID()}`, {
+      voidReason: 'No era el pago',
+    });
+    expect(voidedMatch.status).toBe(200);
+    const afterVoid = await pay(server, 'dup-second', {
+      amount: '40.00',
+      periodDueDate: due.current,
+      paidAt: secondPaid.toISOString(),
+    });
+    expect(afterVoid.status).toBe(201);
+    expect(afterVoid.body).toEqual(second.body);
+    expect(await db.payment.count({ where: { idempotencyKey: 'dup-second' } })).toBe(1);
     const far = await pay(server, 'dup-far-pay', {
       amount: '40.00',
       periodDueDate: due.current,
@@ -372,7 +485,7 @@ describe.skipIf(!enabled)('payment periods, void, and duplicates', () => {
       .set(auth(tokens, ownerId))
       .set('Idempotency-Key', 'shared-member-key')
       .send(body);
-    expect(ownerReplay.status).toBe(200);
+    expect(ownerReplay.status).toBe(201);
     expect(ownerReplay.body.payment.id).toBe(first.body.payment.id);
     expect(ownerReplay.body.payment.id).not.toBe(second.body.payment.id);
 

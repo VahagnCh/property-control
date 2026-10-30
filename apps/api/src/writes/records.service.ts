@@ -9,9 +9,10 @@ import {
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { assertIdempotencyKey, IdempotencyKeyInvalidException, IdempotencyKeyReusedException, type IdempotencyStore } from '../auth/idempotency-keys.js';
 import { notFoundException } from '../common/not-found.js';
+import { stripOneTrailingSlash } from '../common/path-safety.js';
 import { OCR_ERROR, ocrUnauthorized } from '../ocr/ocr-errors.js';
 import { assertNextDueDateInRange } from '../obligations/next-due-date.js';
-import { sealAuditText } from '../ocr/audit-text.js';
+import { redactedTextState, sealAuditText } from '../ocr/audit-text.js';
 import type { OcrConfirmAudit } from '../ocr/ocr.types.js';
 import { assertPaidAt } from '../payments/paid-at.js';
 import { recordPayment, voidPayment as voidLedgerPayment } from '../payments/ledger.js';
@@ -136,10 +137,10 @@ export class RecordsService {
           beforeState: null,
           afterState: null,
           metadata: {
-          name: created.name,
-          timezone: created.timezone,
-          addressLine: created.addressLine,
-        },
+            name: sealedLabel(created.name),
+            timezone: created.timezone,
+            addressLine: sealedLabel(created.addressLine),
+          },
         });
         return created;
       });
@@ -195,9 +196,9 @@ export class RecordsService {
           beforeState: null,
           afterState: null,
           metadata: {
-            name: { before: before.name, after: updated.name },
+            name: { before: sealedLabel(before.name), after: sealedLabel(updated.name) },
             timezone: { before: before.timezone, after: updated.timezone },
-            addressLine: { before: before.addressLine, after: updated.addressLine },
+            addressLine: { before: sealedLabel(before.addressLine), after: sealedLabel(updated.addressLine) },
           },
         });
         return updated;
@@ -343,9 +344,9 @@ export class RecordsService {
     route: string,
     body: unknown,
   ): Promise<IdempotentResult> {
-    const raw = asObject(body);
     await this.ensureUser(userId);
     return this.write(userId, key, route, body, async () => {
+      const raw = asObject(body);
       const recorded = await this.transaction(async (tx) => {
         const property = await this.assertWriter(tx, userId, propertyId);
         const input = parsePaymentCreate(raw, property.timezone);
@@ -474,16 +475,16 @@ export class RecordsService {
     route: string,
     body: unknown,
   ): Promise<IdempotentResult> {
-    const raw = asObject(body);
     await this.ensureUser(userId);
     return this.write(userId, key, route, body, async () => {
+      const raw = asObject(body);
       const row = await this.transaction(async (tx) => {
         await this.assertWriter(tx, userId, propertyId);
-        const before = await tx.payment.findFirst({ where: { id: paymentId, propertyId } });
-        if (!before) {
+        const locked = await ledgerTx(tx).lockPayment(paymentId);
+        if (!locked || locked.propertyId !== propertyId) {
           throw notFoundException();
         }
-        if (before.status === 'voided') {
+        if (locked.status === 'voided') {
           throw new ConflictException({
             statusCode: 409,
             error: 'payment_voided',
@@ -491,6 +492,10 @@ export class RecordsService {
           });
         }
         const patch = parsePaymentPatch(raw);
+        const before = await tx.payment.findFirst({ where: { id: paymentId, propertyId } });
+        if (!before) {
+          throw notFoundException();
+        }
         const updated = await tx.payment.update({ where: { id: paymentId }, data: patch });
         const notes = notesState(before.notes, updated.notes);
         await this.audit(tx, {
@@ -523,7 +528,7 @@ export class RecordsService {
     const now = new Date();
     const space = route.indexOf(' ');
     const method = (space === -1 ? route : route.slice(0, space)).trim().toUpperCase();
-    const path = (space === -1 ? '' : route.slice(space + 1)).toLowerCase();
+    const path = stripOneTrailingSlash((space === -1 ? '' : route.slice(space + 1)).toLowerCase());
     return runIdempotent(
       this.keys,
       {
@@ -994,6 +999,13 @@ function rejectUnknown(raw: Record<string, unknown>, allowed: string[]): void {
 
 function invalid(error: string, message: string): UnprocessableEntityException {
   return new UnprocessableEntityException({ statusCode: 422, error, message });
+}
+
+function sealedLabel(value: string | null): { length: number; sha256: string } | null {
+  if (!value) {
+    return null;
+  }
+  return redactedTextState(value);
 }
 
 function notesState(before: string | null, after: string | null): { beforeState: unknown; afterState: unknown } {

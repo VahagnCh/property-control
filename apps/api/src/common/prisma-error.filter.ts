@@ -13,11 +13,19 @@ export class PrismaErrorFilter implements ExceptionFilter {
     if (response.headersSent) {
       return;
     }
-    if (exception.code === 'P2002') {
+    if (exception.code === 'P2002' && isIdempotencyUnique(exception)) {
       response.status(409).json({
         statusCode: 409,
         error: 'idempotency_key_reused',
         message: 'This idempotency key was already used with a different request.',
+      });
+      return;
+    }
+    if (exception.code === 'P2002') {
+      response.status(409).json({
+        statusCode: 409,
+        error: 'conflict',
+        message: 'The request conflicts with an existing record.',
       });
       return;
     }
@@ -27,4 +35,10 @@ export class PrismaErrorFilter implements ExceptionFilter {
       message: 'The request could not be stored.',
     });
   }
+}
+
+function isIdempotencyUnique(exception: Prisma.PrismaClientKnownRequestError): boolean {
+  const target = exception.meta?.target;
+  const fields = Array.isArray(target) ? target.map((field) => String(field)) : [String(target ?? '')];
+  return fields.some((field) => field.includes('idempotency_key') || field.includes('idempotencyKey'));
 }

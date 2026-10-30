@@ -355,7 +355,14 @@ export class AuthService {
       };
     }
     if (reserved.outcome === 'in_progress') {
-      return { kind: 'done', result: accepted() };
+      return {
+        kind: 'done',
+        result: errorResult(
+          409,
+          'idempotency_in_progress',
+          'This idempotency key is still in progress.',
+        ),
+      };
     }
     return { kind: 'continue', id: reserved.id };
   }
