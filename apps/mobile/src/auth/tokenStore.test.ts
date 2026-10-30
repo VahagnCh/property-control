@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import * as SecureStore from 'expo-secure-store';
+import { COPY } from '../copy/userFacing';
 import { clearAuthTokens, readAuthTokens, saveAuthTokens } from './tokenStore';
 
 jest.mock('expo-secure-store', () => ({
@@ -39,12 +40,19 @@ function walk(dir: string, acc: string[] = []): string[] {
 describe('auth token store', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (SecureStore.getItemAsync as jest.Mock).mockReset();
+    (SecureStore.getItemAsync as jest.Mock).mockResolvedValue(null);
+    (SecureStore.setItemAsync as jest.Mock).mockReset();
+    (SecureStore.setItemAsync as jest.Mock).mockResolvedValue(undefined);
+    (SecureStore.deleteItemAsync as jest.Mock).mockReset();
+    (SecureStore.deleteItemAsync as jest.Mock).mockResolvedValue(undefined);
   });
 
   it('writes and reads tokens only through expo-secure-store', async () => {
-    (SecureStore.getItemAsync as jest.Mock)
-      .mockResolvedValueOnce(ACCESS)
-      .mockResolvedValueOnce(REFRESH);
+    const stored = JSON.stringify({ accessToken: ACCESS, refreshToken: REFRESH });
+    (SecureStore.getItemAsync as jest.Mock).mockImplementation(async (key: string) =>
+      key === 'duerecord.auth.session' ? stored : null,
+    );
 
     await saveAuthTokens({ accessToken: ACCESS, refreshToken: REFRESH });
     await expect(readAuthTokens()).resolves.toEqual({
@@ -53,14 +61,16 @@ describe('auth token store', () => {
     });
 
     const setCalls = (SecureStore.setItemAsync as jest.Mock).mock.calls;
-    expect(setCalls.map((call) => call[0])).toEqual(['duerecord.auth.access', 'duerecord.auth.refresh']);
-    expect(setCalls.map((call) => call[1])).toEqual([ACCESS, REFRESH]);
-    for (const call of setCalls) {
-      expect(call[2]).toEqual({ keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY });
-      expect(call[2]).not.toHaveProperty('requireAuthentication');
-    }
+    expect(setCalls.map((call) => call[0])).toEqual(['duerecord.auth.session']);
+    expect(JSON.parse(setCalls[0][1] as string)).toEqual({ accessToken: ACCESS, refreshToken: REFRESH });
+    expect(setCalls[0][2]).toEqual({ keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY });
+    expect(setCalls[0][2]).not.toHaveProperty('requireAuthentication');
 
     await clearAuthTokens();
+    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith(
+      'duerecord.auth.session',
+      expect.objectContaining({ keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY }),
+    );
     expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith(
       'duerecord.auth.access',
       expect.objectContaining({ keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY }),
@@ -71,9 +81,61 @@ describe('auth token store', () => {
     );
   });
 
-  it('returns null when either token is missing and does not echo a partial secret', async () => {
-    (SecureStore.getItemAsync as jest.Mock).mockResolvedValueOnce(ACCESS).mockResolvedValueOnce(null);
+  it('does not leave a half-written session when the single write fails', async () => {
+    (SecureStore.setItemAsync as jest.Mock).mockRejectedValueOnce(new Error(`disk ${ACCESS}`));
+    const error = await saveAuthTokens({ accessToken: ACCESS, refreshToken: REFRESH }).then(
+      () => {
+        throw new Error('expected a rejection');
+      },
+      (caught: unknown) => caught,
+    );
+    expect((error as Error).message).toBe(COPY['common.error']);
+    expect((error as Error).message).not.toContain(ACCESS);
+    expect(JSON.stringify(error)).not.toContain(ACCESS);
+    expect(SecureStore.setItemAsync).toHaveBeenCalledTimes(1);
+    const stored = JSON.parse((SecureStore.setItemAsync as jest.Mock).mock.calls[0][1] as string) as {
+      accessToken: string;
+      refreshToken: string;
+    };
+    expect(stored).toEqual({ accessToken: ACCESS, refreshToken: REFRESH });
     await expect(readAuthTokens()).resolves.toBeNull();
+  });
+
+  it('clears a legacy access key when the refresh key is missing', async () => {
+    (SecureStore.getItemAsync as jest.Mock).mockImplementation(async (key: string) =>
+      key === 'duerecord.auth.access' ? ACCESS : null,
+    );
+    await expect(readAuthTokens()).resolves.toBeNull();
+    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith('duerecord.auth.access', expect.any(Object));
+    expect(SecureStore.setItemAsync).not.toHaveBeenCalled();
+  });
+
+  it('maps a legacy migration save failure to catalog copy', async () => {
+    (SecureStore.getItemAsync as jest.Mock).mockImplementation(async (key: string) => {
+      if (key === 'duerecord.auth.access') {
+        return ACCESS;
+      }
+      if (key === 'duerecord.auth.refresh') {
+        return REFRESH;
+      }
+      return null;
+    });
+    (SecureStore.setItemAsync as jest.Mock).mockRejectedValue(new Error(`disk ${ACCESS}`));
+    await expect(readAuthTokens()).rejects.toThrow(COPY['common.error']);
+    try {
+      await readAuthTokens();
+    } catch (error) {
+      expect((error as Error).message).toBe(COPY['common.error']);
+      expect((error as Error).message).not.toContain(ACCESS);
+      expect((error as Error).message).not.toContain(REFRESH);
+      expect(JSON.stringify(error)).not.toContain(ACCESS);
+    }
+  });
+
+  it('throws when secure store read fails and does not rethrow the stored value', async () => {
+    (SecureStore.getItemAsync as jest.Mock).mockRejectedValue(new Error(`boom ${ACCESS}`));
+    await expect(readAuthTokens()).rejects.toMatchObject({ name: 'TokenStoreUnavailableError' });
+    expect(SecureStore.deleteItemAsync).not.toHaveBeenCalled();
   });
 
   it('does not import AsyncStorage, and no mobile source does', () => {

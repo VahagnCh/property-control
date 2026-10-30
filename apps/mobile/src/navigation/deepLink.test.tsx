@@ -51,13 +51,33 @@ jest.mock('react-native-safe-area-context', () => {
 jest.mock('../session/readSession', () => {
   let hasSession = false;
   let reads = 0;
+  const listeners = new Set<() => void>();
+  const emit = () => {
+    for (const listener of listeners) {
+      listener();
+    }
+  };
   return {
     readSession: () => {
       reads += 1;
       return hasSession;
     },
+    readSessionSnapshot: () => ({ signedIn: hasSession, expired: false, unavailable: false }),
+    subscribeSession: (listener: () => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    setSessionSignedIn: () => undefined,
+    setSessionExpired: () => undefined,
+    setSessionSignedOut: () => undefined,
+    setSessionUnavailable: () => undefined,
+    noteEmptyStore: () => undefined,
+    resetSessionState: () => undefined,
     __setHasSession: (value: boolean) => {
       hasSession = value;
+      emit();
     },
     __readCount: () => reads,
     __resetReads: () => {
@@ -374,11 +394,15 @@ describe('duerecord deep links', () => {
     const readsAfterSignIn = readCount();
     expect(readsAfterSignIn).toBeGreaterThan(0);
 
-    setHasSession(true);
+    await act(async () => {
+      setHasSession(true);
+    });
+    expect(await screen.findByText(COPY['notif.notFound.title'])).toBeTruthy();
+    const readsAfterUpdate = readCount();
+    expect(readsAfterUpdate).toBeGreaterThan(readsAfterSignIn);
     view.rerender(<App />);
-    expect(readCount()).toBe(readsAfterSignIn);
-    expect(screen.getByText(COPY['notif.signIn.body'])).toBeTruthy();
-    expect(screen.queryByText(COPY['notif.notFound.title'])).toBeNull();
+    expect(readCount()).toBe(readsAfterUpdate);
+    expect(treeText()).not.toContain(UUID);
     view.unmount();
 
     const opened = render(<App />);

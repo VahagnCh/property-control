@@ -1,9 +1,12 @@
 import { NavigationContainer } from '@react-navigation/native';
 import * as Linking from 'expo-linking';
 import { useEffect, useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 import { COPY } from '../copy/userFacing';
-import { useHasSession } from '../session/useHasSession';
+import { EmailSignInScreen } from '../screens/EmailSignInScreen';
+import { hydrateSession } from '../session/loadSession';
+import { SessionUnavailable } from '../session/SessionUnavailable';
+import { useHasSession, useSessionSnapshot } from '../session/useHasSession';
 import { parseDeepLink } from './deepLink';
 import { dropHeld, settleHeld, type Held, type Place } from './heldLink';
 import { linking } from './linking';
@@ -24,16 +27,22 @@ function holdFromUrl(url: string): Held | null {
 }
 
 /**
- * Subscribes to the real linking URL. Session is read once per mount until auth
- * subscribes, so a notification link stops on sign-in. Ahora no and Cancelar drop
- * it and open Inicio. The notification screen is a stub: every nid gets the same
- * not-found copy. A held nid is cleared once it is opened or dropped.
+ * Subscribes to the real linking URL and to the in-memory session.
+ * A notification link stays on sign-in until that session is signed in.
+ * Ahora no and Cancelar drop it and open Inicio. The notification screen is a
+ * stub: every nid gets the same not-found copy. A held nid is cleared once it
+ * is opened or dropped. A secure-store read failure shows connecting, not sign-in.
  */
 export function AppShell() {
   const hasSession = useHasSession();
+  const session = useSessionSnapshot();
   const [held, setHeld] = useState<Held | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const [place, setPlace] = useState<Place>({ name: 'inicio', tabUrl: null });
+
+  useEffect(() => {
+    void hydrateSession().catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -85,9 +94,17 @@ export function AppShell() {
     setPlace(next.place);
   }
 
+  if (session.unavailable) {
+    return <SessionUnavailable />;
+  }
+
+  if (session.expired) {
+    return <EmailSignInScreen expired />;
+  }
+
   if (place.name === 'sign-in') {
     return (
-      <View>
+      <ScrollView contentContainerStyle={{ flexGrow: 1, padding: 24, gap: 16 }}>
         <Text>{COPY['notif.signIn.body']}</Text>
         <Pressable
           accessibilityRole="button"
@@ -103,7 +120,8 @@ export function AppShell() {
         >
           <Text>{COPY['notif.signIn.cancel']}</Text>
         </Pressable>
-      </View>
+        <EmailSignInScreen embedded />
+      </ScrollView>
     );
   }
 

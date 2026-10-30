@@ -1,6 +1,6 @@
 # @property-control/mobile
 
-Expo React Native + TypeScript client for DueRecord. This is the navigation shell: the five locked tabs with placeholder Spanish copy. There is no data fetching, no auth storage, and no real screen yet. The Expo display name is DueRecord. The package name stays `@property-control/mobile`, and the slug stays `property-control`. The URL scheme is `duerecord`. A notification link opens a stub that says the notification is no longer available. It does not show the id from the URL. Fetching that notification and checking membership is [issue 13](https://github.com/VahagnCh/property-control/issues/13).
+Expo React Native + TypeScript client for DueRecord. The navigation shell is five tabs with placeholder Spanish copy. `src/api` is the typed fetch client: app-config base URL, 15s timeout, SecureStore tokens, single-flight refresh, idempotency keys, and the health gate before a write. The email-code sign-in screen calls `POST /v1/auth/code` and `POST /v1/auth/verify`. The Expo display name is DueRecord. The package name stays `@property-control/mobile`, and the slug stays `property-control`. The URL scheme is `duerecord`. A notification link opens a stub that says the notification is no longer available. It does not show the id from the URL. Fetching that notification and checking membership is [issue 13](https://github.com/VahagnCh/property-control/issues/13).
 
 ## Run
 
@@ -42,6 +42,8 @@ src/navigation/linking.ts         duerecord://, plus exp:// only in Expo Go or d
 src/navigation/tabs.tsx           the five-tab bottom navigator
 src/screens/PlaceholderScreen.tsx shared placeholder
 src/components/ScreenState.tsx    empty, loading, and error
+src/api/client.ts                 typed fetch, refresh, idempotency, health gate
+src/auth/tokenStore.ts            expo-secure-store behind TokenStore
 TESTING.md                        edge-case matrix
 ```
 
@@ -56,6 +58,6 @@ Two things to keep right when real screens arrive:
 - **Pagos** records a payment the person already made somewhere else. The screen never offers to pay a bill or link an account. Saving works without a comprobante; evidence is optional and encouraged, not required.
 - **Documentos** will hold the OCR review sheet (D-OCR). It shows each suggested field with its value, lets the person edit, and applies only what they confirm. Nothing is written to an obligation or a payment before that. The microcopy says so: "Revisa y confirma antes de guardar. Nada se aplica solo." See [docs/OCR.md](../../docs/OCR.md).
 
-Writes will be online-first through an outbox, with an `Idempotency-Key` on payment and evidence creates so a retry cannot duplicate a row. The server wins a conflict.
+Payments are online-only. A write that cannot reach the API shows the connecting failure and Reintentar. An `Idempotency-Key` on the write stays with that body so the tap does not create a second row. The server wins a conflict.
 
 The Mobile React Native write-up (due 3 Oct, see [docs/ROADMAP.md](../../docs/ROADMAP.md)) decides the state management, API client, and outbox details. This shell is deliberately thin so that write-up is not boxed in.
