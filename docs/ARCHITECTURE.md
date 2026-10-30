@@ -91,7 +91,7 @@ sequenceDiagram
   A->>D: Recompute the period outcome from recorded payments
   Note over A,D: A sum that covers the period advances one period.<br/>Partial does not. A void can move the date back.<br/>Excess is overpaid_amount on that period only.
   A->>D: Append an audit event
-  A-->>M: 201 Payment (200 on replay)
+  A-->>M: 201 Payment (stored 201 on replay)
   U->>M: Adjuntar comprobante (optional, later)
   M->>A: POST /v1/properties/:id/evidence
 ```
