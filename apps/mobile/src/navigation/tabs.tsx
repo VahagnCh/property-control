@@ -1,6 +1,8 @@
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import type { ApiClient } from '../api/client';
 import type { ScreenPhase } from '../components/ScreenState';
 import { TAB_BODIES, TAB_LABELS, TabLabel } from '../copy/userFacing';
+import { PropertiesTab } from '../properties/PropertiesTab';
 import { PlaceholderScreen } from '../screens/PlaceholderScreen';
 import { BRAND_TEAL, TAB_INACTIVE_TINT } from '../theme/brand';
 
@@ -17,9 +19,11 @@ export const tabScreenOptions = {
 export function AppTabs({
   phase = 'ready',
   onRetry,
+  propertyClient = null,
 }: {
   phase?: ScreenPhase;
   onRetry?: (tab: TabLabel) => void;
+  propertyClient?: ApiClient | null;
 }) {
   return (
     <Tab.Navigator screenOptions={tabScreenOptions}>
@@ -33,14 +37,18 @@ export function AppTabs({
             tabBarAllowFontScaling: true,
           }}
         >
-          {() => (
-            <PlaceholderScreen
-              title={name}
-              body={TAB_BODIES[name]}
-              phase={phase}
-              onRetry={onRetry ? () => onRetry(name) : undefined}
-            />
-          )}
+          {() =>
+            phase === 'ready' && name === 'Propiedades' ? (
+              <PropertiesTab client={propertyClient} />
+            ) : (
+              <PlaceholderScreen
+                title={name}
+                body={TAB_BODIES[name]}
+                phase={phase}
+                onRetry={onRetry ? () => onRetry(name) : undefined}
+              />
+            )
+          }
         </Tab.Screen>
       ))}
     </Tab.Navigator>

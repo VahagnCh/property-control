@@ -43,6 +43,10 @@ export const API_ERROR_CODES = [
   'idempotency_key_invalid',
   'idempotency_key_mismatch',
   'idempotency_key_reused',
+  'idempotency_in_progress',
+  'payment_voided',
+  'already_voided',
+  'conflict',
   'consent_required',
   'viewer',
   'rate_limited',
@@ -118,6 +122,80 @@ export type PropertyResponse = {
   timezone: string;
   createdAt: string;
   updatedAt: string;
+};
+
+/** Create and patch body from docs/API.md. Omitted timezone defaults on the server. */
+export type PropertyWriteBody = {
+  name: string;
+  propertyType?: PropertyType;
+  occupancyStatus?: OccupancyStatus;
+  addressLine?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  postalCode?: string;
+  timezone?: string;
+};
+
+export type PropertyListResponse = {
+  items: PropertyResponse[];
+};
+
+export type ObligationCategory =
+  | 'predial'
+  | 'water'
+  | 'electricity'
+  | 'gas'
+  | 'internet'
+  | 'mantenimiento'
+  | 'mortgage'
+  | 'insurance'
+  | 'security'
+  | 'other';
+
+export type ObligationRecurrence =
+  | 'monthly'
+  | 'bimonthly'
+  | 'quarterly'
+  | 'semiannual'
+  | 'annual'
+  | 'custom'
+  | 'irregular';
+
+/** Obligation create body from docs/API.md. expectedAmount is a decimal peso string. */
+export type ObligationWriteBody = {
+  category: ObligationCategory;
+  title: string;
+  providerName?: string;
+  recurrence?: ObligationRecurrence;
+  dueDay?: number;
+  scheduleAnchor?: string;
+  nextDueDate?: string;
+  expectedAmount?: string;
+  reminderOffsets?: number[];
+  preferredMethod?: string;
+  notes?: string;
+  isActive?: boolean;
+};
+
+export type ObligationResponse = {
+  id: string;
+  category: ObligationCategory;
+  title: string;
+  providerName?: string | null;
+  recurrence?: ObligationRecurrence | null;
+  dueDay?: number | null;
+  scheduleAnchor?: string | null;
+  nextDueDate?: string | null;
+  expectedAmount?: string | null;
+  reminderOffsets?: number[] | null;
+  preferredMethod?: string | null;
+  notes?: string | null;
+  isActive?: boolean;
+};
+
+export type ObligationListResponse = {
+  items: ObligationResponse[];
 };
 
 export type RefreshRequestBody = {

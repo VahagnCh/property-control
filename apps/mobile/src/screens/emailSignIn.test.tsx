@@ -364,6 +364,37 @@ describe('email sign-in screen', () => {
     }
   });
 
+  it('keeps the email and resends the same code request after idempotency_in_progress', async () => {
+    const server = createContractFakeServer();
+    const keys: string[] = [];
+    const bodies: string[] = [];
+    let n = 0;
+    const ids = [1, 2].map((item) => `00000000-0000-4000-8000-${item.toString(16).padStart(12, '0')}`);
+    server.route('POST', AUTH_CODE_PATH, (request) => {
+      keys.push(request.headers['idempotency-key'] ?? '');
+      bodies.push(request.bodyText ?? '');
+      if (keys.length === 1) {
+        return { status: 409, body: { statusCode: 409, error: 'idempotency_in_progress', message: 'busy' } };
+      }
+      return { status: 202, body: { message: AUTH_CODE_ACCEPTED_MESSAGE } };
+    });
+    renderWithSafeArea(
+      <EmailSignInScreen client={clientFor(server, () => ids[n++] ?? ids[1])} now={() => 1_700_000_000_000} />,
+    );
+    fireEvent.changeText(screen.getByLabelText(COPY['auth.email.label']), 'persona@ejemplo.com');
+    fireEvent.press(screen.getByRole('button', { name: COPY['auth.email.cta'] }));
+    expect(await screen.findByText(COPY['common.connecting.failed'])).toBeTruthy();
+    expect(screen.queryByText(COPY['common.error'])).toBeNull();
+    expect(screen.queryByText(COPY['auth.code.title'])).toBeNull();
+    expect(screen.getByLabelText(COPY['auth.email.label']).props.value).toBe('persona@ejemplo.com');
+    fireEvent.press(screen.getByRole('button', { name: COPY['common.retry'] }));
+    expect(await screen.findByText(COPY['auth.code.title'])).toBeTruthy();
+    expect(keys[0]).toBe(keys[1]);
+    expect(bodies[1]).toBe(bodies[0]);
+    expect(bodies[0]).toContain('"email":"persona@ejemplo.com"');
+    expect(n).toBe(1);
+  });
+
   it('opens sign-in when the session expires', async () => {
     render(<App />);
     expect(await screen.findByTestId('tab-Inicio')).toBeTruthy();

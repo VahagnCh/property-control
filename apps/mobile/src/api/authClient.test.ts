@@ -336,4 +336,41 @@ describe('email-code client', () => {
     expect(readSessionSnapshot()).toMatchObject({ signedIn: false, expired: true, unavailable: false });
     expect(server.calls('POST', REFRESH_PATH)).toHaveLength(1);
   });
+
+  it('keeps the auth-code key and body on 409 idempotency_in_progress', async () => {
+    let n = 0;
+    const ids = [v4(1), v4(2)];
+    const { server, client } = setup({ randomUUID: () => ids[n++] ?? v4(9) });
+    const bodies: string[] = [];
+    const keys: string[] = [];
+    server.route('POST', AUTH_CODE_PATH, (request) => {
+      bodies.push(request.bodyText ?? '');
+      keys.push(request.headers['idempotency-key'] ?? '');
+      if (bodies.length === 1) {
+        return { status: 409, body: { statusCode: 409, error: 'idempotency_in_progress', message: 'busy' } };
+      }
+      return { status: 202, body: { message: AUTH_CODE_ACCEPTED_MESSAGE } };
+    });
+    await expect(client.requestCode(EMAIL, 'send')).rejects.toMatchObject({
+      code: 'idempotency_in_progress',
+      copyKey: 'common.connecting.failed',
+      message: COPY['common.connecting.failed'],
+      retryLabel: 'Reintentar',
+    });
+    expect(server.calls('POST', AUTH_CODE_PATH)).toHaveLength(1);
+    await client.requestCode(EMAIL, 'retry');
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[0]).toBe(v4(1));
+    expect(bodies[1]).toBe(bodies[0]);
+    expect(bodies[0]).toBe(JSON.stringify({ email: EMAIL }));
+    expect(n).toBe(1);
+
+    const fresh = setup({ randomUUID: () => v4(4) });
+    fresh.server.route('POST', AUTH_CODE_PATH, () => ({
+      status: 202,
+      body: { message: AUTH_CODE_ACCEPTED_MESSAGE },
+    }));
+    await fresh.client.requestCode(EMAIL, 'send');
+    expect(fresh.server.calls('POST', AUTH_CODE_PATH)[0]?.headers['idempotency-key']).toBe(v4(4));
+  });
 });

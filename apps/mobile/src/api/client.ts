@@ -17,10 +17,15 @@ import {
   REFRESH_PATH,
   isWriteMethod,
   type HttpMethod,
+  type ObligationListResponse,
+  type ObligationResponse,
+  type ObligationWriteBody,
   type PaymentCreateBody,
   type PaymentCreateResponse,
   type PaymentWire,
+  type PropertyListResponse,
   type PropertyResponse,
+  type PropertyWriteBody,
   type RefreshResponseBody,
 } from './contract';
 import { readApiBaseUrl, type ApiRuntime } from './config';
@@ -31,6 +36,7 @@ import {
   SessionExpiredError,
   copyKeyForApiError,
   readErrorCode,
+  releasesIdempotencyKey,
 } from './errors';
 import { assertCalendarDate, assertDecimalMoney, canonicalPesoAmount, paidAtOnPropertyCalendar } from './money';
 
@@ -58,6 +64,12 @@ export const HEALTH_STALE_MS = 10 * 60 * 1000;
 
 type PendingWrite = {
   key: string;
+  /**
+   * Exact JSON of the first send. A later tap sends these bytes, so paidAt
+   * stays the original calendar string. This map is memory only: pending
+   * keys are lost if the app is killed, and the next launch mints a new key.
+   */
+  bodyText: string | null;
 };
 
 export type ConnectionSnapshot = {
@@ -197,14 +209,56 @@ export class ApiClient {
   }
 
   getProperty(propertyId: string): Promise<PropertyResponse> {
-    return this.request<PropertyResponse>('GET', `/v1/properties/${encodeURIComponent(propertyId)}`);
+    return this.request<PropertyResponse>('GET', `/v1/properties/${encodeURIComponent(propertyId)}`).then(
+      readProperty,
+    );
+  }
+
+  listProperties(): Promise<PropertyListResponse> {
+    return this.request<unknown>('GET', '/v1/properties').then(readPropertyList);
+  }
+
+  createProperty(body: PropertyWriteBody): Promise<PropertyResponse> {
+    return this.request<unknown>('POST', '/v1/properties', { body }).then(readProperty);
+  }
+
+  listObligations(propertyId: string): Promise<ObligationListResponse> {
+    return this.request<unknown>(
+      'GET',
+      `/v1/properties/${encodeURIComponent(propertyId)}/obligations`,
+    ).then(readObligationList);
+  }
+
+  createObligation(propertyId: string, body: ObligationWriteBody): Promise<ObligationResponse> {
+    return this.request<unknown>('POST', `/v1/properties/${encodeURIComponent(propertyId)}/obligations`, {
+      body,
+    }).then(readObligation);
+  }
+
+  /**
+   * One health read. A network error or timeout is retried once, like any GET.
+   * The launch watch calls this again until it succeeds or 90 seconds pass.
+   */
+  async checkHealth(): Promise<'ok' | 'down'> {
+    try {
+      const response = await this.sendRead({
+        method: 'GET',
+        path: HEALTH_PATH,
+        auth: false,
+        idempotencyKey: null,
+      });
+      return isHealthOk(response) ? 'ok' : 'down';
+    } catch {
+      return 'down';
+    }
   }
 
   /**
    * `paidAt` as a Date is the property-zone calendar date, including 23:59
    * and 00:01 in America/Mexico_City. A string is sent as that calendar date.
-   * The idempotency key stays with this path and canonical body after a
-   * timeout, a network error, or a 5xx. A 2xx or a 4xx releases it.
+   * The idempotency key stays with this path and the original JSON bytes after
+   * a timeout, a network error, a 5xx, or 409 idempotency_in_progress.
+   * A definite 2xx or 4xx releases it. Pending keys are lost if the app is killed.
    */
   async createPayment(
     propertyId: string,
@@ -356,11 +410,7 @@ export class ApiClient {
         auth: false,
         idempotencyKey: null,
       });
-      const ok =
-        response.status === 200 &&
-        !!response.body &&
-        typeof response.body === 'object' &&
-        (response.body as { status?: unknown }).status === 'ok';
+      const ok = isHealthOk(response);
       if (!ok) {
         this.publish({ phase: 'failed', label: null, copyKey: 'common.connecting.failed' });
         throw new ConnectingFailedError(null);
@@ -489,9 +539,10 @@ export class ApiClient {
 
   /**
    * EC-11.7. The key is the path plus a canonical body hash.
-   * Timeout, network error, and 5xx keep it: the server does not store a 5xx
-   * under the key, so a later Reintentar is a fresh attempt with the same key.
-   * A definite 2xx or 4xx releases it. Writes are not retried automatically.
+   * Timeout, network error, 5xx, and 409 idempotency_in_progress keep it.
+   * The server does not store those, so Reintentar sends the same key and the
+   * original bytes. A definite 2xx or other 4xx releases it. Writes are not
+   * retried automatically. The map is not persisted: killing the app drops it.
    */
   private keyForWrite(method: HttpMethod, path: string, body: unknown): string {
     const fingerprint = writeFingerprint(method, path, body);
@@ -503,8 +554,28 @@ export class ApiClient {
     if (!IDEMPOTENCY_KEY.test(key)) {
       throw new ApiClientError('idempotency_key_invalid', 'common.error', 400);
     }
-    this.pendingWrites.set(fingerprint, { key });
+    this.pendingWrites.set(fingerprint, { key, bodyText: null });
     return key;
+  }
+
+  /**
+   * First send stores JSON.stringify of that object. A retry with the same
+   * canonical body sends those exact bytes, including the original paidAt.
+   */
+  private encodeBody(input: SendInput): string | undefined {
+    if (input.body === undefined) {
+      return undefined;
+    }
+    const fingerprint = writeFingerprint(input.method, input.path, input.body);
+    const pending = this.pendingWrites.get(fingerprint);
+    if (pending && input.idempotencyKey === pending.key && pending.bodyText !== null) {
+      return pending.bodyText;
+    }
+    const text = JSON.stringify(input.body);
+    if (pending && input.idempotencyKey === pending.key) {
+      pending.bodyText = text;
+    }
+    return text;
   }
 
   private noteWriteResponse(method: HttpMethod, path: string, body: unknown, response: WireResponse): void {
@@ -512,10 +583,8 @@ export class ApiClient {
     if (!this.pendingWrites.has(fingerprint)) {
       return;
     }
-    if (
-      (response.status >= 200 && response.status < 300) ||
-      (response.status >= 400 && response.status < 500)
-    ) {
+    const code = readErrorCode(response.body, response.status);
+    if (releasesIdempotencyKey(response.status, code)) {
       this.pendingWrites.delete(fingerprint);
     }
   }
@@ -551,7 +620,8 @@ export class ApiClient {
   private async send(input: SendInput): Promise<WireResponse> {
     const url = resolveUrl(this.baseUrl, input.path);
     const headers: Record<string, string> = { Accept: 'application/json' };
-    if (input.body !== undefined) {
+    const bodyText = this.encodeBody(input);
+    if (bodyText !== undefined) {
       headers['Content-Type'] = 'application/json';
     }
     if (input.idempotencyKey) {
@@ -570,7 +640,7 @@ export class ApiClient {
     const pending = this.fetchImpl(url, {
       method: input.method,
       headers,
-      body: input.body === undefined ? undefined : JSON.stringify(input.body),
+      body: bodyText,
       signal: timeout.signal,
       redirect: 'manual',
     });
@@ -638,6 +708,60 @@ function readRefreshPair(body: unknown): AuthTokens {
     throw new ApiClientError('token_invalid', 'common.error', null);
   }
   return { accessToken, refreshToken };
+}
+
+function isHealthOk(response: { status: number; body: unknown }): boolean {
+  return (
+    response.status === 200 &&
+    !!response.body &&
+    typeof response.body === 'object' &&
+    (response.body as { status?: unknown }).status === 'ok'
+  );
+}
+
+function readProperty(body: unknown): PropertyResponse {
+  if (!body || typeof body !== 'object') {
+    throw new ApiClientError('invalid_json', 'common.error', null);
+  }
+  const record = body as PropertyResponse;
+  if (typeof record.id !== 'string' || record.id === '' || typeof record.name !== 'string' || record.name === '') {
+    throw new ApiClientError('invalid_json', 'common.error', null);
+  }
+  if (typeof record.timezone !== 'string' || record.timezone === '') {
+    throw new ApiClientError('invalid_json', 'common.error', null);
+  }
+  return record;
+}
+
+function readPropertyList(body: unknown): PropertyListResponse {
+  if (!body || typeof body !== 'object' || !Array.isArray((body as { items?: unknown }).items)) {
+    throw new ApiClientError('invalid_json', 'common.error', null);
+  }
+  return { items: (body as { items: unknown[] }).items.map((item) => readProperty(item)) };
+}
+
+function readObligation(body: unknown): ObligationResponse {
+  if (!body || typeof body !== 'object') {
+    throw new ApiClientError('invalid_json', 'common.error', null);
+  }
+  const record = body as ObligationResponse;
+  if (typeof record.id !== 'string' || record.id === '' || typeof record.title !== 'string') {
+    throw new ApiClientError('invalid_json', 'common.error', null);
+  }
+  if (typeof record.category !== 'string') {
+    throw new ApiClientError('invalid_json', 'common.error', null);
+  }
+  if (record.expectedAmount != null && typeof record.expectedAmount !== 'string') {
+    throw new ApiClientError('amount_invalid', 'common.error', null);
+  }
+  return record;
+}
+
+function readObligationList(body: unknown): ObligationListResponse {
+  if (!body || typeof body !== 'object' || !Array.isArray((body as { items?: unknown }).items)) {
+    throw new ApiClientError('invalid_json', 'common.error', null);
+  }
+  return { items: (body as { items: unknown[] }).items.map((item) => readObligation(item)) };
 }
 
 function readPaymentResponse(body: PaymentCreateResponse): PaymentCreateResponse {

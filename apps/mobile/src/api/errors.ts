@@ -26,6 +26,12 @@ const COPY_BY_CODE: Partial<Record<string, CopyKey>> = {
   'auth.unavailable': 'common.connecting.failed',
   'auth.refresh_invalid': 'auth.session.expired',
   'auth.refresh_reused': 'auth.session.expired',
+  idempotency_in_progress: 'common.connecting.failed',
+  payment_voided: 'pay.void.noEdit',
+  already_voided: 'pay.void.alreadyVoided',
+  conflict: 'common.conflict',
+  forbidden: 'access.readonly',
+  viewer: 'access.readonly',
 };
 
 const KNOWN_ERROR_CODES = new Set<string>(API_ERROR_CODES);
@@ -72,6 +78,18 @@ export class ApiClientError extends Error {
     this.retryAfterSeconds = retryAfterSeconds;
     this.retryLabel = copyKey === 'common.connecting.failed' ? SCREEN_STATE_COPY.retry : null;
   }
+}
+
+/**
+ * A definite 2xx or 4xx drops the pending key. 409 `idempotency_in_progress`
+ * does not: it is not stored, so the same key and body are sent again.
+ * A 5xx does not drop the key either.
+ */
+export function releasesIdempotencyKey(status: number, code: string): boolean {
+  if (code === 'idempotency_in_progress') {
+    return false;
+  }
+  return (status >= 200 && status < 300) || (status >= 400 && status < 500);
 }
 
 /** 409 idempotency_key_reused. A later submit mints a new key; this 4xx is definite. */

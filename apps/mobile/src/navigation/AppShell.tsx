@@ -2,7 +2,9 @@ import { NavigationContainer } from '@react-navigation/native';
 import * as Linking from 'expo-linking';
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
+import type { ApiClient } from '../api/client';
 import { COPY } from '../copy/userFacing';
+import { LaunchHealth } from '../health/HealthBanner';
 import { EmailSignInScreen } from '../screens/EmailSignInScreen';
 import { hydrateSession } from '../session/loadSession';
 import { SessionUnavailable } from '../session/SessionUnavailable';
@@ -10,6 +12,7 @@ import { useHasSession, useSessionSnapshot } from '../session/useHasSession';
 import { parseDeepLink } from './deepLink';
 import { dropHeld, settleHeld, type Held, type Place } from './heldLink';
 import { linking } from './linking';
+import { liveAppClient } from './liveClient';
 import { AppTabs } from './tabs';
 
 function holdFromUrl(url: string): Held | null {
@@ -33,7 +36,7 @@ function holdFromUrl(url: string): Held | null {
  * stub: every nid gets the same not-found copy. A held nid is cleared once it
  * is opened or dropped. A secure-store read failure shows connecting, not sign-in.
  */
-export function AppShell() {
+export function AppShell({ apiClient }: { apiClient?: ApiClient | null } = {}) {
   const hasSession = useHasSession();
   const session = useSessionSnapshot();
   const [held, setHeld] = useState<Held | null>(null);
@@ -129,17 +132,22 @@ export function AppShell() {
     return <NotificationStub onInicio={leaveToInicio} />;
   }
 
+  const dataClient = hasSession ? (apiClient === undefined ? liveAppClient() : apiClient) : null;
+
   return (
-    <NavigationContainer
-      key={place.tabUrl ?? 'inicio'}
-      linking={{
-        ...linking,
-        getInitialURL: () => place.tabUrl,
-        subscribe: () => () => {},
-      }}
-    >
-      <AppTabs />
-    </NavigationContainer>
+    <View style={{ flex: 1 }}>
+      {dataClient ? <LaunchHealth client={dataClient} /> : null}
+      <NavigationContainer
+        key={place.tabUrl ?? 'inicio'}
+        linking={{
+          ...linking,
+          getInitialURL: () => place.tabUrl,
+          subscribe: () => () => {},
+        }}
+      >
+        <AppTabs propertyClient={dataClient} />
+      </NavigationContainer>
+    </View>
   );
 }
 

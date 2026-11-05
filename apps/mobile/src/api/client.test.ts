@@ -988,6 +988,143 @@ describe('API client', () => {
     expect(storeSource).toContain("from 'expo-secure-store'");
     expect(storeSource).toContain('export interface TokenStore');
   });
+
+  it('treats 409 idempotency_in_progress like a 5xx and resends the original bytes', async () => {
+    let n = 0;
+    const ids = [v4(1), v4(2)];
+    const { server, client } = setup({ randomUUID: () => ids[n++] ?? v4(9) });
+    const bodies: string[] = [];
+    const keys: string[] = [];
+    server.route('POST', PAYMENT_PATH, (request) => {
+      bodies.push(request.bodyText ?? '');
+      keys.push(request.headers['idempotency-key'] ?? '');
+      if (bodies.length === 1) {
+        return {
+          status: 409,
+          body: { statusCode: 409, error: 'idempotency_in_progress', message: 'https://api.example/in-progress' },
+        };
+      }
+      const parsed = JSON.parse(request.bodyText ?? '{}') as { amount: string; paidAt: string };
+      return { status: 201, body: paymentCreated(parsed.amount, parsed.paidAt) };
+    });
+
+    const error = await client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '850.00')).then(
+      () => {
+        throw new Error('expected a rejection');
+      },
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({
+      code: 'idempotency_in_progress',
+      copyKey: 'common.connecting.failed',
+      status: 409,
+      message: COPY['common.connecting.failed'],
+      retryLabel: 'Reintentar',
+    });
+    expect((error as Error).message).not.toContain('https://');
+    expect(server.calls('POST', PAYMENT_PATH)).toHaveLength(1);
+
+    const reordered = {
+      paidAt: '2026-10-29',
+      currency: 'MXN' as const,
+      amount: '850.00',
+      obligationId: OBLIGATION_ID,
+    };
+    expect(JSON.stringify(reordered)).not.toBe(bodies[0]);
+    expect(bodies[0]).toContain('"paidAt":"2026-10-29"');
+    expect(bodies[0]).not.toContain('T06:00');
+
+    await client.request('POST', PAYMENT_PATH, { body: reordered });
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[0]).toBe(v4(1));
+    expect(bodies[1]).toBe(bodies[0]);
+    expect(bodies[1]).toContain('"paidAt":"2026-10-29"');
+    expect(n).toBe(1);
+  });
+
+  it('mints a new key after the process is gone, because pending keys are not saved', async () => {
+    const first = setup({ randomUUID: () => v4(1) });
+    first.server.route('POST', PAYMENT_PATH, () => ({
+      status: 409,
+      body: { statusCode: 409, error: 'idempotency_in_progress', message: 'busy' },
+    }));
+    await expect(first.client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '850.00'))).rejects.toMatchObject({
+      code: 'idempotency_in_progress',
+    });
+
+    const second = setup({ randomUUID: () => v4(2) });
+    second.server.route('POST', PAYMENT_PATH, (request) => {
+      const parsed = JSON.parse(request.bodyText ?? '{}') as { amount: string; paidAt: string };
+      return { status: 201, body: paymentCreated(parsed.amount, parsed.paidAt) };
+    });
+    await second.client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '850.00'));
+    expect(first.server.calls('POST', PAYMENT_PATH)[0]?.headers['idempotency-key']).toBe(v4(1));
+    expect(second.server.calls('POST', PAYMENT_PATH)[0]?.headers['idempotency-key']).toBe(v4(2));
+    expect(second.server.calls('POST', PAYMENT_PATH)[0]?.bodyText).toContain('"paidAt":"2026-10-29"');
+  });
+
+  it('mints a new key after 409 conflict and keeps the key for idempotency_in_progress only', async () => {
+    let n = 0;
+    const ids = [v4(1), v4(2), v4(3)];
+    const { server, client } = setup({ randomUUID: () => ids[n++] ?? v4(9) });
+    const keys: string[] = [];
+    server.route('POST', PAYMENT_PATH, (request) => {
+      keys.push(request.headers['idempotency-key'] ?? '');
+      if (keys.length === 1) {
+        return { status: 409, body: { statusCode: 409, error: 'conflict', message: 'unique' } };
+      }
+      const parsed = JSON.parse(request.bodyText ?? '{}') as { amount: string; paidAt: string };
+      return { status: 201, body: paymentCreated(parsed.amount, parsed.paidAt) };
+    });
+    await expect(client.createPayment(PROPERTY_ID, paymentInput())).rejects.toMatchObject({
+      code: 'conflict',
+      copyKey: 'common.conflict',
+      message: COPY['common.conflict'],
+    });
+    await client.createPayment(PROPERTY_ID, paymentInput());
+    expect(keys[0]).toBe(v4(1));
+    expect(keys[1]).toBe(v4(2));
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+
+  it('refreshes once and resends one property list GET after an expired access token', async () => {
+    const { server, client } = setup();
+    let gets = 0;
+    server.route('GET', '/v1/properties', (request) => {
+      gets += 1;
+      if (request.headers.authorization === 'Bearer rotated-access') {
+        return { status: 200, body: { items: [propertyFixture] } };
+      }
+      return { status: 401, body: { statusCode: 401, error: 'token_expired', message: 'Token expired.' } };
+    });
+    await expect(client.listProperties()).resolves.toEqual({ items: [propertyFixture] });
+    expect(gets).toBe(2);
+    expect(server.calls('POST', REFRESH_PATH)).toHaveLength(1);
+    expect(server.calls('GET', '/v1/properties')).toHaveLength(2);
+  });
+
+  it('retries health once on a network error and reports down on 503', async () => {
+    const down = setup();
+    let calls = 0;
+    down.server.route('GET', '/v1/health', () => {
+      calls += 1;
+      return { status: 503, body: { status: 'unavailable' } };
+    });
+    await expect(down.client.checkHealth()).resolves.toBe('down');
+    expect(calls).toBe(1);
+
+    const flaky = setup();
+    let attempts = 0;
+    flaky.server.route('GET', '/v1/health', () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return { status: 200, networkError: true };
+      }
+      return { status: 200, body: { status: 'ok' } };
+    });
+    await expect(flaky.client.checkHealth()).resolves.toBe('ok');
+    expect(attempts).toBe(2);
+  });
 });
 
 function read(file: string): string {
