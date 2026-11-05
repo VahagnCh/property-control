@@ -1,6 +1,8 @@
 import { Controller, Get, Inject, Req, Res } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import type { Request, Response } from 'express';
+import { logError } from '../common/log-redaction.js';
+import { createPrismaClient } from '../persistence/prisma-client.js';
 import { HealthRateLimiter, pingDatabase, type HealthProbe } from './live-health.js';
 
 export const HEALTH_PROBE = Symbol('HEALTH_PROBE');
@@ -10,10 +12,10 @@ export class PrismaHealthProbe implements HealthProbe {
   private prisma: PrismaClient | null = null;
 
   async ping(): Promise<void> {
-    if (!process.env.DATABASE_URL || !process.env.DIRECT_URL) {
+    if (!process.env.DATABASE_URL) {
       throw new Error('database is not configured');
     }
-    this.prisma ??= new PrismaClient();
+    this.prisma ??= createPrismaClient();
     await pingDatabase(() => this.prisma!.$queryRaw`SELECT 1`);
   }
 
@@ -47,7 +49,7 @@ export class LiveHealthController {
       await this.probe.ping();
       res.status(200).json({ status: 'ok' });
     } catch {
-      console.error('Health check failed.');
+      logError('Health check failed.');
       res.status(503).json({ status: 'unavailable' });
     }
   }

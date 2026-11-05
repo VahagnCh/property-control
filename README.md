@@ -160,7 +160,7 @@ curl -s http://localhost:3000/health
 curl -s -X POST http://localhost:3000/v1/properties/demo/documents/deed/ocr-jobs
 ```
 
-`DATABASE_URL` is the pooled connection the API and `GET /v1/health` use. `DIRECT_URL` is the direct connection Prisma uses for migrations. On one local Postgres they are the same URL. Unit tests do not need a database. `pnpm api:test` runs the Postgres integration file only when both variables are set. Apply the migration first:
+`DATABASE_URL` is the pooled connection the API and `GET /v1/health` use. Migrations run with `DATABASE_URL` pointed at the owner, outside the web service. Tests use `DIRECT_URL` for that owner connection and for cleanup. Unit tests do not need a database. `pnpm api:test` runs the Postgres integration file only when both variables are set. Apply the migration first:
 
 ```bash
 cp apps/api/.env.example apps/api/.env
