@@ -1,13 +1,18 @@
-import { useState } from 'react';
-import { readSession } from './readSession';
+import { useEffect, useState } from 'react';
+import { readSession, readSessionSnapshot, subscribeSession, type SessionSnapshot } from './readSession';
 
 /**
- * Session flag for this mount.
- * TODO: subscribe here when a session subscription exists.
- * The flag will come from src/auth/tokenStore.ts (expo-secure-store). Never AsyncStorage.
- * There is no session subscription yet, so this reads once and does not call readSession on every render.
+ * Live session flag. The value updates when the in-memory session changes.
+ * It does not read again on an ordinary rerender, and it does not touch AsyncStorage.
  */
 export function useHasSession(): boolean {
-  const [hasSession] = useState(() => readSession());
+  const [hasSession, setHasSession] = useState(() => readSession());
+  useEffect(() => subscribeSession(() => setHasSession(readSession())), []);
   return hasSession;
+}
+
+export function useSessionSnapshot(): SessionSnapshot {
+  const [current, setCurrent] = useState(() => readSessionSnapshot());
+  useEffect(() => subscribeSession(() => setCurrent(readSessionSnapshot())), []);
+  return current;
 }

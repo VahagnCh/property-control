@@ -1,4 +1,5 @@
 import { SCREEN_STATE_COPY, copyText } from '../copy/userFacing';
+import { nextDueDateRangeMessage } from '../dates/nextDueDate';
 
 export type OcrMappedError = {
   key:
@@ -8,11 +9,11 @@ export type OcrMappedError = {
     | 'ocr.target.locked'
     | 'ocr.target.required'
     | 'ocr.target.voided'
-    | 'ocr.target.unchecked'
-    | 'ocr.bulk.refused'
+    | 'ocr.target.unknown'
+    | 'ocr.confirm.failed'
     | 'ocr.job.notSuggested'
     | 'ocr.job.expired'
-    | 'obligation.nextDueDate.invalid'
+    | 'obligation.nextDueDate.outOfRange'
     | 'error.generic';
   message: string;
   refresh: boolean;
@@ -66,7 +67,11 @@ function failure(
   input: OcrConfirmErrorInput,
 ): OcrMappedError {
   const message =
-    key === 'error.generic' || key === 'ocr.clientPriorValue' ? SCREEN_STATE_COPY.error : copyText(key as MappedKey);
+    key === 'error.generic' || key === 'ocr.clientPriorValue'
+      ? SCREEN_STATE_COPY.error
+      : key === 'obligation.nextDueDate.outOfRange'
+        ? nextDueDateRangeMessage()
+        : copyText(key as MappedKey);
   const mapped: OcrMappedError = { key, message, refresh, status };
   if (input.suggestionId) {
     mapped.suggestionId = input.suggestionId;
@@ -118,13 +123,13 @@ export function mapOcrConfirmError(input: OcrConfirmErrorInput): OcrMappedError 
     return failure('ocr.target.voided', 422, false, input);
   }
   if (input.message === UNCHECKED_PAYMENT_MESSAGE) {
-    return failure('ocr.target.unchecked', 422, false, input);
+    return failure('ocr.target.unknown', 422, false, input);
   }
   if (input.message === BULK_ACCEPT_MESSAGE) {
-    return failure('ocr.bulk.refused', 422, false, input);
+    return failure('ocr.confirm.failed', 422, false, input);
   }
   if (input.message === NEXT_DUE_DATE_MESSAGE || code === NEXT_DUE_DATE_CODE) {
-    return failure('obligation.nextDueDate.invalid', 422, false, input);
+    return failure('obligation.nextDueDate.outOfRange', 422, false, input);
   }
   return null;
 }

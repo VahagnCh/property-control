@@ -4,7 +4,7 @@ import {
   DEFAULT_PROPERTY_TIMEZONE,
   parseIsoDate,
 } from './propertyCalendar';
-import { copyText } from '../copy/userFacing';
+import { copyText, fillCopy } from '../copy/userFacing';
 
 export type NextDueDateRejection = 'invalid_date' | 'too_old' | 'too_future';
 
@@ -56,18 +56,41 @@ export function validateNextDueDate(
 
 export type NextDueDateFieldError = {
   field: 'nextDueDate';
-  key: 'obligation.nextDueDate.invalid';
+  key: 'obligation.nextDueDate.outOfRange';
   message: string;
 };
 
+const ES_MX_MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'] as const;
+
+/** Short es-MX calendar date, for example "20 oct 2025". The ISO value stays the wire value. */
+export function formatEsMxDate(iso: string): string {
+  const { year, month, day } = parseIsoDate(iso);
+  return `${day} ${ES_MX_MONTHS[month - 1]} ${year}`;
+}
+
+export function nextDueDateRangeMessage(
+  now: Date = new Date(),
+  timeZone: string = DEFAULT_PROPERTY_TIMEZONE,
+): string {
+  const window = nextDueDateWindow(now, timeZone);
+  return fillCopy(copyText('obligation.nextDueDate.outOfRange'), {
+    min: formatEsMxDate(window.min),
+    max: formatEsMxDate(window.max),
+  });
+}
+
 /** AC-OBL-03. A 422 from the server is a field error. Other statuses are not. */
-export function mapNextDueDateServerError(status: number): NextDueDateFieldError | null {
+export function mapNextDueDateServerError(
+  status: number,
+  now: Date = new Date(),
+  timeZone: string = DEFAULT_PROPERTY_TIMEZONE,
+): NextDueDateFieldError | null {
   if (status !== 422) {
     return null;
   }
   return {
     field: 'nextDueDate',
-    key: 'obligation.nextDueDate.invalid',
-    message: copyText('obligation.nextDueDate.invalid'),
+    key: 'obligation.nextDueDate.outOfRange',
+    message: nextDueDateRangeMessage(now, timeZone),
   };
 }

@@ -1,3 +1,5 @@
+import { copyText } from '../copy/userFacing';
+
 export type MembershipRole = 'owner' | 'member' | 'viewer';
 
 export type PaymentSnapshot = {
@@ -10,7 +12,7 @@ export type PaymentSnapshot = {
 
 export const VOID_FORBIDDEN_MESSAGE = 'No tienes permiso para anular este pago';
 
-export const VOID_NOT_FOUND_MESSAGE = 'No encontramos este pago.';
+export const VOID_NOT_FOUND_MESSAGE = copyText('err.notFound');
 
 /** AC-PAY-21. Exact copy from UX spec v1.2 rev d. */
 export const VOID_ALREADY_VOIDED_MESSAGE = 'Este pago ya estaba anulado.';

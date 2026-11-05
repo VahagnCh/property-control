@@ -8,6 +8,23 @@ Jest starts with `TZ=America/Mexico_City` (`scripts/jest-mexico-city.js`), so th
 
 TS-D7 is not a mobile row. This client does not claim it.
 
+## Property screens and held writes
+
+| Case | Status | Test |
+| :---- | :---- | :---- |
+| Sign-in gate. No tab requests property data without a session. A SecureStore read error is `common.connecting.failed` with Reintentar and does not sign out | Covered now | `src/properties/properties.test.tsx`, `src/session/unavailable.test.tsx` |
+| Property and obligation list, empty, loading, and error. Detail shows Casa and CFE $850 only as the demo row | Covered now | `src/properties/properties.test.tsx` |
+| Empty, loading, and error on all five tabs | Covered now | `src/components/ScreenState.test.tsx` |
+| 409 `idempotency_in_progress` on a payment write and on `POST /v1/auth/code`. Same key, byte-identical body, `common.connecting.failed`, Reintentar. No new string, no failure toast, no form reset. Writes do not auto-retry. GETs still auto-retry once | Covered now | `src/api/client.test.ts`, `src/api/authClient.test.ts`, `src/screens/emailSignIn.test.tsx`, `src/properties/properties.test.tsx` |
+| N7. The resent body keeps the original `paidAt` string. Pending keys are memory-only and are lost if the app is killed | Covered now | `src/api/client.test.ts` |
+| 409 `payment_voided` → `pay.void.noEdit` and Ver pago. 409 `already_voided` → `pay.void.alreadyVoided`, refresh, Anulado. Editar and Anular pago stay hidden when the payment status is voided. 403 writes use `err.forbidden`; void uses `pay.void.forbidden`. Every non-OCR 404 uses `err.notFound` and Ir a Inicio. OCR 404 uses `common.unavailable`. `idempotency_key_reused` uses `pay.sync.conflict` | Covered now | `src/payments/paymentWriteError.test.tsx`, `src/properties/properties.test.tsx` |
+| Launch and background-return health. Copy at 3s, 8s, and 90s. A return after 10 minutes checks again. A shorter absence does not | Covered now | `src/health/healthWatch.test.tsx` |
+| Expired session: one refresh, then one resend of the property list | Covered now | `src/properties/properties.test.tsx`, `src/api/client.test.ts` |
+| Long Spanish text with accents, 320×568 at font scale 2, and dates at 23:59, 00:00, and 00:01 in America/Mexico_City | Covered now | `src/properties/properties.test.tsx`, `src/navigation/tabs.test.tsx`, `src/screens/longCopy.test.tsx` |
+| Offline and slow property list | Covered now | `src/properties/properties.test.tsx` |
+
+`consent_required` is still the generic error. That flow is pending. Real-phone checks, denied camera or file permission, backgrounding during upload, and retry mid-upload stay pending for the record-payment work. See the rows below.
+
 ## Shell and task-3 cases
 
 | Case | Status | Test |
@@ -20,13 +37,15 @@ TS-D7 is not a mobile row. This client does not claim it.
 | Empty, loading, and error-with-retry on all five tabs. Shared Spanish copy, no money-movement wording | Covered now | `src/components/ScreenState.test.tsx` (`ScreenState`) |
 | “Vence hoy” / “Vence mañana” at 23:59, 00:00, and 00:01 in America/Mexico_City, and for a non-default property zone. Jest is pinned to America/Mexico_City | Covered now | `src/dates/dueLabel.test.ts` |
 | Idempotency key reused on retry, including a second tap while a submit is in flight | Covered now | `src/outbox/idempotency.test.ts` |
-| Offline save and a slow network | Pending feature | When the outbox and API client land, add `src/outbox/outbox.test.ts`: with the client offline, recording a payment enqueues one item and shows “Pendiente de sincronizar”; the same idempotency key survives a store reload. With the client delayed, the row stays pending and a second tap does not enqueue a second key (`pressRecordSubmit` already rejects the second tap). |
+| Unreachable write | Covered now | Payments are online-only. A write that cannot reach the API uses `common.connecting.failed` and Reintentar, and it is not sent again until that tap. The same body keeps the idempotency key. | `src/api/client.test.ts` |
+| 302 and 307 are not followed | Jest covered. On-device pending | `src/api/client.test.ts` sends `redirect: 'manual'`, does not read the redirect body, and shows Reintentar for both 302 and 307. On a device, confirm a 302 and a 307 from the API origin are not followed and the Authorization header is not sent to the other host. |
 | Retry mid-upload | Pending feature | When evidence upload lands, add `src/evidence/uploadRetry.test.ts`: fail the PUT after the first chunk, retry, and assert the same idempotency key and the same evidence id. Exactly one evidence row. `beginIdempotentWrite` is the key helper to call. |
-| Expired session with refresh | Pending feature | When auth refresh lands, add `src/auth/sessionRefresh.test.ts`: a 401 on a payment read calls refresh once and retries once; a failed refresh leaves the payment list unchanged and shows the sign-in screen. Do not invent a refresh token in the test double; drive the client with a fixture past `exp`. |
+| Expired session with refresh | Covered now | `src/api/client.test.ts`, `src/api/trust.test.ts`, and `src/screens/emailSignIn.test.tsx`. Concurrent 401s share one refresh and resend the original request once. A network error retries that refresh once with the same refresh token. A failed refresh clears SecureStore, emits `sign-in-required` once, and shows the email sign-in screen. A SecureStore read error does not. |
 | Denied camera or file permission | Pending feature | When the evidence picker lands, add `src/evidence/permissions.test.ts`: a denied camera result and a denied file result each show Spanish copy, do not open a picker result as a comprobante, and do not block saving the payment without one. |
 | Backgrounding during upload | Pending feature | When evidence upload lands, add `src/evidence/backgroundUpload.test.ts`: `AppState` `background` mid-PUT resolves to one evidence row, reusing the key from `beginIdempotentWrite`. A second foreground resume must not create another row. |
 | Wrong-account invite (decided 20 Oct: 404, same code as an unknown token, and that check runs before 410 and 409) | Covered now | `src/invites/inviteErrors.test.ts`. A known token on the wrong account is `reason: 'wrong_account'`, status 404, including when the token is also used, revoked, superseded, expired, or the person is already a member. Every 404 on accept, unknown token or wrong account, uses `invite.unavailable`: “Esta invitación no está disponible. Pide a quien te invitó que te envíe una nueva.” A 410 uses `invite.expired`: “Esta invitación ya no se puede usar. Pide una nueva.” A defensive 403 on accept uses `invite.unavailable`. A non-owner invite action stays 403 with its own message. |
-| Auth tokens in expo-secure-store | Covered now | `src/auth/tokenStore.test.ts`. `saveAuthTokens` / `readAuthTokens` / `clearAuthTokens` call `expo-secure-store` only (Keychain on iOS, Keystore on Android), with `WHEN_UNLOCKED_THIS_DEVICE_ONLY` and no biometric prompt. No mobile source imports AsyncStorage. `readSession` still returns false until a session subscription lands. No `EXPO_PUBLIC_*` value is in the app sources or `app.json`. |
+| Auth tokens in expo-secure-store | Covered now | `src/auth/tokenStore.test.ts`. `saveAuthTokens` / `readAuthTokens` / `clearAuthTokens` call `expo-secure-store` only (Keychain on iOS, Keystore on Android), with `WHEN_UNLOCKED_THIS_DEVICE_ONLY` and no biometric prompt. No mobile source imports AsyncStorage. A read failure throws `TokenStoreUnavailableError` and does not sign the user out. `useHasSession` subscribes to the in-memory flag. No `EXPO_PUBLIC_*` value is in the app sources or `app.json`. |
+| Email-code sign-in | Covered now in Jest | `src/api/authClient.test.ts`, `src/screens/emailSignIn.test.tsx`, `src/auth/codeExpiry.test.ts`, `src/session/loadSession.test.ts`, `src/session/unavailable.test.tsx`. Code request 202/400/429 Retry-After/503. Verify stores one SecureStore item. `auth.code_invalid` does not refresh. Reintentar reuses the idempotency key; a changed email or Reenviar mints a new one. A write network error is one POST. Logout clears the item. Web hides the form. A store read error shows `common.connecting.failed` and Reintentar, not sign-in. Code expiry is the device-zone es-MX 12-hour time for a send at 23:55, 23:59, and 00:01 America/Mexico_City. The line is visible at 23:59 and hidden at 00:01, with Reenviar still enabled and no error until a 401. |
 
 ## Record-payment helpers
 
@@ -75,9 +94,9 @@ Owner is UX/Mobile on Tally’s matrix (40 UX acceptance checks plus TS-11.7 and
 | AC-OCR-07 | P2 | Pending feature | Same file, offline: attaching a document does not call the job route and shows offline copy. |
 | AC-OCR-09 | P0 | Covered now | No accept-all control anywhere. `src/ocr/noAcceptAll.test.tsx` asserts user-facing copy and the rendered OCR row contain no “Aceptar todas” or a similar accept-all label. On Registrar, `confirmOnRegistrar` serializes each unreviewed suggestion as `action: 'reject'`, covers every suggestion id once, and leaves the form unchanged. Copy: “Las sugerencias sin revisar se descartarán al registrar.” |
 | AC-OCR-10 | P1 | Covered now | `src/ocr/confidenceBand.test.ts`: a server band wins over the score (`alta` at 0.10 is Alta, `revisa` at 1 is Revisa). A missing or unknown band is Revisa. The client does not derive Alta or Media from the score. |
-| AC-OFF-01 | P0 | Pending feature | See “Offline save” above. |
-| AC-OFF-02 | P0 | Pending feature | See “Offline save” above (reload keeps the same key). |
-| AC-OFF-07 | P2 | Pending feature | When the outbox lands, add `src/outbox/partialEstimate.test.ts`: an offline partial shows a local estimate labeled as not yet synced, and the server body replaces that estimate. |
+| AC-OFF-01 | P0 | Out of scope | Payments are online-only. An unreachable write is `common.connecting.failed` with Reintentar, not a queued save. |
+| AC-OFF-02 | P0 | Out of scope | Same as AC-OFF-01. There is no offline queue to reload. |
+| AC-OFF-07 | P2 | Out of scope | Payments are online-only. There is no local unsynced estimate. |
 | AC-DATE-01 | P0 | Covered now | Picker max is today in the property zone (`paidDateWindow.max === today` in `src/payments/paidDate.test.ts`). Today is allowed and today+1 is rejected. The server’s +1 day is clock-skew tolerance only. Due labels stay in `src/dates/dueLabel.test.ts`. |
 | AC-DATE-03 | P2 | Pending feature | When Pay3 lands, add `src/payments/periodPrompt.test.tsx`: a paid date inside the open period does not ask which period; the helper already accepts that past date inside the one-year window. |
 | AC-DATE-06 | P0 gap | Covered now | `src/payments/paidDate.test.ts`: 21 Oct 2025 is in range on 21 Oct 2026, 20 Oct 2025 is `too_old`. Today+1 is `too_future`. The date picker disables days the helper rejects. |
