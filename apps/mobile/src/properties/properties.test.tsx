@@ -8,7 +8,7 @@ import { OBLIGATION_ID, PROPERTY_ID } from '../api/testing/fixtures';
 import type { TokenStore } from '../auth/tokenStore';
 import { COPY, SCREEN_STATE_COPY, copyText } from '../copy/userFacing';
 import { resetSessionState, setSessionSignedIn, setSessionUnavailable } from '../session/readSession';
-import { renderWithSafeArea } from '../test/renderTabs';
+import { renderTabs, renderWithSafeArea } from '../test/renderTabs';
 import { buildObligationWrite, suggestedNextDueDate } from './buildObligationWrite';
 import { buildPropertyWrite } from './buildPropertyWrite';
 import { FIELD_LIMITS } from './fieldLimits';
@@ -219,7 +219,7 @@ describe('properties and obligations', () => {
         onBack={() => undefined}
       />,
     );
-    expect(await screen.findByText(copyText('err.forbidden'))).toBeTruthy();
+    expect(await screen.findByText(copyText('property.forbidden'))).toBeTruthy();
     expect(screen.queryByRole('button', { name: COPY['cta.addObligation'] })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Anular' })).toBeNull();
   });
@@ -280,8 +280,9 @@ describe('properties and obligations', () => {
     );
     fireEvent.changeText(screen.getByLabelText(COPY['property.name.label']), 'Casa');
     fireEvent.press(screen.getByRole('button', { name: COPY['property.add.cta'] }));
-    expect(await screen.findByText(COPY['pay.sync.conflict'])).toBeTruthy();
-    expect(screen.queryByText(COPY['err.generic'])).toBeNull();
+    expect(await screen.findByText(COPY['err.generic'])).toBeTruthy();
+    expect(screen.queryByText(COPY['pay.sync.conflict'])).toBeNull();
+    expect(screen.queryByText(COPY['common.connecting.failed'])).toBeNull();
     expect(screen.getByLabelText(COPY['property.name.label']).props.value).toBe('Casa');
     fireEvent.press(screen.getByRole('button', { name: COPY['property.add.cta'] }));
     await waitFor(() => expect(keys).toHaveLength(2));
@@ -353,11 +354,11 @@ describe('properties and obligations', () => {
           onCancel={() => undefined}
         />,
       );
-      const day = calendar.slice(8, 10).replace(/^0/, '');
-      const month = calendar.startsWith('2026-10') ? 'octubre' : calendar.slice(5, 7);
+      const day = String(Number(calendar.slice(8, 10)));
       expect(
-        screen.getAllByTestId('obligation-next-due').some((node) => String(node.props.children).includes(`${day} de ${month}`)),
+        screen.getAllByTestId('obligation-next-due').some((node) => String(node.props.children).includes(`${day} oct 2026`)),
       ).toBe(true);
+      expect(screen.getByText(COPY['obligation.reminders'])).toBeTruthy();
     }
     expect(screen.queryByText(/2026-10-30T06:00/)).toBeNull();
   });
@@ -449,33 +450,118 @@ describe('properties and obligations', () => {
     expect(obligationBodies[0]).toContain('"expectedAmount":"850.00"');
   });
 
-  it('rejects a name or city past the API single-line cap', () => {
-    const draft = {
-      name: 'a'.repeat(FIELD_LIMITS.propertyName + 1),
-      propertyType: 'house' as const,
-      occupancyStatus: 'owned' as const,
+  it('caps single-line fields with maxLength and sends the trimmed name', () => {
+    renderWithSafeArea(
+      <PropertyFormScreen
+        client={clientFor(createContractFakeServer())}
+        onCreated={() => undefined}
+        onCancel={() => undefined}
+      />,
+    );
+    expect(screen.getByLabelText(COPY['property.name.label']).props.maxLength).toBe(FIELD_LIMITS.propertyName);
+    expect(screen.getByLabelText(COPY['property.city.label']).props.maxLength).toBe(FIELD_LIMITS.city);
+    expect(screen.getByLabelText(COPY['property.state.label']).props.maxLength).toBe(FIELD_LIMITS.state);
+    expect(screen.getByLabelText(COPY['property.address.label']).props.maxLength).toBe(FIELD_LIMITS.addressLine);
+    const built = buildPropertyWrite({
+      name: '  Casa  ',
+      propertyType: 'house',
+      occupancyStatus: 'owned',
       addressLine: '',
-      city: '',
+      city: '  Puebla  ',
       state: '',
-    };
-    expect(buildPropertyWrite(draft).ok).toBe(false);
-    expect(
-      buildPropertyWrite({ ...draft, name: 'Casa', city: 'b'.repeat(FIELD_LIMITS.city + 1) }).ok,
-    ).toBe(false);
-    const now = new Date('2026-10-21T18:00:00.000Z');
-    expect(
-      buildObligationWrite(
-        {
-          category: 'electricity',
-          title: 'CFE',
-          providerName: 'p'.repeat(FIELD_LIMITS.providerName + 1),
-          recurrence: 'monthly',
-          nextDueDate: '2026-11-02',
-          expectedAmount: '850.00',
-          notes: '',
-        },
-        now,
-      ).ok,
-    ).toBe(false);
+    });
+    expect(built.ok && built.body.name).toBe('Casa');
+    expect(built.ok && built.body.city).toBe('Puebla');
+    const obligation = buildObligationWrite(
+      {
+        category: 'electricity',
+        title: '  CFE  ',
+        providerName: '  CFE  ',
+        recurrence: 'monthly',
+        nextDueDate: '2026-11-02',
+        expectedAmount: '850.00',
+        notes: '',
+      },
+      new Date('2026-10-21T18:00:00.000Z'),
+    );
+    expect(obligation.ok && obligation.body.title).toBe('CFE');
+    expect(obligation.ok && obligation.body.providerName).toBe('CFE');
+  });
+
+  it('keeps the form on conflict and key reuse, and still holds idempotency_in_progress', async () => {
+    let n = 0;
+    const server = createContractFakeServer();
+    const keys: string[] = [];
+    server.route('POST', '/v1/properties', (request) => {
+      keys.push(request.headers['idempotency-key'] ?? '');
+      if (keys.length === 1) {
+        return { status: 409, body: { statusCode: 409, error: 'idempotency_key_reused', message: 'other body' } };
+      }
+      return { status: 201, body: CASA };
+    });
+    const reused = renderWithSafeArea(
+      <PropertyFormScreen
+        client={clientFor(server, () => v4(++n))}
+        onCreated={() => undefined}
+        onCancel={() => undefined}
+      />,
+    );
+    fireEvent.changeText(screen.getByLabelText(COPY['property.name.label']), 'Casa');
+    fireEvent.press(screen.getByRole('button', { name: COPY['property.add.cta'] }));
+    expect(await screen.findByText(COPY['err.generic'])).toBeTruthy();
+    expect(screen.queryByText(COPY['pay.sync.conflict'])).toBeNull();
+    expect(screen.queryByText(COPY['common.connecting.failed'])).toBeNull();
+    expect(screen.getByLabelText(COPY['property.name.label']).props.value).toBe('Casa');
+    fireEvent.press(screen.getByRole('button', { name: COPY['property.add.cta'] }));
+    await waitFor(() => expect(keys).toHaveLength(2));
+    expect(keys[1]).not.toBe(keys[0]);
+    reused.unmount();
+
+    const held = createContractFakeServer();
+    const heldKeys: string[] = [];
+    const heldBodies: string[] = [];
+    held.route('POST', `/v1/properties/${PROPERTY_ID}/obligations`, (request) => {
+      heldKeys.push(request.headers['idempotency-key'] ?? '');
+      heldBodies.push(request.bodyText ?? '');
+      if (heldKeys.length === 1) {
+        return { status: 409, body: { statusCode: 409, error: 'idempotency_in_progress', message: 'busy' } };
+      }
+      return { status: 201, body: CFE };
+    });
+    renderWithSafeArea(
+      <ObligationFormScreen
+        client={clientFor(held, () => v4(7))}
+        propertyId={PROPERTY_ID}
+        now={() => new Date('2026-10-21T18:00:00.000Z')}
+        onCreated={() => undefined}
+        onCancel={() => undefined}
+      />,
+    );
+    fireEvent.changeText(screen.getByLabelText(COPY['obligation.title.label']), 'CFE');
+    fireEvent.press(screen.getByRole('button', { name: COPY['obligation.add.cta'] }));
+    expect(await screen.findByText(COPY['common.connecting.failed'])).toBeTruthy();
+    expect(screen.queryByText(COPY['err.generic'])).toBeNull();
+    expect(screen.getByLabelText(COPY['obligation.title.label']).props.value).toBe('CFE');
+    fireEvent.press(screen.getByRole('button', { name: COPY['common.retry'] }));
+    await waitFor(() => expect(heldKeys).toHaveLength(2));
+    expect(heldKeys[0]).toBe(heldKeys[1]);
+    expect(heldBodies[1]).toBe(heldBodies[0]);
+  });
+
+  it('hides add controls for a viewer and opens Inicio from a not-found property', async () => {
+    const server = createContractFakeServer();
+    server.route('GET', '/v1/properties', () => ({ status: 200, body: { items: [CASA] } }));
+    server.route('GET', `/v1/properties/${PROPERTY_ID}`, () => ({
+      status: 404,
+      body: { statusCode: 404, error: 'not_found', message: 'Not found.' },
+    }));
+    renderTabs({ propertyClient: clientFor(server), role: 'viewer' });
+    fireEvent.press(screen.getByTestId('tab-Propiedades'));
+    fireEvent.press(await screen.findByRole('button', { name: 'Casa' }));
+    expect(screen.queryByRole('button', { name: COPY['cta.addProperty'] })).toBeNull();
+    expect(await screen.findByText(COPY['err.notFound'])).toBeTruthy();
+    expect(screen.queryByRole('button', { name: COPY['cta.addObligation'] })).toBeNull();
+    fireEvent.press(screen.getByRole('button', { name: COPY['err.notFound.cta'] }));
+    expect(await screen.findByText('Aquí verás lo atrasado y lo que vence pronto en todas tus propiedades.')).toBeTruthy();
   });
 });

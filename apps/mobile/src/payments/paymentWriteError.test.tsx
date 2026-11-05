@@ -42,14 +42,14 @@ describe('payment write errors', () => {
 
   it('maps 409 conflict, 403 forbidden, and 404 not-found', () => {
     const conflict = mapPaymentWriteError(409, 'conflict');
-    expect(conflict?.copyKey).toBe('pay.sync.conflict');
-    expect(conflict?.message).toBe(COPY['pay.sync.conflict']);
+    expect(conflict?.copyKey).toBe('err.generic');
+    expect(conflict?.message).toBe(COPY['err.generic']);
     expect(conflict?.hideWrites).toBe(false);
     render(<PaymentWriteNoticeView notice={conflict} />);
-    expect(screen.getByText(COPY['pay.sync.conflict'])).toBeTruthy();
+    expect(screen.getByText(COPY['err.generic'])).toBeTruthy();
+    expect(screen.queryByText(COPY['pay.sync.conflict'])).toBeNull();
     expect(screen.getByRole('button', { name: COPY['pay.edit'] })).toBeTruthy();
     expect(screen.getByRole('button', { name: COPY['pay.void.cta'] })).toBeTruthy();
-    expect(screen.queryByText(COPY['err.generic'])).toBeNull();
 
     const forbidden = mapPaymentWriteError(403, 'forbidden');
     expect(forbidden?.copyKey).toBe('err.forbidden');

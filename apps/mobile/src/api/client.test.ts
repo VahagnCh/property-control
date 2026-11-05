@@ -1082,8 +1082,8 @@ describe('API client', () => {
     });
     await expect(client.createPayment(PROPERTY_ID, paymentInput())).rejects.toMatchObject({
       code: 'conflict',
-      copyKey: 'pay.sync.conflict',
-      message: COPY['pay.sync.conflict'],
+      copyKey: 'err.generic',
+      message: COPY['err.generic'],
     });
     await client.createPayment(PROPERTY_ID, paymentInput());
     expect(keys[0]).toBe(v4(1));
@@ -1118,6 +1118,7 @@ describe('API client', () => {
       body: { statusCode: 401, error: 'auth.refresh_invalid', message: 'The refresh token is not valid.' },
     }));
     await expect(expired.client.listProperties()).rejects.toMatchObject({ code: 'sign_in_required' });
+    const stop = expired.client.watchSession();
 
     const signedIn = createApiClient({
       baseUrl: BASE,
@@ -1142,6 +1143,65 @@ describe('API client', () => {
       return { status: 401, body: { statusCode: 401, error: 'token_expired', message: 'Token expired.' } };
     });
     await expect(expired.client.listProperties()).resolves.toEqual({ items: [propertyFixture] });
+    stop();
+  });
+
+  it('drops pending write keys when the session ends and when logging out', async () => {
+    let n = 0;
+    const ids = [v4(1), v4(2), v4(3), v4(4)];
+    const ended = setup({ randomUUID: () => ids[n++] ?? v4(9) });
+    let posts = 0;
+    ended.server.route('POST', PAYMENT_PATH, (request) => {
+      posts += 1;
+      if (posts === 1) {
+        return { status: 503, body: { statusCode: 503, error: 'unavailable', message: 'down' } };
+      }
+      const parsed = JSON.parse(request.bodyText ?? '{}') as { amount: string; paidAt: string };
+      return { status: 201, body: paymentCreated(parsed.amount, parsed.paidAt) };
+    });
+    await expect(ended.client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '850.00'))).rejects.toMatchObject({
+      code: 'connecting_failed',
+    });
+    ended.server.route('GET', PROPERTY_PATH, () => ({
+      status: 401,
+      body: { statusCode: 401, error: 'token_expired', message: 'Token expired.' },
+    }));
+    ended.server.route('POST', REFRESH_PATH, () => ({
+      status: 401,
+      body: { statusCode: 401, error: 'auth.refresh_invalid', message: 'The refresh token is not valid.' },
+    }));
+    await expect(ended.client.getProperty(PROPERTY_ID)).rejects.toMatchObject({ code: 'sign_in_required' });
+    ended.server.route('POST', '/v1/auth/verify', () => ({
+      status: 200,
+      body: { tokenType: 'Bearer', accessToken: 'access-2', expiresIn: 900, refreshToken: 'refresh-2' },
+    }));
+    await ended.client.verifyCode('persona@ejemplo.com', '123456');
+    await ended.client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '850.00'));
+    const endedKeys = ended.server.calls('POST', PAYMENT_PATH).map((call) => call.headers['idempotency-key']);
+    expect(endedKeys[0]).toBe(v4(1));
+    expect(endedKeys[1]).toBe(v4(2));
+
+    const loggedOut = setup({ randomUUID: () => ids[n++] ?? v4(9) });
+    let logoutPosts = 0;
+    loggedOut.server.route('POST', PAYMENT_PATH, () => {
+      logoutPosts += 1;
+      if (logoutPosts === 1) {
+        return { status: 503, body: { statusCode: 503, error: 'unavailable', message: 'down' } };
+      }
+      return { status: 201, body: paymentCreated('850.00', '2026-10-29') };
+    });
+    await expect(loggedOut.client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '850.00'))).rejects.toMatchObject({
+      code: 'connecting_failed',
+    });
+    await loggedOut.client.logout();
+    loggedOut.server.route('POST', '/v1/auth/verify', () => ({
+      status: 200,
+      body: { tokenType: 'Bearer', accessToken: 'access-3', expiresIn: 900, refreshToken: 'refresh-3' },
+    }));
+    await loggedOut.client.verifyCode('persona@ejemplo.com', '123456');
+    await loggedOut.client.createPayment(PROPERTY_ID, paymentInput('2026-10-29', '850.00'));
+    const logoutKeys = loggedOut.server.calls('POST', PAYMENT_PATH).map((call) => call.headers['idempotency-key']);
+    expect(logoutKeys[0]).not.toBe(logoutKeys[1]);
   });
 
   it('retries health once on a network error and reports down on 503', async () => {

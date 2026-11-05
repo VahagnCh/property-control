@@ -141,7 +141,11 @@ export class ApiClient {
     this.fetchImpl = options.fetchImpl ?? expoFetch;
     this.now = options.now ?? (() => Date.now());
     this.randomUUID = options.randomUUID ?? createIdempotencyKey;
-    subscribeSession(() => {
+  }
+
+  /** Clears signed-out after a later sign-in. The caller unsubscribes on unmount. */
+  watchSession(): () => void {
+    return subscribeSession(() => {
       if (readSession()) {
         this.signedOut = false;
         this.signInEmitted = false;

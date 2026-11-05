@@ -11,12 +11,12 @@ export const FIELD_LIMITS = {
   city: 120,
   /** parsePropertyFields, records.service.ts:734. Patch is :702. */
   state: 120,
-  /** parsePropertyFields, records.service.ts:735. Patch is :703. */
+  /** parsePropertyFields, records.service.ts:736. Patch is :704. */
   postalCode: 12,
   /** parseObligationCreate, records.service.ts:761. Patch is :804. */
   obligationTitle: 300,
   /** parseObligationCreate, records.service.ts:762. Patch is :805. */
   providerName: 200,
-  /** parseObligationCreate, records.service.ts:769. Patch is :812. */
+  /** parseObligationCreate, records.service.ts:770. Patch is :819. */
   preferredMethod: 80,
 } as const;

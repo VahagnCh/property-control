@@ -43,8 +43,8 @@ export function mapPaymentWriteError(
   }
   if (status === 409 && code === 'conflict') {
     return {
-      copyKey: 'pay.sync.conflict',
-      message: copyText('pay.sync.conflict'),
+      copyKey: 'err.generic',
+      message: copyText('err.generic'),
       cta: null,
       refreshOnMount: false,
       hideWrites: false,

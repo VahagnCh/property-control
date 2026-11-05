@@ -10,6 +10,8 @@ export type SessionSnapshot = {
   unavailable: boolean;
   /** False until the first secure-store read finishes. Not the sign-in screen. */
   hydrated: boolean;
+  /** The store read did not finish. Sign-in is shown, with Reintentar, and no data. */
+  hydrateTimedOut: boolean;
 };
 
 const INITIAL: SessionSnapshot = {
@@ -17,6 +19,7 @@ const INITIAL: SessionSnapshot = {
   expired: false,
   unavailable: false,
   hydrated: false,
+  hydrateTimedOut: false,
 };
 
 let snapshot: SessionSnapshot = { ...INITIAL };
@@ -38,17 +41,17 @@ export function subscribeSession(listener: () => void): () => void {
 }
 
 export function setSessionSignedIn(): void {
-  publish({ signedIn: true, expired: false, unavailable: false, hydrated: true });
+  publish({ signedIn: true, expired: false, unavailable: false, hydrated: true, hydrateTimedOut: false });
 }
 
 /** A refresh rejection cleared the store. This is the sign-in screen. */
 export function setSessionExpired(): void {
-  publish({ signedIn: false, expired: true, unavailable: false, hydrated: true });
+  publish({ signedIn: false, expired: true, unavailable: false, hydrated: true, hydrateTimedOut: false });
 }
 
 /** A deliberate logout cleared the store. */
 export function setSessionSignedOut(): void {
-  publish({ signedIn: false, expired: false, unavailable: false, hydrated: true });
+  publish({ signedIn: false, expired: false, unavailable: false, hydrated: true, hydrateTimedOut: false });
 }
 
 /**
@@ -56,12 +59,26 @@ export function setSessionSignedOut(): void {
  * Callers must show the connecting retry state, not the sign-in screen.
  */
 export function setSessionUnavailable(): void {
-  publish({ signedIn: snapshot.signedIn, expired: snapshot.expired, unavailable: true, hydrated: true });
+  publish({
+    signedIn: snapshot.signedIn,
+    expired: snapshot.expired,
+    unavailable: true,
+    hydrated: true,
+    hydrateTimedOut: false,
+  });
 }
 
 /** A successful read found no tokens. This is not a store failure. */
 export function noteEmptyStore(): void {
-  publish({ signedIn: false, expired: snapshot.expired, unavailable: false, hydrated: true });
+  publish({ signedIn: false, expired: snapshot.expired, unavailable: false, hydrated: true, hydrateTimedOut: false });
+}
+
+/** The store read is still pending. Show sign-in and Reintentar, never property data. */
+export function markHydrateTimedOut(): void {
+  if (snapshot.hydrated) {
+    return;
+  }
+  publish({ ...snapshot, hydrateTimedOut: true });
 }
 
 /** The store read finished without changing the signed-in flag. Used on web. */

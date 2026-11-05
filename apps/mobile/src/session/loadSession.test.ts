@@ -27,13 +27,25 @@ describe('hydrateSession', () => {
       'ios',
     );
     expect(readSession()).toBe(true);
-    expect(readSessionSnapshot()).toEqual({ signedIn: true, expired: false, unavailable: true, hydrated: true });
+    expect(readSessionSnapshot()).toEqual({
+      signedIn: true,
+      expired: false,
+      unavailable: true,
+      hydrated: true,
+      hydrateTimedOut: false,
+    });
     expect(clear).not.toHaveBeenCalled();
   });
 
   it('treats an empty store as signed out and does not mark it unavailable', async () => {
     await hydrateSession(store(async () => null), 'ios');
-    expect(readSessionSnapshot()).toEqual({ signedIn: false, expired: false, unavailable: false, hydrated: true });
+    expect(readSessionSnapshot()).toEqual({
+      signedIn: false,
+      expired: false,
+      unavailable: false,
+      hydrated: true,
+      hydrateTimedOut: false,
+    });
   });
 
   it('does not read the store on web', async () => {

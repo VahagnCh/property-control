@@ -29,7 +29,7 @@ const COPY_BY_CODE: Partial<Record<string, CopyKey>> = {
   idempotency_in_progress: 'common.connecting.failed',
   payment_voided: 'pay.void.noEdit',
   already_voided: 'pay.void.alreadyVoided',
-  conflict: 'pay.sync.conflict',
+  conflict: 'err.generic',
   forbidden: 'err.forbidden',
   viewer: 'err.forbidden',
 };

@@ -48,7 +48,7 @@ export function PropertyListScreen({
   if (phase === 'forbidden') {
     return (
       <View style={styles.pad}>
-        <Text accessibilityRole="alert">{COPY['err.forbidden']}</Text>
+        <Text accessibilityRole="alert">{COPY['property.forbidden']}</Text>
       </View>
     );
   }

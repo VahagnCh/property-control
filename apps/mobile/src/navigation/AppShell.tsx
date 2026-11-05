@@ -7,6 +7,8 @@ import { COPY } from '../copy/userFacing';
 import { LaunchHealth } from '../health/HealthBanner';
 import { EmailSignInScreen } from '../screens/EmailSignInScreen';
 import { hydrateSession } from '../session/loadSession';
+import { markHydrateTimedOut } from '../session/readSession';
+import type { MembershipRole } from '../payments/voidPayment';
 import { SessionUnavailable } from '../session/SessionUnavailable';
 import { useHasSession, useSessionSnapshot } from '../session/useHasSession';
 import { parseDeepLink } from './deepLink';
@@ -36,7 +38,19 @@ function holdFromUrl(url: string): Held | null {
  * stub: every nid gets the same not-found copy. A held nid is cleared once it
  * is opened or dropped. A secure-store read failure shows connecting, not sign-in.
  */
-export function AppShell({ apiClient }: { apiClient?: ApiClient | null } = {}) {
+export const HYDRATE_TIMEOUT_MS = 15_000;
+
+export function AppShell({
+  apiClient,
+  role = null,
+  hydrate = hydrateSession,
+  hydrateTimeoutMs = HYDRATE_TIMEOUT_MS,
+}: {
+  apiClient?: ApiClient | null;
+  role?: MembershipRole | null;
+  hydrate?: () => Promise<void>;
+  hydrateTimeoutMs?: number;
+} = {}) {
   const hasSession = useHasSession();
   const session = useSessionSnapshot();
   const [held, setHeld] = useState<Held | null>(null);
@@ -44,8 +58,23 @@ export function AppShell({ apiClient }: { apiClient?: ApiClient | null } = {}) {
   const [place, setPlace] = useState<Place>({ name: 'inicio', tabUrl: null });
 
   useEffect(() => {
-    void hydrateSession().catch(() => undefined);
-  }, []);
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        markHydrateTimedOut();
+      }
+    }, hydrateTimeoutMs);
+    void hydrate()
+      .catch(() => undefined)
+      .finally(() => {
+        settled = true;
+        clearTimeout(timer);
+      });
+    return () => {
+      settled = true;
+      clearTimeout(timer);
+    };
+  }, [hydrate, hydrateTimeoutMs]);
 
   useEffect(() => {
     let alive = true;
@@ -99,6 +128,33 @@ export function AppShell({ apiClient }: { apiClient?: ApiClient | null } = {}) {
 
   const sharedClient = apiClient === undefined ? liveAppClient() : apiClient;
 
+  useEffect(() => {
+    if (!sharedClient) {
+      return undefined;
+    }
+    return sharedClient.watchSession();
+  }, [sharedClient]);
+
+  const health = sharedClient ? <LaunchHealth client={sharedClient} /> : null;
+
+  if (session.hydrated === false && session.hydrateTimedOut) {
+    return (
+      <View testID="hydrate-timeout" style={{ flex: 1 }}>
+        {health}
+        <EmailSignInScreen embedded client={sharedClient ?? undefined} />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={COPY['common.retry']}
+          onPress={() => {
+            void hydrate();
+          }}
+        >
+          <Text>{COPY['common.retry']}</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   if (session.hydrated === false) {
     return (
       <View testID="session-loading" style={{ flex: 1, padding: 24, gap: 12 }}>
@@ -113,12 +169,18 @@ export function AppShell({ apiClient }: { apiClient?: ApiClient | null } = {}) {
   }
 
   if (session.expired) {
-    return <EmailSignInScreen expired client={sharedClient ?? undefined} />;
+    return (
+      <View style={{ flex: 1 }}>
+        {health}
+        <EmailSignInScreen expired client={sharedClient ?? undefined} />
+      </View>
+    );
   }
 
   if (place.name === 'sign-in') {
     return (
       <ScrollView contentContainerStyle={{ flexGrow: 1, padding: 24, gap: 16 }}>
+        {health}
         <Text>{COPY['notif.signIn.body']}</Text>
         <Pressable
           accessibilityRole="button"
@@ -147,7 +209,7 @@ export function AppShell({ apiClient }: { apiClient?: ApiClient | null } = {}) {
 
   return (
     <View style={{ flex: 1 }}>
-      {dataClient ? <LaunchHealth client={dataClient} /> : null}
+      {health}
       <NavigationContainer
         key={place.tabUrl ?? 'inicio'}
         linking={{
@@ -156,7 +218,7 @@ export function AppShell({ apiClient }: { apiClient?: ApiClient | null } = {}) {
           subscribe: () => () => {},
         }}
       >
-        <AppTabs propertyClient={dataClient} />
+        <AppTabs propertyClient={dataClient} role={role} />
       </NavigationContainer>
     </View>
   );

@@ -95,7 +95,7 @@ export function PropertyDetailScreen({
   if (phase === 'forbidden') {
     return (
       <View style={styles.pad}>
-        <Text accessibilityRole="alert">{copyText('err.forbidden')}</Text>
+        <Text accessibilityRole="alert">{copyText('property.forbidden')}</Text>
       </View>
     );
   }

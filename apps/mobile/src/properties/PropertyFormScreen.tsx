@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text } from 'react-native';
 import type { ApiClient } from '../api/client';
 import { ApiClientError } from '../api/errors';
@@ -35,6 +35,7 @@ export function PropertyFormScreen({
   const [draft, setDraft] = useState<PropertyDraft>(INITIAL);
   const [notice, setNotice] = useState<CopyKey | null>(null);
   const [busy, setBusy] = useState(false);
+  const [slow, setSlow] = useState(false);
   const pendingBody = useRef<PropertyWriteBody | null>(null);
   const builtNow = buildPropertyWrite(draft);
   const held =
@@ -42,6 +43,15 @@ export function PropertyFormScreen({
     !!pendingBody.current &&
     builtNow.ok &&
     sameWriteBody(pendingBody.current, builtNow.body);
+
+  useEffect(() => {
+    if (!busy) {
+      setSlow(false);
+      return undefined;
+    }
+    const id = setTimeout(() => setSlow(true), 8_000);
+    return () => clearTimeout(id);
+  }, [busy]);
 
   function patch(partial: Partial<PropertyDraft>) {
     setDraft((current) => ({ ...current, ...partial }));
@@ -70,9 +80,12 @@ export function PropertyFormScreen({
         setNotice('common.connecting.failed');
         return;
       }
-      if (error instanceof ApiClientError && (error.copyKey === 'pay.sync.conflict' || error.status === 409)) {
+      if (
+        error instanceof ApiClientError &&
+        (error.code === 'conflict' || error.code === 'idempotency_key_reused')
+      ) {
         pendingBody.current = null;
-        setNotice('pay.sync.conflict');
+        setNotice('err.generic');
         return;
       }
       const key = error instanceof ApiClientError ? error.copyKey : 'err.generic';
@@ -138,6 +151,7 @@ export function PropertyFormScreen({
           void submit(held ? 'retry' : 'send');
         }}
       />
+      {slow ? <Text>{COPY['common.connecting.slow']}</Text> : null}
       <PrimaryButton label={copyText('property.back')} onPress={onCancel} />
     </ScrollView>
   );

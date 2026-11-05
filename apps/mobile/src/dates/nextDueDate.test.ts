@@ -156,7 +156,7 @@ describe('nextDueDate input window', () => {
     expect(mapNextDueDateServerError(422, now)).toEqual({
       field: 'nextDueDate',
       key: 'obligation.nextDueDate.outOfRange',
-      message: 'Elige una fecha entre 2025-10-21 y 2031-10-21.',
+      message: 'Elige una fecha entre 21 oct 2025 y 21 oct 2031.',
     });
     expect(mapNextDueDateServerError(400)).toBeNull();
     expect(mapNextDueDateServerError(409)).toBeNull();

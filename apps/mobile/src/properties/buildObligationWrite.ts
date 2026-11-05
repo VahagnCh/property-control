@@ -4,7 +4,6 @@ import type { CopyKey } from '../copy/userFacing';
 import { calendarDateInTimeZone, DEFAULT_PROPERTY_TIMEZONE } from '../dates/propertyCalendar';
 import { validateNextDueDate } from '../dates/nextDueDate';
 import { validateTextInput } from '../forms/textInput';
-import { FIELD_LIMITS } from './fieldLimits';
 
 const NEEDS_SCHEDULE = new Set<ObligationRecurrence>([
   'monthly',
@@ -37,10 +36,7 @@ export function buildObligationWrite(
   if (!draft.category) {
     return { ok: false, key: 'form.text.required' };
   }
-  if (draft.title.trim().length > FIELD_LIMITS.obligationTitle) {
-    return { ok: false, key: 'form.title.tooLong' };
-  }
-  const title = validateTextInput(draft.title, 'title');
+  const title = validateTextInput(draft.title.trim(), 'title');
   if (!title.ok) {
     return { ok: false, key: title.key };
   }
@@ -57,9 +53,6 @@ export function buildObligationWrite(
     isActive: true,
   };
   const provider = draft.providerName.trim();
-  if (provider.length > FIELD_LIMITS.providerName) {
-    return { ok: false, key: 'form.title.tooLong' };
-  }
   if (provider) {
     const checked = validateTextInput(provider, 'title');
     if (!checked.ok) {

@@ -132,7 +132,7 @@ describe('OCR confirm errors', () => {
     });
     expect(mapOcrConfirmError({ statusCode: 422, message: BULK_ACCEPT_MESSAGE })).toMatchObject({
       key: 'ocr.confirm.failed',
-      message: 'Hay que decidir cada sugerencia por separado.',
+      message: 'No pudimos guardar las sugerencias. Inténtalo de nuevo.',
     });
     expect(mapOcrConfirmError({ statusCode: 422, message: NEXT_DUE_DATE_MESSAGE })).toMatchObject({
       key: 'obligation.nextDueDate.outOfRange',

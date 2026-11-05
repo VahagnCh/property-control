@@ -2,7 +2,6 @@ import type { OccupancyStatus, PropertyType, PropertyWriteBody } from '../api/co
 import type { CopyKey } from '../copy/userFacing';
 import { DEFAULT_PROPERTY_TIMEZONE } from '../dates/propertyCalendar';
 import { validateTextInput } from '../forms/textInput';
-import { FIELD_LIMITS } from './fieldLimits';
 
 export type PropertyDraft = {
   name: string;
@@ -13,16 +12,10 @@ export type PropertyDraft = {
   state: string;
 };
 
-function optionalText(
-  value: string,
-  maxLength: number,
-): { ok: true; value: string } | { ok: false; key: CopyKey } | null {
+function optionalText(value: string): { ok: true; value: string } | { ok: false; key: CopyKey } | null {
   const trimmed = value.trim();
   if (!trimmed) {
     return null;
-  }
-  if (trimmed.length > maxLength) {
-    return { ok: false, key: 'form.title.tooLong' };
   }
   const checked = validateTextInput(trimmed, 'title');
   if (!checked.ok) {
@@ -34,10 +27,7 @@ function optionalText(
 export function buildPropertyWrite(
   draft: PropertyDraft,
 ): { ok: true; body: PropertyWriteBody } | { ok: false; key: CopyKey } {
-  if (draft.name.trim().length > FIELD_LIMITS.propertyName) {
-    return { ok: false, key: 'form.title.tooLong' };
-  }
-  const name = validateTextInput(draft.name, 'title');
+  const name = validateTextInput(draft.name.trim(), 'title');
   if (!name.ok) {
     return { ok: false, key: name.key };
   }
@@ -50,15 +40,15 @@ export function buildPropertyWrite(
   if (draft.occupancyStatus) {
     body.occupancyStatus = draft.occupancyStatus;
   }
-  const addressLine = optionalText(draft.addressLine, FIELD_LIMITS.addressLine);
+  const addressLine = optionalText(draft.addressLine);
   if (addressLine && !addressLine.ok) {
     return addressLine;
   }
-  const city = optionalText(draft.city, FIELD_LIMITS.city);
+  const city = optionalText(draft.city);
   if (city && !city.ok) {
     return city;
   }
-  const state = optionalText(draft.state, FIELD_LIMITS.state);
+  const state = optionalText(draft.state);
   if (state && !state.ok) {
     return state;
   }
