@@ -152,10 +152,11 @@ describe('nextDueDate input window', () => {
   });
 
   it('AC-OBL-03 maps a 422 to the Spanish field error and ignores other statuses', () => {
-    expect(mapNextDueDateServerError(422)).toEqual({
+    const now = new Date('2026-10-21T18:00:00.000Z');
+    expect(mapNextDueDateServerError(422, now)).toEqual({
       field: 'nextDueDate',
-      key: 'obligation.nextDueDate.invalid',
-      message: 'La próxima fecha no es válida. Revisa el valor e inténtalo de nuevo.',
+      key: 'obligation.nextDueDate.outOfRange',
+      message: 'Elige una fecha entre 2025-10-21 y 2031-10-21.',
     });
     expect(mapNextDueDateServerError(400)).toBeNull();
     expect(mapNextDueDateServerError(409)).toBeNull();

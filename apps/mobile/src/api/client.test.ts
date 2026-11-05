@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { COPY, copyText } from '../copy/userFacing';
-import { HEALTH_STALE_MS, REQUEST_TIMEOUT_MS, createApiClient, mayAttachAuthorization, type ApiClient } from './client';
+import { HEALTH_STALE_MS, HEALTH_TIMEOUT_MS, REQUEST_TIMEOUT_MS, createApiClient, mayAttachAuthorization, type ApiClient } from './client';
 import { API_ERROR_CODES, REFRESH_PATH } from './contract';
 import { IdempotencyKeyReusedError, copyKeyForApiError } from './errors';
 import { OBLIGATION_ID, PROPERTY_ID, paymentCreated, propertyFixture } from './testing/fixtures';
@@ -92,6 +92,7 @@ describe('API client', () => {
     await expect(client.getProperty(PROPERTY_ID)).resolves.toMatchObject({ id: PROPERTY_ID });
     expect(calls).toBe(2);
     expect(REQUEST_TIMEOUT_MS).toBe(15_000);
+    expect(HEALTH_TIMEOUT_MS).toBe(90_000);
   });
 
   it('makes exactly one fetch when a write hits a network error', async () => {
@@ -188,7 +189,7 @@ describe('API client', () => {
       expect(server.calls('POST', REFRESH_PATH)).toHaveLength(0);
       expect(error).toMatchObject({
         status,
-        copyKey: status === 404 ? 'common.notFound' : 'common.error',
+        copyKey: status === 404 ? 'err.notFound' : 'err.generic',
       });
       expect((error as Error).message).not.toContain('https://');
       expect((error as Error).message).not.toContain('paidAt is outside');
@@ -356,7 +357,10 @@ describe('API client', () => {
       const parsed = JSON.parse(request.bodyText ?? '{}') as { amount: string; paidAt: string };
       return { status: 201, body: paymentCreated(parsed.amount, parsed.paidAt) };
     });
-    await expect(client.createPayment(PROPERTY_ID, paymentInput())).rejects.toMatchObject({ status: 503 });
+    await expect(client.createPayment(PROPERTY_ID, paymentInput())).rejects.toMatchObject({
+      code: 'connecting_failed',
+      copyKey: 'common.connecting.failed',
+    });
     await client.createPayment(PROPERTY_ID, paymentInput());
     expect(keys).toEqual([v4(1), v4(1)]);
     expect(minted).toBe(1);
@@ -425,9 +429,9 @@ describe('API client', () => {
     expect(error).toBeInstanceOf(IdempotencyKeyReusedError);
     expect(error).toMatchObject({
       code: 'idempotency_key_reused',
-      copyKey: 'idempotency.keyReused',
+      copyKey: 'pay.sync.conflict',
       status: 409,
-      message: COPY['idempotency.keyReused'],
+      message: COPY['pay.sync.conflict'],
     });
     expect((error as Error).message).not.toContain('https://');
     expect(server.calls('POST', PAYMENT_PATH)).toHaveLength(1);
@@ -558,7 +562,7 @@ describe('API client', () => {
       rejected.client.request('POST', PAYMENT_PATH, {
         body: { obligationId: OBLIGATION_ID, amount: 10.5, currency: 'MXN', paidAt: '2026-10-29' },
       }),
-    ).rejects.toMatchObject({ code: 'amount_invalid', message: COPY['common.error'] });
+    ).rejects.toMatchObject({ code: 'amount_invalid', message: COPY['err.generic'] });
     expect(rejected.server.calls('POST', PAYMENT_PATH)).toHaveLength(0);
 
     const numeric = setup();
@@ -583,8 +587,8 @@ describe('API client', () => {
     expect(error).toMatchObject({
       status: 404,
       code: 'not_found',
-      copyKey: 'common.notFound',
-      message: COPY['common.notFound'],
+      copyKey: 'err.notFound',
+      message: COPY['err.notFound'],
     });
     expect((error as Error).message).not.toContain('Not found');
     expect((error as Error).message).not.toContain(missing);
@@ -609,7 +613,7 @@ describe('API client', () => {
     }
     expect(copyKeyForApiError('edited_value_invalid', 422)).toBe('ocr.edit.invalid');
     expect(copyKeyForApiError('field_already_set', 409)).toBe('ocr.conflict');
-    expect(copyKeyForApiError('not_a_real_code', 422)).toBe('common.error');
+    expect(copyKeyForApiError('not_a_real_code', 422)).toBe('err.generic');
   });
 
   it('treats a 302 to a foreign host as a redirect and does not leak or retry it', async () => {
@@ -1078,8 +1082,8 @@ describe('API client', () => {
     });
     await expect(client.createPayment(PROPERTY_ID, paymentInput())).rejects.toMatchObject({
       code: 'conflict',
-      copyKey: 'common.conflict',
-      message: COPY['common.conflict'],
+      copyKey: 'pay.sync.conflict',
+      message: COPY['pay.sync.conflict'],
     });
     await client.createPayment(PROPERTY_ID, paymentInput());
     expect(keys[0]).toBe(v4(1));
@@ -1101,6 +1105,43 @@ describe('API client', () => {
     expect(gets).toBe(2);
     expect(server.calls('POST', REFRESH_PATH)).toHaveLength(1);
     expect(server.calls('GET', '/v1/properties')).toHaveLength(2);
+  });
+
+  it('loads the property list after the session is signed in again on the same client', async () => {
+    const expired = setup();
+    expired.server.route('GET', '/v1/properties', () => ({
+      status: 401,
+      body: { statusCode: 401, error: 'token_expired', message: 'Token expired.' },
+    }));
+    expired.server.route('POST', REFRESH_PATH, () => ({
+      status: 401,
+      body: { statusCode: 401, error: 'auth.refresh_invalid', message: 'The refresh token is not valid.' },
+    }));
+    await expect(expired.client.listProperties()).rejects.toMatchObject({ code: 'sign_in_required' });
+
+    const signedIn = createApiClient({
+      baseUrl: BASE,
+      env: 'test',
+      tokenStore: expired.tokens,
+      fetchImpl: expired.server.fetch,
+    });
+    expired.server.route('POST', '/v1/auth/verify', () => ({
+      status: 200,
+      body: {
+        tokenType: 'Bearer',
+        accessToken: 'access-again',
+        expiresIn: 900,
+        refreshToken: 'refresh-again',
+      },
+    }));
+    await signedIn.verifyCode('persona@ejemplo.com', '123456');
+    expired.server.route('GET', '/v1/properties', (request) => {
+      if (request.headers.authorization === 'Bearer access-again') {
+        return { status: 200, body: { items: [propertyFixture] } };
+      }
+      return { status: 401, body: { statusCode: 401, error: 'token_expired', message: 'Token expired.' } };
+    });
+    await expect(expired.client.listProperties()).resolves.toEqual({ items: [propertyFixture] });
   });
 
   it('retries health once on a network error and reports down on 503', async () => {

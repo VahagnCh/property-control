@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import { TokenStoreUnavailableError, secureTokenStore, type TokenStore } from '../auth/tokenStore';
-import { noteEmptyStore, setSessionSignedIn, setSessionUnavailable } from './readSession';
+import { markSessionHydrated, noteEmptyStore, setSessionSignedIn, setSessionUnavailable } from './readSession';
 
 /**
  * Reads the secure store once into the in-memory flag.
@@ -12,6 +12,7 @@ export async function hydrateSession(
   os: string = Platform.OS,
 ): Promise<void> {
   if (os === 'web') {
+    markSessionHydrated();
     return;
   }
   try {
@@ -25,5 +26,7 @@ export async function hydrateSession(
     if (error instanceof TokenStoreUnavailableError || error instanceof Error) {
       setSessionUnavailable();
     }
+  } finally {
+    markSessionHydrated();
   }
 }

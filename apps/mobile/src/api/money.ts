@@ -7,12 +7,12 @@ const MONEY_KEYS = new Set(['amount', 'expectedAmount', 'overpaidAmount']);
 /** Canonical two-decimal peso string. Digit arithmetic only, never a float. */
 export function canonicalPesoAmount(amount: string): string {
   if (typeof amount !== 'string') {
-    throw new ApiClientError('amount_invalid', 'common.error', null);
+    throw new ApiClientError('amount_invalid', 'err.generic', null);
   }
   try {
     return formatWireAmount(parseMxnToCentavos(amount));
   } catch {
-    throw new ApiClientError('amount_invalid', 'common.error', null);
+    throw new ApiClientError('amount_invalid', 'err.generic', null);
   }
 }
 
@@ -36,7 +36,7 @@ export function assertDecimalMoney(value: unknown): void {
   }
   for (const [key, child] of Object.entries(value)) {
     if (MONEY_KEYS.has(key) && typeof child !== 'string') {
-      throw new ApiClientError('amount_invalid', 'common.error', null);
+      throw new ApiClientError('amount_invalid', 'err.generic', null);
     }
     assertDecimalMoney(child);
   }
@@ -57,7 +57,7 @@ export function assertCalendarDate(iso: string): string {
   try {
     parseIsoDate(iso);
   } catch {
-    throw new ApiClientError('paid_at_out_of_range', 'common.error', null);
+    throw new ApiClientError('paid_at_out_of_range', 'err.generic', null);
   }
   return iso;
 }

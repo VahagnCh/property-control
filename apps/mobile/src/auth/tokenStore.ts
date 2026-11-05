@@ -37,7 +37,7 @@ export async function saveAuthTokens(tokens: AuthTokens): Promise<void> {
   try {
     await SecureStore.setItemAsync(SESSION_KEY, payload, options);
   } catch {
-    throw new Error(copyText('common.error'));
+    throw new Error(copyText('err.generic'));
   }
   await deleteLegacy();
 }

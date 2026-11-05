@@ -127,19 +127,19 @@ describe('OCR confirm errors', () => {
       message: 'Este registro ya no se puede usar. Elige otro o descarta la sugerencia.',
     });
     expect(mapOcrConfirmError({ statusCode: 422, message: UNCHECKED_PAYMENT_MESSAGE })).toMatchObject({
-      key: 'ocr.target.unchecked',
-      message: 'No pudimos comprobar el registro de destino. Elige otro o descarta la sugerencia.',
+      key: 'ocr.target.unknown',
+      message: 'No pudimos revisar ese pago. Inténtalo de nuevo.',
     });
     expect(mapOcrConfirmError({ statusCode: 422, message: BULK_ACCEPT_MESSAGE })).toMatchObject({
-      key: 'ocr.bulk.refused',
+      key: 'ocr.confirm.failed',
       message: 'Hay que decidir cada sugerencia por separado.',
     });
     expect(mapOcrConfirmError({ statusCode: 422, message: NEXT_DUE_DATE_MESSAGE })).toMatchObject({
-      key: 'obligation.nextDueDate.invalid',
-      message: 'La próxima fecha no es válida. Revisa el valor e inténtalo de nuevo.',
+      key: 'obligation.nextDueDate.outOfRange',
+      message: expect.stringContaining('Elige una fecha entre '),
     });
     expect(mapOcrConfirmError({ statusCode: 422, error: NEXT_DUE_DATE_CODE })).toMatchObject({
-      key: 'obligation.nextDueDate.invalid',
+      key: 'obligation.nextDueDate.outOfRange',
     });
     expect(mapOcrConfirmError({ statusCode: 409, message: JOB_NOT_SUGGESTED_MESSAGE })).toEqual({
       key: 'ocr.job.notSuggested',

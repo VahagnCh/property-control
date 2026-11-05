@@ -9,9 +9,11 @@ import type { PaymentWriteNotice as Notice } from './paymentWriteError';
  */
 export function PaymentWriteNoticeView({
   notice,
+  status = null,
   onViewPayment,
 }: {
   notice: Notice | null;
+  status?: 'recorded' | 'voided' | null;
   onViewPayment?: () => void;
 }) {
   const refreshOnMount = notice?.refreshOnMount === true;
@@ -23,13 +25,15 @@ export function PaymentWriteNoticeView({
     }
   }, [refreshOnMount]);
 
-  const hide = notice?.hideWrites === true;
+  const voided = status === 'voided';
+  const hide = voided || notice?.hideWrites === true;
+  const badge = notice?.voidedLabel ?? (voided ? COPY['pay.void.badge'] : null);
   return (
     <View>
       {notice ? (
-        <Text accessibilityRole={notice.copyKey === 'common.conflict' ? 'text' : 'alert'}>{notice.message}</Text>
+        <Text accessibilityRole={notice.copyKey === 'pay.sync.conflict' ? 'text' : 'alert'}>{notice.message}</Text>
       ) : null}
-      {notice?.voidedLabel ? <Text testID="receipt-status">{notice.voidedLabel}</Text> : null}
+      {badge ? <Text testID="receipt-status">{badge}</Text> : null}
       {notice?.cta ? (
         <Pressable accessibilityRole="button" accessibilityLabel={notice.cta} onPress={onViewPayment}>
           <Text>{notice.cta}</Text>
@@ -37,11 +41,11 @@ export function PaymentWriteNoticeView({
       ) : null}
       {hide ? null : (
         <View>
-          <Pressable accessibilityRole="button" accessibilityLabel={COPY['pay.action.edit']}>
-            <Text>{COPY['pay.action.edit']}</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel={COPY['pay.edit']}>
+            <Text>{COPY['pay.edit']}</Text>
           </Pressable>
-          <Pressable accessibilityRole="button" accessibilityLabel="Anular">
-            <Text>Anular</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel={COPY['pay.void.cta']}>
+            <Text>{COPY['pay.void.cta']}</Text>
           </Pressable>
         </View>
       )}

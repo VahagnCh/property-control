@@ -16,6 +16,8 @@ export type HealthCopyKey = Extract<
 export type HealthWatchSnapshot = {
   phase: 'idle' | 'checking' | 'failed';
   copyKey: HealthCopyKey | null;
+  /** At 8s, common.connecting.slow is added under common.connecting. */
+  slow: boolean;
   retryLabel: string | null;
 };
 
@@ -27,7 +29,7 @@ export type HealthClock = {
   wait: (ms: number) => Promise<void>;
 };
 
-const IDLE: HealthWatchSnapshot = { phase: 'idle', copyKey: null, retryLabel: null };
+const IDLE: HealthWatchSnapshot = { phase: 'idle', copyKey: null, slow: false, retryLabel: null };
 
 /**
  * Launch and background-return health. Copy is empty until 3s, then
@@ -42,6 +44,7 @@ export class HealthWatch {
   private startedAt: number | null = null;
   private backgroundedAt: number | null = null;
   private generation = 0;
+  private nextWaitMs = 1_000;
   private readonly cancels: Array<() => void> = [];
 
   constructor(
@@ -65,9 +68,20 @@ export class HealthWatch {
     this.stopTimers();
     const generation = ++this.generation;
     this.startedAt = this.clock.now();
-    this.publish({ phase: 'checking', copyKey: null, retryLabel: null });
+    this.nextWaitMs = 1_000;
+    this.publish({ phase: 'checking', copyKey: null, slow: false, retryLabel: null });
     this.arm(generation, HEALTH_CONNECTING_AFTER_MS, 'common.connecting');
-    this.arm(generation, HEALTH_SLOW_AFTER_MS, 'common.connecting.slow');
+    this.clockArm(generation, HEALTH_SLOW_AFTER_MS, () => {
+      if (this.generation !== generation || this.snapshot.phase !== 'checking') {
+        return;
+      }
+      this.publish({
+        phase: 'checking',
+        copyKey: 'common.connecting',
+        slow: true,
+        retryLabel: null,
+      });
+    });
     this.clockArm(generation, HEALTH_GIVE_UP_AFTER_MS, () => {
       this.fail(generation);
     });
@@ -123,7 +137,9 @@ export class HealthWatch {
         this.fail(generation);
         return;
       }
-      await this.clock.wait(Math.min(1_000, HEALTH_GIVE_UP_AFTER_MS - elapsed));
+      const waitMs = Math.min(this.nextWaitMs, HEALTH_GIVE_UP_AFTER_MS - elapsed);
+      await this.clock.wait(waitMs);
+      this.nextWaitMs = Math.min(this.nextWaitMs * 2, 8_000);
     }
   }
 
@@ -145,6 +161,7 @@ export class HealthWatch {
     this.publish({
       phase: 'failed',
       copyKey: 'common.connecting.failed',
+      slow: false,
       retryLabel: SCREEN_STATE_COPY.retry,
     });
   }
@@ -154,7 +171,7 @@ export class HealthWatch {
       if (this.generation !== generation || this.snapshot.phase !== 'checking') {
         return;
       }
-      this.publish({ phase: 'checking', copyKey, retryLabel: null });
+      this.publish({ phase: 'checking', copyKey, slow: this.snapshot.slow, retryLabel: null });
     });
   }
 

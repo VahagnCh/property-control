@@ -186,7 +186,9 @@ export function EmailSignInScreen({
   }
 
   const connectionRetry =
-    errorKey === 'common.connecting.failed' && failedEmail !== null && normalizeAuthEmail(email) === failedEmail;
+    (errorKey === 'common.connecting.failed' || errorKey === 'auth.network') &&
+    failedEmail !== null &&
+    normalizeAuthEmail(email) === failedEmail;
   const emailLabel = busy ? COPY['common.connecting'] : connectionRetry ? COPY['common.retry'] : COPY['auth.email.cta'];
 
   const body = (
@@ -294,7 +296,7 @@ export function EmailSignInScreen({
           >
             <Text style={styles.buttonLabel}>{busy ? COPY['common.connecting'] : COPY['auth.code.cta']}</Text>
           </Pressable>
-          {errorKey === 'common.connecting.failed' ? (
+          {errorKey === 'common.connecting.failed' || errorKey === 'auth.network' ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={COPY['common.retry']}
@@ -396,7 +398,7 @@ function bannerFrom(error: unknown): { key: CopyKey; retryAfterSeconds: number |
       error.code === 'timeout';
     return { key: error.copyKey, retryAfterSeconds: error.retryAfterSeconds, connection };
   }
-  return { key: 'common.error', retryAfterSeconds: null, connection: false };
+  return { key: 'err.generic', retryAfterSeconds: null, connection: false };
 }
 
 const styles = StyleSheet.create({

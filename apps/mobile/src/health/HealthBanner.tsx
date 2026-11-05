@@ -5,7 +5,7 @@ import { copyText } from '../copy/userFacing';
 import { BRAND_TEAL } from '../theme/brand';
 import { HealthWatch, realHealthClock, type HealthWatchSnapshot } from './healthWatch';
 
-const HIDDEN: HealthWatchSnapshot = { phase: 'idle', copyKey: null, retryLabel: null };
+const HIDDEN: HealthWatchSnapshot = { phase: 'idle', copyKey: null, slow: false, retryLabel: null };
 
 export function HealthBanner({
   snapshot,
@@ -14,12 +14,13 @@ export function HealthBanner({
   snapshot: HealthWatchSnapshot;
   onRetry?: () => void;
 }) {
-  if (!snapshot.copyKey) {
+  if (!snapshot.copyKey && !snapshot.slow) {
     return null;
   }
   return (
     <View testID="health-banner" style={styles.banner}>
-      <Text accessibilityRole="text">{copyText(snapshot.copyKey)}</Text>
+      {snapshot.copyKey ? <Text accessibilityRole="text">{copyText(snapshot.copyKey)}</Text> : null}
+      {snapshot.slow ? <Text accessibilityRole="text">{copyText('common.connecting.slow')}</Text> : null}
       {snapshot.retryLabel ? (
         <Pressable accessibilityRole="button" accessibilityLabel={snapshot.retryLabel} onPress={onRetry}>
           <Text style={styles.retry}>{snapshot.retryLabel}</Text>

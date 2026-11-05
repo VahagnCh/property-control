@@ -172,7 +172,8 @@ describe('email sign-in screen', () => {
     );
     fireEvent.changeText(screen.getByLabelText(COPY['auth.email.label']), 'persona@ejemplo.com');
     fireEvent.press(screen.getByRole('button', { name: COPY['auth.email.cta'] }));
-    expect(await screen.findByText(COPY['common.connecting.failed'])).toBeTruthy();
+    expect(await screen.findByText(COPY['auth.network'])).toBeTruthy();
+    expect(screen.queryByText(COPY['common.connecting.failed'])).toBeNull();
     expect(server.calls('POST', AUTH_CODE_PATH)).toHaveLength(1);
     fireEvent.press(screen.getByRole('button', { name: COPY['common.retry'] }));
     expect(await screen.findByText(COPY['auth.code.title'])).toBeTruthy();
@@ -384,7 +385,7 @@ describe('email sign-in screen', () => {
     fireEvent.changeText(screen.getByLabelText(COPY['auth.email.label']), 'persona@ejemplo.com');
     fireEvent.press(screen.getByRole('button', { name: COPY['auth.email.cta'] }));
     expect(await screen.findByText(COPY['common.connecting.failed'])).toBeTruthy();
-    expect(screen.queryByText(COPY['common.error'])).toBeNull();
+    expect(screen.queryByText(COPY['err.generic'])).toBeNull();
     expect(screen.queryByText(COPY['auth.code.title'])).toBeNull();
     expect(screen.getByLabelText(COPY['auth.email.label']).props.value).toBe('persona@ejemplo.com');
     fireEvent.press(screen.getByRole('button', { name: COPY['common.retry'] }));

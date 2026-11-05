@@ -60,6 +60,6 @@ Two things to keep right when real screens arrive:
 
 Payments are online-only. A write that cannot reach the API shows the connecting failure and Reintentar. An `Idempotency-Key` on the write stays with that body so the tap does not create a second row. The same rule covers `409 idempotency_in_progress` and `POST /v1/auth/code`: Reintentar sends the original bytes, including the original `paidAt` string. A definite 2xx or 4xx, other than that 409, drops the key. Pending keys live in memory only. They are lost if the app is killed, and the next launch mints a new key. The server wins a conflict.
 
-Launch, and a return to the foreground after more than 10 minutes, calls `GET /v1/health`. The screen stays quiet until 3 seconds (`common.connecting`), then `common.connecting.slow` at 8 seconds, and `common.connecting.failed` with Reintentar at 90 seconds.
+Launch, and a return to the foreground after more than 10 minutes, calls `GET /v1/health`. The screen stays quiet until 3 seconds (`common.connecting`), then adds `common.connecting.slow` under that line at 8 seconds, and shows `common.connecting.failed` with Reintentar at 90 seconds. The polls back off from 1 second to 8 seconds. A write waits on that same health check for up to 90 seconds. A 5xx keeps the idempotency key and the original body.
 
 The Mobile React Native write-up (due 3 Oct, see [docs/ROADMAP.md](../../docs/ROADMAP.md)) decides the state management, API client, and outbox details. This shell is deliberately thin so that write-up is not boxed in.

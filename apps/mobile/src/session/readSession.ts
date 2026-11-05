@@ -8,12 +8,15 @@ export type SessionSnapshot = {
   signedIn: boolean;
   expired: boolean;
   unavailable: boolean;
+  /** False until the first secure-store read finishes. Not the sign-in screen. */
+  hydrated: boolean;
 };
 
 const INITIAL: SessionSnapshot = {
   signedIn: false,
   expired: false,
   unavailable: false,
+  hydrated: false,
 };
 
 let snapshot: SessionSnapshot = { ...INITIAL };
@@ -35,17 +38,17 @@ export function subscribeSession(listener: () => void): () => void {
 }
 
 export function setSessionSignedIn(): void {
-  publish({ signedIn: true, expired: false, unavailable: false });
+  publish({ signedIn: true, expired: false, unavailable: false, hydrated: true });
 }
 
 /** A refresh rejection cleared the store. This is the sign-in screen. */
 export function setSessionExpired(): void {
-  publish({ signedIn: false, expired: true, unavailable: false });
+  publish({ signedIn: false, expired: true, unavailable: false, hydrated: true });
 }
 
 /** A deliberate logout cleared the store. */
 export function setSessionSignedOut(): void {
-  publish({ signedIn: false, expired: false, unavailable: false });
+  publish({ signedIn: false, expired: false, unavailable: false, hydrated: true });
 }
 
 /**
@@ -53,12 +56,20 @@ export function setSessionSignedOut(): void {
  * Callers must show the connecting retry state, not the sign-in screen.
  */
 export function setSessionUnavailable(): void {
-  publish({ signedIn: snapshot.signedIn, expired: snapshot.expired, unavailable: true });
+  publish({ signedIn: snapshot.signedIn, expired: snapshot.expired, unavailable: true, hydrated: true });
 }
 
 /** A successful read found no tokens. This is not a store failure. */
 export function noteEmptyStore(): void {
-  publish({ signedIn: false, expired: snapshot.expired, unavailable: false });
+  publish({ signedIn: false, expired: snapshot.expired, unavailable: false, hydrated: true });
+}
+
+/** The store read finished without changing the signed-in flag. Used on web. */
+export function markSessionHydrated(): void {
+  if (snapshot.hydrated) {
+    return;
+  }
+  publish({ ...snapshot, hydrated: true });
 }
 
 export function resetSessionState(): void {

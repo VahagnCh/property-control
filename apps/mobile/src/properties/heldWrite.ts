@@ -27,6 +27,8 @@ export function isHeldWrite(error: unknown): boolean {
   }
   return (
     error instanceof ApiClientError &&
-    (error.code === 'idempotency_in_progress' || error.copyKey === 'common.connecting.failed')
+    (error.code === 'idempotency_in_progress' ||
+      error.copyKey === 'common.connecting.failed' ||
+      (error.status != null && error.status >= 500))
   );
 }

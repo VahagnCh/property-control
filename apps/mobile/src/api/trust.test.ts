@@ -162,7 +162,7 @@ describe('Trust checks', () => {
     snapshots.push(JSON.stringify(client.connection()));
 
     expect(snapshots[0]).toBe(JSON.stringify({ phase: 'connecting', label: 'Conectando…', copyKey: null }));
-    expect((error as Error).message).toBe(COPY['common.error']);
+    expect((error as Error).message).toBe(COPY['err.generic']);
     const dumped = dump(error);
     const haystack = [dumped, logs.join('\n'), snapshots.join('\n')].join('\n');
     for (const leak of leaks) {

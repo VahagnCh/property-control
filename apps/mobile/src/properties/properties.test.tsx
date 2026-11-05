@@ -9,7 +9,9 @@ import type { TokenStore } from '../auth/tokenStore';
 import { COPY, SCREEN_STATE_COPY, copyText } from '../copy/userFacing';
 import { resetSessionState, setSessionSignedIn, setSessionUnavailable } from '../session/readSession';
 import { renderWithSafeArea } from '../test/renderTabs';
-import { suggestedNextDueDate } from './buildObligationWrite';
+import { buildObligationWrite, suggestedNextDueDate } from './buildObligationWrite';
+import { buildPropertyWrite } from './buildPropertyWrite';
+import { FIELD_LIMITS } from './fieldLimits';
 import { ObligationFormScreen } from './ObligationFormScreen';
 import { PropertiesTab } from './PropertiesTab';
 import { PropertyDetailScreen } from './PropertyDetailScreen';
@@ -113,7 +115,7 @@ describe('properties and obligations', () => {
       <PropertyListScreen client={client} onCreate={() => undefined} onOpen={() => undefined} />,
     );
     expect(await screen.findByText(COPY['property.empty.title'])).toBeTruthy();
-    expect(screen.getByRole('button', { name: COPY['property.empty.cta'] })).toBeTruthy();
+    expect(screen.getByRole('button', { name: COPY['cta.addProperty'] })).toBeTruthy();
     expect(screen.queryByText('Casa')).toBeNull();
     view.unmount();
 
@@ -143,7 +145,7 @@ describe('properties and obligations', () => {
     expect(await screen.findByText('CFE')).toBeTruthy();
     expect(screen.getByText('CFE/Electricidad')).toBeTruthy();
     expect(screen.getByText('$850.00')).toBeTruthy();
-    expect(screen.getByRole('button', { name: COPY['obligation.add.short'] })).toBeTruthy();
+    expect(screen.getByRole('button', { name: COPY['cta.addObligation'] })).toBeTruthy();
     expect(screen.queryByText(/Casa Roma|Depto demo|Agua demo/)).toBeNull();
   });
 
@@ -198,9 +200,9 @@ describe('properties and obligations', () => {
         onBack={() => undefined}
       />,
     );
-    expect(await screen.findByText(copyText('common.notFound'))).toBeTruthy();
+    expect(await screen.findByText(copyText('err.notFound'))).toBeTruthy();
     expect(JSON.stringify(screen.toJSON())).not.toContain(FOREIGN_ID);
-    expect(screen.queryByRole('button', { name: COPY['obligation.add.short'] })).toBeNull();
+    expect(screen.queryByRole('button', { name: COPY['cta.addObligation'] })).toBeNull();
 
     const server = createContractFakeServer();
     server.route('GET', `/v1/properties/${PROPERTY_ID}`, () => ({ status: 200, body: CASA }));
@@ -217,8 +219,8 @@ describe('properties and obligations', () => {
         onBack={() => undefined}
       />,
     );
-    expect(await screen.findByText(copyText('access.readonly'))).toBeTruthy();
-    expect(screen.queryByRole('button', { name: COPY['obligation.add.short'] })).toBeNull();
+    expect(await screen.findByText(copyText('err.forbidden'))).toBeTruthy();
+    expect(screen.queryByRole('button', { name: COPY['cta.addObligation'] })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Anular' })).toBeNull();
   });
 
@@ -246,7 +248,7 @@ describe('properties and obligations', () => {
     fireEvent.changeText(screen.getByLabelText(COPY['property.name.label']), 'Casa');
     fireEvent.press(screen.getByRole('button', { name: COPY['property.add.cta'] }));
     expect(await screen.findByText(COPY['common.connecting.failed'])).toBeTruthy();
-    expect(screen.queryByText(COPY['common.error'])).toBeNull();
+    expect(screen.queryByText(COPY['err.generic'])).toBeNull();
     expect(screen.getByLabelText(COPY['property.name.label']).props.value).toBe('Casa');
     expect(server.calls('POST', '/v1/properties')).toHaveLength(1);
     fireEvent.press(screen.getByRole('button', { name: COPY['common.retry'] }));
@@ -278,8 +280,8 @@ describe('properties and obligations', () => {
     );
     fireEvent.changeText(screen.getByLabelText(COPY['property.name.label']), 'Casa');
     fireEvent.press(screen.getByRole('button', { name: COPY['property.add.cta'] }));
-    expect(await screen.findByText(COPY['common.conflict'])).toBeTruthy();
-    expect(screen.queryByText(COPY['common.error'])).toBeNull();
+    expect(await screen.findByText(COPY['pay.sync.conflict'])).toBeTruthy();
+    expect(screen.queryByText(COPY['err.generic'])).toBeNull();
     expect(screen.getByLabelText(COPY['property.name.label']).props.value).toBe('Casa');
     fireEvent.press(screen.getByRole('button', { name: COPY['property.add.cta'] }));
     await waitFor(() => expect(keys).toHaveLength(2));
@@ -351,9 +353,11 @@ describe('properties and obligations', () => {
           onCancel={() => undefined}
         />,
       );
-      expect(screen.getAllByTestId('obligation-next-due').some((node) => String(node.props.children).includes(calendar))).toBe(
-        true,
-      );
+      const day = calendar.slice(8, 10).replace(/^0/, '');
+      const month = calendar.startsWith('2026-10') ? 'octubre' : calendar.slice(5, 7);
+      expect(
+        screen.getAllByTestId('obligation-next-due').some((node) => String(node.props.children).includes(`${day} de ${month}`)),
+      ).toBe(true);
     }
     expect(screen.queryByText(/2026-10-30T06:00/)).toBeNull();
   });
@@ -374,5 +378,104 @@ describe('properties and obligations', () => {
     expect((await screen.findAllByText('Casa')).length).toBeGreaterThan(0);
     expect(gets).toBe(2);
     expect(server.calls('POST', REFRESH_PATH)).toHaveLength(1);
+  });
+
+  it('holds a 503 on property and obligation creates and resends the same body', async () => {
+    let n = 0;
+    const server = createContractFakeServer();
+    const keys: string[] = [];
+    const bodies: string[] = [];
+    server.route('POST', '/v1/properties', (request) => {
+      keys.push(request.headers['idempotency-key'] ?? '');
+      bodies.push(request.bodyText ?? '');
+      if (keys.length === 1) {
+        return { status: 503, body: { statusCode: 503, error: 'unavailable', message: 'db down at 10.0.0.5' } };
+      }
+      return { status: 201, body: CASA };
+    });
+    const propertyView = renderWithSafeArea(
+      <PropertyFormScreen
+        client={clientFor(server, () => v4(++n))}
+        onCreated={() => undefined}
+        onCancel={() => undefined}
+      />,
+    );
+    fireEvent.changeText(screen.getByLabelText(COPY['property.name.label']), 'Casa');
+    fireEvent.press(screen.getByRole('button', { name: COPY['property.add.cta'] }));
+    expect(await screen.findByText(COPY['common.connecting.failed'])).toBeTruthy();
+    expect(screen.queryByText(COPY['err.generic'])).toBeNull();
+    expect(screen.getByLabelText(COPY['property.name.label']).props.value).toBe('Casa');
+    expect(screen.getByRole('button', { name: COPY['common.retry'] })).toBeTruthy();
+    expect(JSON.stringify(screen.toJSON())).not.toContain('10.0.0.5');
+    fireEvent.changeText(screen.getByLabelText(COPY['property.name.label']), 'Casa norte');
+    expect(screen.getByRole('button', { name: COPY['property.add.cta'] })).toBeTruthy();
+    fireEvent.changeText(screen.getByLabelText(COPY['property.name.label']), 'Casa');
+    fireEvent.press(screen.getByRole('button', { name: COPY['common.retry'] }));
+    await waitFor(() => expect(keys).toHaveLength(2));
+    expect(keys[0]).toBe(keys[1]);
+    expect(bodies[1]).toBe(bodies[0]);
+    propertyView.unmount();
+
+    const obligations = createContractFakeServer();
+    const obligationKeys: string[] = [];
+    const obligationBodies: string[] = [];
+    obligations.route('POST', `/v1/properties/${PROPERTY_ID}/obligations`, (request) => {
+      obligationKeys.push(request.headers['idempotency-key'] ?? '');
+      obligationBodies.push(request.bodyText ?? '');
+      if (obligationKeys.length === 1) {
+        return { status: 503, body: { statusCode: 503, error: 'unavailable', message: 'db down' } };
+      }
+      return { status: 201, body: CFE };
+    });
+    renderWithSafeArea(
+      <ObligationFormScreen
+        client={clientFor(obligations, () => v4(9))}
+        propertyId={PROPERTY_ID}
+        now={() => new Date('2026-10-21T18:00:00.000Z')}
+        onCreated={() => undefined}
+        onCancel={() => undefined}
+      />,
+    );
+    fireEvent.changeText(screen.getByLabelText(COPY['obligation.title.label']), 'CFE');
+    fireEvent.changeText(screen.getByLabelText(COPY['obligation.amount.label']), '850');
+    fireEvent.press(screen.getByRole('button', { name: COPY['obligation.add.cta'] }));
+    expect(await screen.findByText(COPY['common.connecting.failed'])).toBeTruthy();
+    expect(screen.queryByText(COPY['err.generic'])).toBeNull();
+    fireEvent.press(screen.getByRole('button', { name: COPY['common.retry'] }));
+    await waitFor(() => expect(obligationKeys).toHaveLength(2));
+    expect(obligationKeys[0]).toBe(obligationKeys[1]);
+    expect(obligationBodies[1]).toBe(obligationBodies[0]);
+    expect(obligationBodies[0]).toContain('"title":"CFE"');
+    expect(obligationBodies[0]).toContain('"expectedAmount":"850.00"');
+  });
+
+  it('rejects a name or city past the API single-line cap', () => {
+    const draft = {
+      name: 'a'.repeat(FIELD_LIMITS.propertyName + 1),
+      propertyType: 'house' as const,
+      occupancyStatus: 'owned' as const,
+      addressLine: '',
+      city: '',
+      state: '',
+    };
+    expect(buildPropertyWrite(draft).ok).toBe(false);
+    expect(
+      buildPropertyWrite({ ...draft, name: 'Casa', city: 'b'.repeat(FIELD_LIMITS.city + 1) }).ok,
+    ).toBe(false);
+    const now = new Date('2026-10-21T18:00:00.000Z');
+    expect(
+      buildObligationWrite(
+        {
+          category: 'electricity',
+          title: 'CFE',
+          providerName: 'p'.repeat(FIELD_LIMITS.providerName + 1),
+          recurrence: 'monthly',
+          nextDueDate: '2026-11-02',
+          expectedAmount: '850.00',
+          notes: '',
+        },
+        now,
+      ).ok,
+    ).toBe(false);
   });
 });

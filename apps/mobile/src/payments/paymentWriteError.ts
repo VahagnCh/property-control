@@ -16,7 +16,11 @@ export type PaymentWriteNotice = {
  * 409 conflict is a non-failure notice. 403 forbidden hides writes.
  * 404 for a foreign id is not-found.
  */
-export function mapPaymentWriteError(status: number, code: string): PaymentWriteNotice | null {
+export function mapPaymentWriteError(
+  status: number,
+  code: string,
+  action: 'record' | 'void' = 'record',
+): PaymentWriteNotice | null {
   if (status === 409 && code === 'payment_voided') {
     return {
       copyKey: 'pay.void.noEdit',
@@ -34,13 +38,13 @@ export function mapPaymentWriteError(status: number, code: string): PaymentWrite
       cta: null,
       refreshOnMount: true,
       hideWrites: true,
-      voidedLabel: copyText('pay.receipt.voided'),
+      voidedLabel: copyText('pay.void.badge'),
     };
   }
   if (status === 409 && code === 'conflict') {
     return {
-      copyKey: 'common.conflict',
-      message: copyText('common.conflict'),
+      copyKey: 'pay.sync.conflict',
+      message: copyText('pay.sync.conflict'),
       cta: null,
       refreshOnMount: false,
       hideWrites: false,
@@ -48,9 +52,10 @@ export function mapPaymentWriteError(status: number, code: string): PaymentWrite
     };
   }
   if (status === 403 && (code === 'forbidden' || code === 'viewer')) {
+    const copyKey = action === 'void' ? 'pay.void.forbidden' : 'err.forbidden';
     return {
-      copyKey: 'access.readonly',
-      message: copyText('access.readonly'),
+      copyKey,
+      message: copyText(copyKey),
       cta: null,
       refreshOnMount: false,
       hideWrites: true,
@@ -59,9 +64,9 @@ export function mapPaymentWriteError(status: number, code: string): PaymentWrite
   }
   if (status === 404 || code === 'not_found') {
     return {
-      copyKey: 'common.notFound',
-      message: copyText('common.notFound'),
-      cta: null,
+      copyKey: 'err.notFound',
+      message: copyText('err.notFound'),
+      cta: copyText('err.notFound.cta'),
       refreshOnMount: false,
       hideWrites: true,
       voidedLabel: null,

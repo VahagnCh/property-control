@@ -89,7 +89,7 @@ describe('auth token store', () => {
       },
       (caught: unknown) => caught,
     );
-    expect((error as Error).message).toBe(COPY['common.error']);
+    expect((error as Error).message).toBe(COPY['err.generic']);
     expect((error as Error).message).not.toContain(ACCESS);
     expect(JSON.stringify(error)).not.toContain(ACCESS);
     expect(SecureStore.setItemAsync).toHaveBeenCalledTimes(1);
@@ -121,11 +121,11 @@ describe('auth token store', () => {
       return null;
     });
     (SecureStore.setItemAsync as jest.Mock).mockRejectedValue(new Error(`disk ${ACCESS}`));
-    await expect(readAuthTokens()).rejects.toThrow(COPY['common.error']);
+    await expect(readAuthTokens()).rejects.toThrow(COPY['err.generic']);
     try {
       await readAuthTokens();
     } catch (error) {
-      expect((error as Error).message).toBe(COPY['common.error']);
+      expect((error as Error).message).toBe(COPY['err.generic']);
       expect((error as Error).message).not.toContain(ACCESS);
       expect((error as Error).message).not.toContain(REFRESH);
       expect(JSON.stringify(error)).not.toContain(ACCESS);

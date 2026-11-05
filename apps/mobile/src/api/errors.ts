@@ -3,8 +3,8 @@ import { API_ERROR_CODES } from './contract';
 
 /**
  * Clients match `error`, never the English `message`, and never a URL.
- * Codes with a UX string use that key. Anything else uses `common.error`.
- * A 404 is not-found copy for a non-member and for an unknown resource.
+ * Codes with a UX string use that key. Anything else uses `err.generic`.
+ * Every 404 uses the same not-found copy, except an OCR path, which uses `common.unavailable`.
  */
 const COPY_BY_CODE: Partial<Record<string, CopyKey>> = {
   edited_value_invalid: 'ocr.edit.invalid',
@@ -13,13 +13,13 @@ const COPY_BY_CODE: Partial<Record<string, CopyKey>> = {
   bound_target_immutable: 'ocr.target.locked',
   target_required: 'ocr.target.required',
   target_voided: 'ocr.target.voided',
-  target_status_unknown: 'ocr.target.unchecked',
-  bulk_accept_rejected: 'ocr.bulk.refused',
+  target_status_unknown: 'ocr.target.unknown',
+  bulk_accept_rejected: 'ocr.confirm.failed',
   job_not_confirmable: 'ocr.job.notSuggested',
   job_expired: 'ocr.job.expired',
-  next_due_date_out_of_range: 'obligation.nextDueDate.invalid',
-  not_found: 'common.notFound',
-  idempotency_key_reused: 'idempotency.keyReused',
+  next_due_date_out_of_range: 'obligation.nextDueDate.outOfRange',
+  not_found: 'err.notFound',
+  idempotency_key_reused: 'pay.sync.conflict',
   'auth.email_invalid': 'auth.email.invalid',
   'auth.code_invalid': 'auth.code.wrong',
   'auth.rate_limited': 'auth.code.wait',
@@ -29,9 +29,9 @@ const COPY_BY_CODE: Partial<Record<string, CopyKey>> = {
   idempotency_in_progress: 'common.connecting.failed',
   payment_voided: 'pay.void.noEdit',
   already_voided: 'pay.void.alreadyVoided',
-  conflict: 'common.conflict',
-  forbidden: 'access.readonly',
-  viewer: 'access.readonly',
+  conflict: 'pay.sync.conflict',
+  forbidden: 'err.forbidden',
+  viewer: 'err.forbidden',
 };
 
 const KNOWN_ERROR_CODES = new Set<string>(API_ERROR_CODES);
@@ -50,11 +50,14 @@ export function readErrorCode(body: unknown, status: number): string {
   return 'unknown';
 }
 
-export function copyKeyForApiError(code: string, status: number): CopyKey {
-  if (status === 404 || code === 'not_found') {
-    return 'common.notFound';
+export function copyKeyForApiError(code: string, status: number, path = ''): CopyKey {
+  if ((status === 404 || code === 'not_found') && path.includes('/ocr')) {
+    return 'common.unavailable';
   }
-  return COPY_BY_CODE[code] ?? 'common.error';
+  if (status === 404 || code === 'not_found') {
+    return 'err.notFound';
+  }
+  return COPY_BY_CODE[code] ?? 'err.generic';
 }
 
 export class ApiClientError extends Error {
@@ -95,7 +98,7 @@ export function releasesIdempotencyKey(status: number, code: string): boolean {
 /** 409 idempotency_key_reused. A later submit mints a new key; this 4xx is definite. */
 export class IdempotencyKeyReusedError extends ApiClientError {
   constructor() {
-    super('idempotency_key_reused', 'idempotency.keyReused', 409);
+    super('idempotency_key_reused', 'pay.sync.conflict', 409);
     this.name = 'IdempotencyKeyReusedError';
   }
 }

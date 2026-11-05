@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ApiClient } from '../api/client';
+import type { MembershipRole } from '../payments/voidPayment';
 import { EmailSignInScreen } from '../screens/EmailSignInScreen';
 import { useSessionSnapshot } from '../session/useHasSession';
 import { ObligationFormScreen } from './ObligationFormScreen';
@@ -17,9 +18,23 @@ type Route =
  * Propiedades. Without a session this is the sign-in screen and no list is
  * requested. A missing client also refuses to show rows.
  */
-export function PropertiesTab({ client }: { client: ApiClient | null }) {
+export function PropertiesTab({
+  client,
+  role = null,
+  onInicio,
+}: {
+  client: ApiClient | null;
+  role?: MembershipRole | null;
+  onInicio?: () => void;
+}) {
   const session = useSessionSnapshot();
   const [route, setRoute] = useState<Route>({ name: 'list' });
+
+  useEffect(() => {
+    if (!session.signedIn) {
+      setRoute({ name: 'list' });
+    }
+  }, [session.signedIn]);
 
   if (session.unavailable) {
     return null;
@@ -42,7 +57,9 @@ export function PropertiesTab({ client }: { client: ApiClient | null }) {
       <PropertyDetailScreen
         client={client}
         propertyId={route.propertyId}
+        role={role}
         onBack={() => setRoute({ name: 'list' })}
+        onInicio={onInicio}
         onAddObligation={() => setRoute({ name: 'create-obligation', propertyId: route.propertyId })}
       />
     );
@@ -60,6 +77,7 @@ export function PropertiesTab({ client }: { client: ApiClient | null }) {
   return (
     <PropertyListScreen
       client={client}
+      role={role}
       onCreate={() => setRoute({ name: 'create-property' })}
       onOpen={(propertyId) => setRoute({ name: 'detail', propertyId })}
     />

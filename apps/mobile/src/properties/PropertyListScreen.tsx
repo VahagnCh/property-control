@@ -1,20 +1,24 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { ApiClient } from '../api/client';
+import { ApiClientError } from '../api/errors';
 import type { PropertyResponse } from '../api/contract';
+import type { MembershipRole } from '../payments/voidPayment';
 import { ScreenState } from '../components/ScreenState';
 import { COPY } from '../copy/userFacing';
 import { PrimaryButton } from './fields';
 import { PROPERTY_TYPE_OPTIONS, optionLabel } from './labels';
 
-type Phase = 'loading' | 'empty' | 'error' | 'ready';
+type Phase = 'loading' | 'empty' | 'error' | 'forbidden' | 'ready';
 
 export function PropertyListScreen({
   client,
+  role = null,
   onOpen,
   onCreate,
 }: {
   client: ApiClient;
+  role?: MembershipRole | null;
   onOpen: (propertyId: string) => void;
   onCreate: () => void;
 }) {
@@ -27,8 +31,12 @@ export function PropertyListScreen({
       const page = await client.listProperties();
       setItems(page.items);
       setPhase(page.items.length === 0 ? 'empty' : 'ready');
-    } catch {
+    } catch (error) {
       setItems([]);
+      if (error instanceof ApiClientError && error.status === 403) {
+        setPhase('forbidden');
+        return;
+      }
       setPhase('error');
     }
   }, [client]);
@@ -37,10 +45,18 @@ export function PropertyListScreen({
     void load();
   }, [load]);
 
+  if (phase === 'forbidden') {
+    return (
+      <View style={styles.pad}>
+        <Text accessibilityRole="alert">{COPY['err.forbidden']}</Text>
+      </View>
+    );
+  }
+
   if (phase === 'loading' || phase === 'error') {
     return (
       <View style={styles.pad}>
-        <ScreenState phase={phase} contextLabel={COPY['property.empty.cta']} onRetry={() => void load()} />
+        <ScreenState phase={phase} contextLabel={COPY['cta.addProperty']} onRetry={() => void load()} />
       </View>
     );
   }
@@ -49,14 +65,18 @@ export function PropertyListScreen({
     return (
       <View style={styles.pad}>
         <Text accessibilityRole="text">{COPY['property.empty.title']}</Text>
-        <PrimaryButton label={COPY['property.empty.cta']} onPress={onCreate} testID="property-add" />
+        {role === 'viewer' ? null : (
+          <PrimaryButton label={COPY['cta.addProperty']} onPress={onCreate} testID="property-add" />
+        )}
       </View>
     );
   }
 
   return (
     <ScrollView contentContainerStyle={styles.pad}>
-      <PrimaryButton label={COPY['property.empty.cta']} onPress={onCreate} testID="property-add" />
+      {role === 'viewer' ? null : (
+        <PrimaryButton label={COPY['cta.addProperty']} onPress={onCreate} testID="property-add" />
+      )}
       {items.map((property) => (
         <Pressable
           key={property.id}

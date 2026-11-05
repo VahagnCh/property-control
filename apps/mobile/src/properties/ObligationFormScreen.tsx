@@ -7,6 +7,8 @@ import { COPY, copyText, type CopyKey } from '../copy/userFacing';
 import { buildObligationWrite, suggestedNextDueDate, type ObligationDraft } from './buildObligationWrite';
 import { ChoiceRow, FormNotice, LabeledInput, PrimaryButton } from './fields';
 import { isHeldWrite, sameWriteBody } from './heldWrite';
+import { formatEsMxDate } from '../dates/nextDueDate';
+import { FIELD_LIMITS } from './fieldLimits';
 import { CATEGORY_OPTIONS, RECURRENCE_OPTIONS, optionLabel } from './labels';
 
 function initialDraft(now: Date, timeZone: string): ObligationDraft {
@@ -44,7 +46,12 @@ export function ObligationFormScreen({
   const [notice, setNotice] = useState<CopyKey | null>(null);
   const [busy, setBusy] = useState(false);
   const pendingBody = useRef<ObligationWriteBody | null>(null);
-  const held = notice === 'common.connecting.failed';
+  const builtNow = buildObligationWrite(draft, now(), timeZone);
+  const held =
+    notice === 'common.connecting.failed' &&
+    !!pendingBody.current &&
+    builtNow.ok &&
+    sameWriteBody(pendingBody.current, builtNow.body);
 
   function patch(partial: Partial<ObligationDraft>) {
     setDraft((current) => ({ ...current, ...partial }));
@@ -73,12 +80,12 @@ export function ObligationFormScreen({
         setNotice('common.connecting.failed');
         return;
       }
-      if (error instanceof ApiClientError && error.copyKey === 'common.conflict') {
+      if (error instanceof ApiClientError && error.copyKey === 'pay.sync.conflict') {
         pendingBody.current = null;
-        setNotice('common.conflict');
+        setNotice('pay.sync.conflict');
         return;
       }
-      const key = error instanceof ApiClientError ? error.copyKey : 'common.error';
+      const key = error instanceof ApiClientError ? error.copyKey : 'err.generic';
       setNotice(key);
     } finally {
       setBusy(false);
@@ -106,12 +113,14 @@ export function ObligationFormScreen({
         label={COPY['obligation.title.label']}
         testID="obligation-title-input"
         value={draft.title}
+        maxLength={FIELD_LIMITS.obligationTitle}
         onChangeText={(title) => patch({ title })}
       />
       <LabeledInput
         label={COPY['obligation.provider.label']}
         testID="obligation-provider-input"
         value={draft.providerName}
+        maxLength={FIELD_LIMITS.providerName}
         onChangeText={(providerName) => patch({ providerName })}
       />
       <ChoiceRow
@@ -124,7 +133,7 @@ export function ObligationFormScreen({
         onSelect={(recurrence) => patch({ recurrence })}
       />
       <Text testID="obligation-next-due" accessibilityLabel={COPY['obligation.nextDueDate.label']}>
-        {`${COPY['obligation.nextDueDate.label']}: ${draft.nextDueDate}`}
+        {`${COPY['obligation.nextDueDate.label']}: ${formatEsMxDate(draft.nextDueDate)}`}
       </Text>
       <LabeledInput
         label={COPY['obligation.amount.label']}
@@ -132,7 +141,6 @@ export function ObligationFormScreen({
         value={draft.expectedAmount}
         onChangeText={(expectedAmount) => patch({ expectedAmount })}
       />
-      <Text>{COPY['obligation.reminders']}</Text>
       <LabeledInput
         label={COPY['obligation.notes.label']}
         testID="obligation-notes-input"

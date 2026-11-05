@@ -7,6 +7,7 @@ import { COPY, copyText, type CopyKey } from '../copy/userFacing';
 import { buildPropertyWrite, type PropertyDraft } from './buildPropertyWrite';
 import { ChoiceRow, FormNotice, LabeledInput, PrimaryButton } from './fields';
 import { isHeldWrite, sameWriteBody } from './heldWrite';
+import { FIELD_LIMITS } from './fieldLimits';
 import { OCCUPANCY_OPTIONS, PROPERTY_TYPE_OPTIONS, optionLabel } from './labels';
 
 const INITIAL: PropertyDraft = {
@@ -35,7 +36,12 @@ export function PropertyFormScreen({
   const [notice, setNotice] = useState<CopyKey | null>(null);
   const [busy, setBusy] = useState(false);
   const pendingBody = useRef<PropertyWriteBody | null>(null);
-  const held = notice === 'common.connecting.failed';
+  const builtNow = buildPropertyWrite(draft);
+  const held =
+    notice === 'common.connecting.failed' &&
+    !!pendingBody.current &&
+    builtNow.ok &&
+    sameWriteBody(pendingBody.current, builtNow.body);
 
   function patch(partial: Partial<PropertyDraft>) {
     setDraft((current) => ({ ...current, ...partial }));
@@ -64,12 +70,12 @@ export function PropertyFormScreen({
         setNotice('common.connecting.failed');
         return;
       }
-      if (error instanceof ApiClientError && error.copyKey === 'common.conflict') {
+      if (error instanceof ApiClientError && (error.copyKey === 'pay.sync.conflict' || error.status === 409)) {
         pendingBody.current = null;
-        setNotice('common.conflict');
+        setNotice('pay.sync.conflict');
         return;
       }
-      const key = error instanceof ApiClientError ? error.copyKey : 'common.error';
+      const key = error instanceof ApiClientError ? error.copyKey : 'err.generic';
       setNotice(key);
     } finally {
       setBusy(false);
@@ -88,6 +94,7 @@ export function PropertyFormScreen({
         label={COPY['property.name.label']}
         testID="property-name-input"
         value={draft.name}
+        maxLength={FIELD_LIMITS.propertyName}
         onChangeText={(name) => patch({ name })}
       />
       <ChoiceRow
@@ -100,18 +107,21 @@ export function PropertyFormScreen({
         label={COPY['property.address.label']}
         testID="property-address-input"
         value={draft.addressLine}
+        maxLength={FIELD_LIMITS.addressLine}
         onChangeText={(addressLine) => patch({ addressLine })}
       />
       <LabeledInput
         label={COPY['property.city.label']}
         testID="property-city-input"
         value={draft.city}
+        maxLength={FIELD_LIMITS.city}
         onChangeText={(city) => patch({ city })}
       />
       <LabeledInput
         label={COPY['property.state.label']}
         testID="property-state-input"
         value={draft.state}
+        maxLength={FIELD_LIMITS.state}
         onChangeText={(state) => patch({ state })}
       />
       <ChoiceRow

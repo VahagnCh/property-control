@@ -66,7 +66,7 @@ describe('idempotency keys', () => {
         }
       })();
       expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toBe(COPY['common.error']);
+      expect((error as Error).message).toBe(COPY['err.generic']);
       expect((error as Error).message).not.toMatch(/uuid|crypto/i);
     } finally {
       Object.defineProperty(globalThis, 'crypto', { configurable: true, value: original });

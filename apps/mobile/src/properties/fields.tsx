@@ -1,15 +1,18 @@
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { copyText, type CopyKey } from '../copy/userFacing';
+import { nextDueDateRangeMessage } from '../dates/nextDueDate';
 import { BRAND_TEAL } from '../theme/brand';
 
 export function FormNotice({ copyKey }: { copyKey: CopyKey | null }) {
   if (!copyKey) {
     return null;
   }
-  const role = copyKey === 'common.conflict' ? 'text' : 'alert';
+  const role = copyKey === 'pay.sync.conflict' ? 'text' : 'alert';
+  const text =
+    copyKey === 'obligation.nextDueDate.outOfRange' ? nextDueDateRangeMessage() : copyText(copyKey);
   return (
     <Text accessibilityRole={role} testID="form-notice">
-      {copyText(copyKey)}
+      {text}
     </Text>
   );
 }
@@ -20,12 +23,14 @@ export function LabeledInput({
   onChangeText,
   testID,
   multiline = false,
+  maxLength,
 }: {
   label: string;
   value: string;
   onChangeText: (value: string) => void;
   testID: string;
   multiline?: boolean;
+  maxLength?: number;
 }) {
   return (
     <View style={styles.field}>
@@ -36,6 +41,7 @@ export function LabeledInput({
         value={value}
         onChangeText={onChangeText}
         multiline={multiline}
+        maxLength={maxLength}
         style={[styles.input, multiline ? styles.notes : null]}
       />
     </View>

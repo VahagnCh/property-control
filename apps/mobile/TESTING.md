@@ -17,13 +17,13 @@ TS-D7 is not a mobile row. This client does not claim it.
 | Empty, loading, and error on all five tabs | Covered now | `src/components/ScreenState.test.tsx` |
 | 409 `idempotency_in_progress` on a payment write and on `POST /v1/auth/code`. Same key, byte-identical body, `common.connecting.failed`, Reintentar. No new string, no failure toast, no form reset. Writes do not auto-retry. GETs still auto-retry once | Covered now | `src/api/client.test.ts`, `src/api/authClient.test.ts`, `src/screens/emailSignIn.test.tsx`, `src/properties/properties.test.tsx` |
 | N7. The resent body keeps the original `paidAt` string. Pending keys are memory-only and are lost if the app is killed | Covered now | `src/api/client.test.ts` |
-| 409 `payment_voided` → `pay.void.noEdit` and Ver pago. 409 `already_voided` → `pay.void.alreadyVoided`, refresh, Anulado. Both hide Editar and Anular. 409 `conflict` is a non-failure notice. 403 `forbidden` hides writes and shows the read-only notice. 404 shows not-found | Covered now | `src/payments/paymentWriteError.test.tsx`, `src/properties/properties.test.tsx` |
+| 409 `payment_voided` → `pay.void.noEdit` and Ver pago. 409 `already_voided` → `pay.void.alreadyVoided`, refresh, Anulado. Editar and Anular pago stay hidden when the payment status is voided. 403 writes use `err.forbidden`; void uses `pay.void.forbidden`. Every non-OCR 404 uses `err.notFound` and Ir a Inicio. OCR 404 uses `common.unavailable`. `idempotency_key_reused` uses `pay.sync.conflict` | Covered now | `src/payments/paymentWriteError.test.tsx`, `src/properties/properties.test.tsx` |
 | Launch and background-return health. Copy at 3s, 8s, and 90s. A return after 10 minutes checks again. A shorter absence does not | Covered now | `src/health/healthWatch.test.tsx` |
 | Expired session: one refresh, then one resend of the property list | Covered now | `src/properties/properties.test.tsx`, `src/api/client.test.ts` |
 | Long Spanish text with accents, 320×568 at font scale 2, and dates at 23:59, 00:00, and 00:01 in America/Mexico_City | Covered now | `src/properties/properties.test.tsx`, `src/navigation/tabs.test.tsx`, `src/screens/longCopy.test.tsx` |
 | Offline and slow property list | Covered now | `src/properties/properties.test.tsx` |
 
-Real-phone checks, denied camera or file permission, backgrounding during upload, and retry mid-upload stay pending for the record-payment work. See the rows below.
+`consent_required` is still the generic error. That flow is pending. Real-phone checks, denied camera or file permission, backgrounding during upload, and retry mid-upload stay pending for the record-payment work. See the rows below.
 
 ## Shell and task-3 cases
 

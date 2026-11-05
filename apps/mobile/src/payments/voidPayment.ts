@@ -10,7 +10,7 @@ export type PaymentSnapshot = {
 
 export const VOID_FORBIDDEN_MESSAGE = 'No tienes permiso para anular este pago';
 
-export const VOID_NOT_FOUND_MESSAGE = 'No encontramos este pago.';
+export const VOID_NOT_FOUND_MESSAGE = 'No encontramos esta obligación.';
 
 /** AC-PAY-21. Exact copy from UX spec v1.2 rev d. */
 export const VOID_ALREADY_VOIDED_MESSAGE = 'Este pago ya estaba anulado.';

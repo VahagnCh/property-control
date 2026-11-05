@@ -1,7 +1,7 @@
 import { NavigationContainer } from '@react-navigation/native';
 import * as Linking from 'expo-linking';
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
 import type { ApiClient } from '../api/client';
 import { COPY } from '../copy/userFacing';
 import { LaunchHealth } from '../health/HealthBanner';
@@ -97,12 +97,23 @@ export function AppShell({ apiClient }: { apiClient?: ApiClient | null } = {}) {
     setPlace(next.place);
   }
 
+  const sharedClient = apiClient === undefined ? liveAppClient() : apiClient;
+
+  if (session.hydrated === false) {
+    return (
+      <View testID="session-loading" style={{ flex: 1, padding: 24, gap: 12 }}>
+        <ActivityIndicator />
+        <Text>{COPY['common.connecting']}</Text>
+      </View>
+    );
+  }
+
   if (session.unavailable) {
     return <SessionUnavailable />;
   }
 
   if (session.expired) {
-    return <EmailSignInScreen expired />;
+    return <EmailSignInScreen expired client={sharedClient ?? undefined} />;
   }
 
   if (place.name === 'sign-in') {
@@ -123,7 +134,7 @@ export function AppShell({ apiClient }: { apiClient?: ApiClient | null } = {}) {
         >
           <Text>{COPY['notif.signIn.cancel']}</Text>
         </Pressable>
-        <EmailSignInScreen embedded />
+        <EmailSignInScreen embedded client={sharedClient ?? undefined} />
       </ScrollView>
     );
   }
@@ -132,7 +143,7 @@ export function AppShell({ apiClient }: { apiClient?: ApiClient | null } = {}) {
     return <NotificationStub onInicio={leaveToInicio} />;
   }
 
-  const dataClient = hasSession ? (apiClient === undefined ? liveAppClient() : apiClient) : null;
+  const dataClient = hasSession ? sharedClient : null;
 
   return (
     <View style={{ flex: 1 }}>

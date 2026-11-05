@@ -141,7 +141,7 @@ describe('email-code client', () => {
       body: { statusCode: 503, error: 'auth.unavailable', message: 'Login email is not configured.' },
     }));
     await expect(down.client.requestCode(EMAIL)).rejects.toMatchObject({
-      code: 'auth.unavailable',
+      code: 'connecting_failed',
       copyKey: 'common.connecting.failed',
       message: COPY['common.connecting.failed'],
     });
@@ -233,7 +233,11 @@ describe('email-code client', () => {
       return { status: 202, body: { message: AUTH_CODE_ACCEPTED_MESSAGE } };
     });
 
-    await expect(client.requestCode(EMAIL, 'send')).rejects.toMatchObject({ code: 'connecting_failed' });
+    await expect(client.requestCode(EMAIL, 'send')).rejects.toMatchObject({
+      code: 'network',
+      copyKey: 'auth.network',
+      message: COPY['auth.network'],
+    });
     expect(server.calls('POST', AUTH_CODE_PATH)).toHaveLength(1);
     expect(server.calls('POST', REFRESH_PATH)).toHaveLength(0);
 
@@ -267,11 +271,25 @@ describe('email-code client', () => {
       }
       return { status: 202, body: { message: AUTH_CODE_ACCEPTED_MESSAGE } };
     });
-    await expect(client.requestCode(EMAIL, 'send')).rejects.toMatchObject({ code: 'auth.unavailable' });
+    await expect(client.requestCode(EMAIL, 'send')).rejects.toMatchObject({
+      code: 'connecting_failed',
+      copyKey: 'common.connecting.failed',
+    });
     await expect(client.requestCode(EMAIL, 'retry')).rejects.toMatchObject({ code: 'auth.email_invalid' });
     expect(keys[0]).toBe(keys[1]);
     await client.requestCode(EMAIL, 'resend');
     expect(keys[2]).not.toBe(keys[1]);
+  });
+
+  it('maps a verify network error to auth.network', async () => {
+    const { server, client } = setup();
+    server.route('POST', AUTH_VERIFY_PATH, () => ({ status: 200, networkError: true }));
+    await expect(client.verifyCode(EMAIL, CODE)).rejects.toMatchObject({
+      code: 'network',
+      copyKey: 'auth.network',
+      message: COPY['auth.network'],
+    });
+    expect(server.calls('POST', AUTH_VERIFY_PATH)).toHaveLength(1);
   });
 
   it('rejects an undocumented code without treating the account as locked', async () => {
@@ -286,7 +304,7 @@ describe('email-code client', () => {
       },
       (caught: unknown) => caught,
     );
-    expect(error).toMatchObject({ code: 'unknown', copyKey: 'common.error' });
+    expect(error).toMatchObject({ code: 'unknown', copyKey: 'err.generic' });
     expect((error as Error).message).not.toMatch(/lock|bloque/i);
     expect(JSON.stringify(error)).not.toContain(CODE);
   });

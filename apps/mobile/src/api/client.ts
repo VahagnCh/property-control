@@ -4,7 +4,14 @@ import type { AuthTokens, TokenStore } from '../auth/tokenStore';
 import { TokenStoreUnavailableError } from '../auth/tokenStore';
 import { CONNECTING_LABEL } from '../copy/userFacing';
 import { createIdempotencyKey } from '../outbox/idempotency';
-import { setSessionExpired, setSessionSignedIn, setSessionSignedOut, setSessionUnavailable } from '../session/readSession';
+import {
+  readSession,
+  setSessionExpired,
+  setSessionSignedIn,
+  setSessionSignedOut,
+  setSessionUnavailable,
+  subscribeSession,
+} from '../session/readSession';
 import {
   AUTH_ACCESS_EXPIRES_IN,
   AUTH_CODE_PATH,
@@ -40,8 +47,9 @@ import {
 } from './errors';
 import { assertCalendarDate, assertDecimalMoney, canonicalPesoAmount, paidAtOnPropertyCalendar } from './money';
 
-/** Every request, including health and refresh, aborts at 15 seconds. */
+/** Ordinary requests abort at 15 seconds. The pre-write health check waits 90 seconds. */
 export const REQUEST_TIMEOUT_MS = 15_000;
+export const HEALTH_TIMEOUT_MS = 90_000;
 
 const REFRESH_END_CODES = new Set([
   'auth.refresh_invalid',
@@ -95,6 +103,7 @@ type SendInput = {
   body?: unknown;
   auth: boolean;
   idempotencyKey: string | null;
+  timeoutMs?: number;
 };
 
 type WireResponse = {
@@ -132,6 +141,12 @@ export class ApiClient {
     this.fetchImpl = options.fetchImpl ?? expoFetch;
     this.now = options.now ?? (() => Date.now());
     this.randomUUID = options.randomUUID ?? createIdempotencyKey;
+    subscribeSession(() => {
+      if (readSession()) {
+        this.signedOut = false;
+        this.signInEmitted = false;
+      }
+    });
   }
 
   connection(): ConnectionSnapshot {
@@ -185,14 +200,14 @@ export class ApiClient {
         if (idempotent) {
           this.noteWriteResponse(method, path, options?.body, first);
         }
-        return this.finish<T>(first);
+        return this.finish<T>(first, path);
       }
       await this.refresh();
       const second = await transport(sent);
       if (idempotent) {
         this.noteWriteResponse(method, path, options?.body, second);
       }
-      return this.finish<T>(second);
+      return this.finish<T>(second, path);
     } catch (error) {
       if (error instanceof TokenStoreUnavailableError) {
         setSessionUnavailable();
@@ -200,6 +215,13 @@ export class ApiClient {
       }
       if (!write) {
         throw error;
+      }
+      if (isUnreachable(error) && (path === AUTH_CODE_PATH || path === AUTH_VERIFY_PATH)) {
+        const code = error instanceof ApiClientError && error.code === 'timeout' ? 'timeout' : 'network';
+        throw new ApiClientError(code, 'auth.network', null);
+      }
+      if (error instanceof ApiClientError && error.status != null && error.status >= 500) {
+        throw new ConnectingFailedError(idempotencyKey);
       }
       if (error instanceof ConnectingFailedError || isUnreachable(error)) {
         throw new ConnectingFailedError(idempotencyKey);
@@ -372,6 +394,7 @@ export class ApiClient {
       setSessionUnavailable();
       throw new ConnectingFailedError(null);
     }
+    this.pendingWrites.clear();
     this.signedOut = true;
     this.signInEmitted = true;
     setSessionSignedOut();
@@ -404,11 +427,12 @@ export class ApiClient {
   private async healthOnce(): Promise<void> {
     this.publish({ phase: 'connecting', label: CONNECTING_LABEL, copyKey: null });
     try {
-      const response = await this.sendRead({
+      const response = await this.send({
         method: 'GET',
         path: HEALTH_PATH,
         auth: false,
         idempotencyKey: null,
+        timeoutMs: HEALTH_TIMEOUT_MS,
       });
       const ok = isHealthOk(response);
       if (!ok) {
@@ -524,6 +548,7 @@ export class ApiClient {
   }
 
   private async endSession(): Promise<void> {
+    this.pendingWrites.clear();
     this.signedOut = true;
     await this.tokenStore.clear();
     setSessionExpired();
@@ -552,7 +577,7 @@ export class ApiClient {
     }
     const key = this.randomUUID();
     if (!IDEMPOTENCY_KEY.test(key)) {
-      throw new ApiClientError('idempotency_key_invalid', 'common.error', 400);
+      throw new ApiClientError('idempotency_key_invalid', 'err.generic', 400);
     }
     this.pendingWrites.set(fingerprint, { key, bodyText: null });
     return key;
@@ -589,7 +614,7 @@ export class ApiClient {
     }
   }
 
-  private finish<T>(response: WireResponse): T {
+  private finish<T>(response: WireResponse, path: string): T {
     if (response.status >= 200 && response.status < 300) {
       return response.body as T;
     }
@@ -599,7 +624,7 @@ export class ApiClient {
     }
     throw new ApiClientError(
       code,
-      copyKeyForApiError(code, response.status),
+      copyKeyForApiError(code, response.status, path),
       response.status,
       response.retryAfterSeconds,
     );
@@ -631,12 +656,12 @@ export class ApiClient {
       const tokens = await this.tokenStore.read();
       if (tokens?.accessToken) {
         if (!mayAttachAuthorization(url, this.baseUrl)) {
-          throw new ApiClientError('invalid_path', 'common.error', null);
+          throw new ApiClientError('invalid_path', 'err.generic', null);
         }
         headers.Authorization = `Bearer ${tokens.accessToken}`;
       }
     }
-    const timeout = startTimeout(REQUEST_TIMEOUT_MS);
+    const timeout = startTimeout(input.timeoutMs ?? REQUEST_TIMEOUT_MS);
     const pending = this.fetchImpl(url, {
       method: input.method,
       headers,
@@ -660,9 +685,9 @@ export class ApiClient {
         throw error;
       }
       if (timeout.fired() || isAbortError(error)) {
-        throw new ApiClientError('timeout', 'common.error', null);
+        throw new ApiClientError('timeout', 'err.generic', null);
       }
-      throw new ApiClientError('network', 'common.error', null);
+      throw new ApiClientError('network', 'err.generic', null);
     } finally {
       timeout.cancel();
     }
@@ -682,7 +707,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
 function resolveUrl(baseUrl: string, path: string): string {
   if (!path.startsWith('/') || path.startsWith('//') || path.includes('://')) {
-    throw new ApiClientError('invalid_path', 'common.error', null);
+    throw new ApiClientError('invalid_path', 'err.generic', null);
   }
   return `${baseUrl}${path}`;
 }
@@ -700,12 +725,12 @@ function parseJson(text: string): unknown {
 
 function readRefreshPair(body: unknown): AuthTokens {
   if (!body || typeof body !== 'object') {
-    throw new ApiClientError('token_invalid', 'common.error', null);
+    throw new ApiClientError('token_invalid', 'err.generic', null);
   }
   const accessToken = (body as RefreshResponseBody).accessToken;
   const refreshToken = (body as RefreshResponseBody).refreshToken;
   if (typeof accessToken !== 'string' || accessToken === '' || typeof refreshToken !== 'string' || refreshToken === '') {
-    throw new ApiClientError('token_invalid', 'common.error', null);
+    throw new ApiClientError('token_invalid', 'err.generic', null);
   }
   return { accessToken, refreshToken };
 }
@@ -721,45 +746,45 @@ function isHealthOk(response: { status: number; body: unknown }): boolean {
 
 function readProperty(body: unknown): PropertyResponse {
   if (!body || typeof body !== 'object') {
-    throw new ApiClientError('invalid_json', 'common.error', null);
+    throw new ApiClientError('invalid_json', 'err.generic', null);
   }
   const record = body as PropertyResponse;
   if (typeof record.id !== 'string' || record.id === '' || typeof record.name !== 'string' || record.name === '') {
-    throw new ApiClientError('invalid_json', 'common.error', null);
+    throw new ApiClientError('invalid_json', 'err.generic', null);
   }
   if (typeof record.timezone !== 'string' || record.timezone === '') {
-    throw new ApiClientError('invalid_json', 'common.error', null);
+    throw new ApiClientError('invalid_json', 'err.generic', null);
   }
   return record;
 }
 
 function readPropertyList(body: unknown): PropertyListResponse {
   if (!body || typeof body !== 'object' || !Array.isArray((body as { items?: unknown }).items)) {
-    throw new ApiClientError('invalid_json', 'common.error', null);
+    throw new ApiClientError('invalid_json', 'err.generic', null);
   }
   return { items: (body as { items: unknown[] }).items.map((item) => readProperty(item)) };
 }
 
 function readObligation(body: unknown): ObligationResponse {
   if (!body || typeof body !== 'object') {
-    throw new ApiClientError('invalid_json', 'common.error', null);
+    throw new ApiClientError('invalid_json', 'err.generic', null);
   }
   const record = body as ObligationResponse;
   if (typeof record.id !== 'string' || record.id === '' || typeof record.title !== 'string') {
-    throw new ApiClientError('invalid_json', 'common.error', null);
+    throw new ApiClientError('invalid_json', 'err.generic', null);
   }
   if (typeof record.category !== 'string') {
-    throw new ApiClientError('invalid_json', 'common.error', null);
+    throw new ApiClientError('invalid_json', 'err.generic', null);
   }
   if (record.expectedAmount != null && typeof record.expectedAmount !== 'string') {
-    throw new ApiClientError('amount_invalid', 'common.error', null);
+    throw new ApiClientError('amount_invalid', 'err.generic', null);
   }
   return record;
 }
 
 function readObligationList(body: unknown): ObligationListResponse {
   if (!body || typeof body !== 'object' || !Array.isArray((body as { items?: unknown }).items)) {
-    throw new ApiClientError('invalid_json', 'common.error', null);
+    throw new ApiClientError('invalid_json', 'err.generic', null);
   }
   return { items: (body as { items: unknown[] }).items.map((item) => readObligation(item)) };
 }
@@ -767,7 +792,7 @@ function readObligationList(body: unknown): ObligationListResponse {
 function readPaymentResponse(body: PaymentCreateResponse): PaymentCreateResponse {
   const amount = body?.payment?.amount;
   if (typeof amount !== 'string') {
-    throw new ApiClientError('amount_invalid', 'common.error', null);
+    throw new ApiClientError('amount_invalid', 'err.generic', null);
   }
   const payment: PaymentWire = {
     ...body.payment,
@@ -825,28 +850,28 @@ function readRetryAfter(headers: Headers | undefined): number | null {
 
 function readVerifiedSession(body: unknown): { accessToken: string; refreshToken: string } {
   if (!body || typeof body !== 'object') {
-    throw new ApiClientError('token_invalid', 'common.error', null);
+    throw new ApiClientError('token_invalid', 'err.generic', null);
   }
   const record = body as Record<string, unknown>;
   if (record.tokenType !== 'Bearer' || record.expiresIn !== AUTH_ACCESS_EXPIRES_IN) {
-    throw new ApiClientError('token_invalid', 'common.error', null);
+    throw new ApiClientError('token_invalid', 'err.generic', null);
   }
   if (typeof record.accessToken !== 'string' || record.accessToken === '') {
-    throw new ApiClientError('token_invalid', 'common.error', null);
+    throw new ApiClientError('token_invalid', 'err.generic', null);
   }
   if (typeof record.refreshToken !== 'string' || record.refreshToken === '') {
-    throw new ApiClientError('token_invalid', 'common.error', null);
+    throw new ApiClientError('token_invalid', 'err.generic', null);
   }
   return { accessToken: record.accessToken, refreshToken: record.refreshToken };
 }
 
 function readAuthSessionBody(body: unknown): { sub: string; sid: string } {
   if (!body || typeof body !== 'object') {
-    throw new ApiClientError('token_invalid', 'common.error', null);
+    throw new ApiClientError('token_invalid', 'err.generic', null);
   }
   const record = body as Record<string, unknown>;
   if (typeof record.sub !== 'string' || record.sub === '' || typeof record.sid !== 'string' || record.sid === '') {
-    throw new ApiClientError('token_invalid', 'common.error', null);
+    throw new ApiClientError('token_invalid', 'err.generic', null);
   }
   return { sub: record.sub, sid: record.sid };
 }
@@ -886,7 +911,7 @@ function startTimeout(ms: number): {
   const timer = setTimeout(() => {
     fired = true;
     controller.abort();
-    rejectPromise(new ApiClientError('timeout', 'common.error', null));
+    rejectPromise(new ApiClientError('timeout', 'err.generic', null));
   }, ms);
   return {
     signal: controller.signal,
@@ -895,7 +920,7 @@ function startTimeout(ms: number): {
     cancel() {
       clearTimeout(timer);
       if (!fired) {
-        rejectPromise(new ApiClientError('timeout', 'common.error', null));
+        rejectPromise(new ApiClientError('timeout', 'err.generic', null));
       }
     },
   };

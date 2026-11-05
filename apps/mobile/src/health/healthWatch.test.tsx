@@ -45,6 +45,29 @@ async function flush(): Promise<void> {
 }
 
 describe('launch and background health', () => {
+  it('backs off the launch poll by 1, 2, 4, then 8 seconds', async () => {
+    const waits: number[] = [];
+    let t = 0;
+    const watch = new HealthWatch(
+      async () => 'down',
+      {
+        now: () => t,
+        schedule: () => () => undefined,
+        async wait(ms: number) {
+          waits.push(ms);
+          t += ms;
+        },
+      },
+    );
+    watch.start();
+    for (let step = 0; step < 40; step += 1) {
+      await Promise.resolve();
+    }
+    expect(waits.slice(0, 5)).toEqual([1_000, 2_000, 4_000, 8_000, 8_000]);
+    expect(watch.current().phase).toBe('failed');
+    expect(t).toBeGreaterThanOrEqual(HEALTH_GIVE_UP_AFTER_MS);
+  });
+
   it('shows connecting copy at 3s and 8s, then failed with Reintentar at 90s', async () => {
     let release: (result: 'ok' | 'down') => void = () => undefined;
     const clock = makeClock();
@@ -58,16 +81,19 @@ describe('launch and background health', () => {
     );
     watch.subscribe((snapshot) => seen.push(snapshot));
     watch.start();
-    expect(watch.current()).toEqual({ phase: 'checking', copyKey: null, retryLabel: null });
+    expect(watch.current()).toEqual({ phase: 'checking', copyKey: null, slow: false, retryLabel: null });
 
     clock.jump(3_000);
     expect(watch.current().copyKey).toBe('common.connecting');
+    expect(watch.current().slow).toBe(false);
     clock.jump(8_000);
-    expect(watch.current().copyKey).toBe('common.connecting.slow');
+    expect(watch.current().copyKey).toBe('common.connecting');
+    expect(watch.current().slow).toBe(true);
     clock.jump(HEALTH_GIVE_UP_AFTER_MS);
     expect(watch.current()).toEqual({
       phase: 'failed',
       copyKey: 'common.connecting.failed',
+      slow: false,
       retryLabel: 'Reintentar',
     });
 
@@ -77,9 +103,10 @@ describe('launch and background health', () => {
     expect(seen.map((snapshot) => snapshot.copyKey)).toEqual([
       null,
       'common.connecting',
-      'common.connecting.slow',
+      'common.connecting',
       'common.connecting.failed',
     ]);
+    expect(seen.map((snapshot) => snapshot.slow)).toEqual([false, false, true, false]);
   });
 
   it('goes idle when health succeeds before the 3s copy', async () => {
@@ -87,7 +114,7 @@ describe('launch and background health', () => {
     const watch = new HealthWatch(async () => 'ok', clock);
     watch.start();
     await flush();
-    expect(watch.current()).toEqual({ phase: 'idle', copyKey: null, retryLabel: null });
+    expect(watch.current()).toEqual({ phase: 'idle', copyKey: null, slow: false, retryLabel: null });
     clock.jump(HEALTH_GIVE_UP_AFTER_MS);
     expect(watch.current().copyKey).toBeNull();
   });
@@ -169,17 +196,18 @@ describe('launch and background health', () => {
   it('renders each connecting string from a snapshot', () => {
     const { rerender } = render(
       <HealthBanner
-        snapshot={{ phase: 'checking', copyKey: 'common.connecting', retryLabel: null }}
+        snapshot={{ phase: 'checking', copyKey: 'common.connecting', slow: false, retryLabel: null }}
         onRetry={() => undefined}
       />,
     );
     expect(screen.getByText(COPY['common.connecting'])).toBeTruthy();
     rerender(
       <HealthBanner
-        snapshot={{ phase: 'checking', copyKey: 'common.connecting.slow', retryLabel: null }}
+        snapshot={{ phase: 'checking', copyKey: 'common.connecting', slow: true, retryLabel: null }}
         onRetry={() => undefined}
       />,
     );
+    expect(screen.getByText(COPY['common.connecting'])).toBeTruthy();
     expect(screen.getByText(COPY['common.connecting.slow'])).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Reintentar' })).toBeNull();
   });
