@@ -30,6 +30,9 @@
           "faceIDPermission": false
         }
       ]
-    ]
+    ],
+    "extra": {
+      "apiBaseUrl": "https://api.duerecord.invalid"
+    }
   }
 }
