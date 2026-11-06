@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - cursor/scaffold-monorepo-6ea7
+      - main
   pull_request:
     branches:
       - cursor/scaffold-monorepo-6ea7
