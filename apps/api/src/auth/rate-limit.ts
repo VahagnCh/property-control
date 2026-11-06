@@ -43,11 +43,52 @@ export class MemoryRateLimits {
     });
   }
 
+  async resetBucket(input: { subject: string; purpose: string }): Promise<void> {
+    return this.mutex.run(async () => {
+      const key = bucketKey({ subject: authSubjectHmac(input.subject, this.secret), purpose: input.purpose });
+      this.buckets.delete(key);
+    });
+  }
+
+  async undo(input: AuthAttemptInput): Promise<void> {
+    return this.mutex.run(async () => {
+      const stored = storedAttempt(input, this.secret);
+      const key = bucketKey(stored);
+      const bucket = this.buckets.get(key);
+      if (bucket) {
+        const attemptCount = Math.max(0, bucket.attemptCount - 1);
+        this.buckets.set(key, {
+          windowStartedAt: bucket.windowStartedAt,
+          attemptCount,
+          blockedUntil: attemptCount > input.limit ? bucket.blockedUntil : null,
+        });
+      }
+      const index = this.attempts.findLastIndex(
+        (attempt) => attempt.subject === stored.subject && attempt.purpose === stored.purpose,
+      );
+      if (index >= 0) {
+        this.attempts.splice(index, 1);
+      }
+    });
+  }
+
   record(input: AuthAttemptInput): Promise<RateLimitDecision> {
     return this.mutex.run(async () => {
       const stored = storedAttempt(input, this.secret);
       this.attempts.push(stored);
       return consume(this.buckets, bucketKey(stored), stored);
+    });
+  }
+
+  /** Seconds until the bucket opens, or null when the next attempt may proceed. */
+  retryIfBlocked(input: { subject: string; purpose: string; now: Date }): Promise<number | null> {
+    return this.mutex.run(async () => {
+      const key = bucketKey({ subject: authSubjectHmac(input.subject, this.secret), purpose: input.purpose });
+      const bucket = this.buckets.get(key);
+      if (!bucket?.blockedUntil || bucket.blockedUntil <= input.now) {
+        return null;
+      }
+      return Math.max(1, Math.ceil((bucket.blockedUntil.getTime() - input.now.getTime()) / 1000));
     });
   }
 }
@@ -57,6 +98,42 @@ export class PrismaRateLimits {
     private readonly prisma: PrismaClient,
     private readonly secret: string,
   ) {}
+
+  async retryIfBlocked(input: { subject: string; purpose: string; now: Date }): Promise<number | null> {
+    const key = bucketKey({ subject: authSubjectHmac(input.subject, this.secret), purpose: input.purpose });
+    const row = await this.prisma.rateLimit.findUnique({ where: { bucketKey: key } });
+    if (!row?.blockedUntil || row.blockedUntil <= input.now) {
+      return null;
+    }
+    return Math.max(1, Math.ceil((row.blockedUntil.getTime() - input.now.getTime()) / 1000));
+  }
+
+  async resetBucket(input: { subject: string; purpose: string }): Promise<void> {
+    const key = bucketKey({ subject: authSubjectHmac(input.subject, this.secret), purpose: input.purpose });
+    await this.prisma.rateLimit.deleteMany({ where: { bucketKey: key } });
+  }
+
+  async undo(input: AuthAttemptInput): Promise<void> {
+    const stored = storedAttempt(input, this.secret);
+    const key = bucketKey(stored);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        UPDATE rate_limits
+        SET attempt_count = GREATEST(attempt_count - 1, 0),
+            blocked_until = CASE WHEN attempt_count - 1 > ${input.limit} THEN blocked_until ELSE NULL END
+        WHERE bucket_key = ${key}
+      `;
+      await tx.$executeRaw`
+        DELETE FROM auth_code_attempts
+        WHERE id = (
+          SELECT id FROM auth_code_attempts
+          WHERE subject = ${stored.subject} AND purpose = ${stored.purpose}
+          ORDER BY attempted_at DESC
+          LIMIT 1
+        )
+      `;
+    });
+  }
 
   async record(input: AuthAttemptInput): Promise<RateLimitDecision> {
     const stored = storedAttempt(input, this.secret);
@@ -107,6 +184,8 @@ export class PrismaRateLimits {
     });
   }
 }
+
+export const AUTH_RATE = Symbol('AUTH_RATE');
 
 export function authSubjectHmac(subject: string, secret: string): string {
   return keyedHmac(subject, secret, 'auth-subject');

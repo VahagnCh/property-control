@@ -10,6 +10,7 @@ export default defineConfig({
     include: ['src/**/*.spec.ts', 'test/**/*.spec.ts'],
     globals: true,
     env: {
+      APP_ENV: 'test',
       OBJECT_STORAGE_ENV: 'staging',
     },
   },

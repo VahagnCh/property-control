@@ -28,7 +28,8 @@ export interface RefreshTokenRow {
 
 export type RotateResult =
   | { outcome: 'rotated' | 'grace'; refreshToken: string; token: RefreshTokenRow }
-  | { outcome: 'expired' | 'revoked' | 'reused' | 'not_found' };
+  | { outcome: 'expired' | 'revoked' | 'not_found' }
+  | { outcome: 'reused'; familyId: string };
 
 export function hashToken(raw: string): string {
   return createHash('sha256').update(raw).digest('hex');
@@ -93,12 +94,12 @@ export async function rotateInStore(
     }
     await store.clearGrace(row.id);
     await store.revokeFamily(row.familyId, input.now);
-    return { outcome: 'reused' };
+    return { outcome: 'reused', familyId: row.familyId };
   }
   if (row.usedAt) {
     await store.clearGrace(row.id);
     await store.revokeFamily(row.familyId, input.now);
-    return { outcome: 'reused' };
+    return { outcome: 'reused', familyId: row.familyId };
   }
   return { outcome: 'not_found' };
 }
@@ -137,6 +138,10 @@ export class MemoryRefreshTokens {
 
   async rotate(input: { rawToken: string; now: Date; nextRawToken: string }): Promise<RotateResult> {
     return this.mutex.run(() => rotateInStore(new MemoryRefreshTx(this.rows, this.secret), input));
+  }
+
+  async revokeFamily(familyId: string, now: Date): Promise<void> {
+    await this.mutex.run(() => new MemoryRefreshTx(this.rows, this.secret).revokeFamily(familyId, now));
   }
 }
 

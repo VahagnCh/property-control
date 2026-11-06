@@ -2,7 +2,7 @@
 
 The v0 HTTP contract, and what the scaffold in `apps/api` actually does today. Source: [Backend formal v0](https://docs.google.com/document/d/1iekHZp5lOq4qTzLhglFproL2JSeI7Uw1q4I817d40dE/edit). Payment, period, reminder, timezone, and invite behavior for the public product, [DueRecord](EDGE_CASES.md), overrides this contract where they disagree.
 
-The Nest stub maps **57** routes, counting each method and path Nest registers, including `GET /v1/health`.
+The Nest stub maps **62** routes, counting each method and path Nest registers, including `GET /v1/health`.
 
 ## Base
 
@@ -387,9 +387,35 @@ No consent route is registered. `GET /v1/me` stays **501**. The contract, for th
 
 TODO: Retirar consentimiento leads into account deletion before public launch. Withdrawal is not implemented.
 
+## Email code login
+
+```text
+POST   /v1/auth/code
+POST   /v1/auth/verify
+POST   /v1/auth/refresh
+POST   /v1/auth/logout
+GET    /v1/auth/session
+```
+
+Trust brief §4.6. Copy keys `auth.codeEmail.subject` and `auth.codeEmail.body`.
+
+`POST /v1/auth/code` body `{ "email": "person@example.com" }`. Optional `Idempotency-Key`. A missing email, or a string without `@` or outside 3–320 characters, is **400** `auth.email_invalid`. Any other string email returns **202** `{ "message": "Si el correo es válido, te enviamos un código." }`, whether or not an account exists. No Resend key in production, or a Resend send that fails, is **503** `auth.unavailable`. A failed send does not start the 60 second cooldown and does not count against the send quota. The code is 6 digits, valid 10 minutes, single use, stored only as HMAC-SHA256. A new code invalidates the previous one. The same key within 10 minutes replays the 202 and does not send again. A different email with the same key is a new 202. Resend cooldown is 60 seconds. Default limits are 20 sends an hour per IP, then 3 an hour for that email from that IP, then 5 an hour per email (`AUTH_CODE_IP_LIMIT`, `AUTH_CODE_EMAIL_LIMIT`). The IP bucket is counted first. Over the limit is **429** `auth.rate_limited` with `Retry-After`. Wrong verifies are limited to 3 per email and IP, inside 5 per email.
+
+`POST /v1/auth/verify` body `{ "email": "person@example.com", "code": "123456" }`. A wrong, expired, used, or unknown code is **401** `auth.code_invalid`. The verify IP bucket (`AUTH_VERIFY_IP_LIMIT`, default 20/hour) is checked before the code is compared. The fifth email failure in 10 minutes is **429** `auth.rate_limited` with `Retry-After`. Missing signing keys return **503** `auth.unavailable` before the compare, for a correct code and a wrong code alike. Success is **200**:
+
+```json
+{ "tokenType": "Bearer", "accessToken": "<jwt>", "expiresIn": 900, "refreshToken": "rt_<secret>" }
+```
+
+The access token is ES256, 15 minutes, `iss=api.duerecord.mx`, `aud=duerecord-app`, claims `sub`, `sid`, `iat`, `exp` only. Clock skew is 60 seconds. A signature that is not 64 bytes, `alg=none`, `HS256`, a tampered signature, the wrong iss, or the wrong aud is **401**. `AUTH_JWT_PREVIOUS_PUBLIC_KEY` still verifies. The refresh token is `rt_` plus 256 bits, stored only as SHA-256, sliding 30 days, absolute 90 days. `POST /v1/auth/refresh` body `{ "refreshToken": "rt_..." }` returns the same 200 shape. Reuse inside 30 seconds returns that pair. Reuse after that is **401** `auth.refresh_reused` and revokes the family. An expired refresh is **401** `auth.refresh_invalid`.
+
+`POST /v1/auth/logout` and `GET /v1/auth/session` require a bearer token before the body is read. Missing, malformed, or invalid tokens are **401**, including a bad or oversized logout body. Session success is **200** `{ "sub", "sid" }`. Logout success is **204**. A non-member or unknown property is **404**, not 403.
+
+Login mail is Resend when `RESEND_API_KEY` is set, from `AUTH_EMAIL_FROM` (default `DueRecord <onboarding@resend.dev>`). `APP_ENV=production` refuses to boot when that From is unset or still the onboarding sender. A missing or unknown `APP_ENV` is treated as production. `staging`, `development`, and `test` may use the onboarding sender only when `AUTH_EMAIL_ALLOWED_RECIPIENTS` is set. List entries and the requested address are trimmed and lower-cased, then compared exactly. An address that is not on the list still gets the generic 202, and no code is stored or sent. The message is plain text: subject `auth.codeEmail.subject` = `Tu código para entrar a DueRecord`, body `auth.codeEmail.body` with the code, no links, and the address is not repeated. Production does not use the in-memory fake. Audit actions are `auth.login.succeeded`, `auth.login.failed`, `auth.refresh.reuse_detected`, and `auth.logout`. They store an email HMAC, never the address, the code, or a token.
+
 ## Sessions, idempotency keys, and auth-code limits
 
-These tables have repositories and no HTTP routes.
+`POST /v1/auth/code`, `POST /v1/auth/verify`, `POST /v1/auth/refresh`, `POST /v1/auth/logout`, and `GET /v1/auth/session` are live. The tables below back the code and the refresh token.
 
 A refresh token slides for 30 days and carries an absolute cap of 90 days, copied on rotation and never extended. Reuse detection is one Postgres transaction: `UPDATE ... WHERE used_at IS NULL RETURNING`, then insert the successor. A second refresh within 30 seconds receives that same rotated pair, unless the successor has already been used. The column holds AES-256-GCM ciphertext of the successor, never the raw token. That ciphertext is cleared when the window ends or the successor has been used. After 30 seconds, or when the successor is already used, reuse revokes the whole family. An expired or already revoked token does not revoke the family.
 

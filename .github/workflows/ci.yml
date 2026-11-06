@@ -27,6 +27,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      APP_ENV: test
       OCR_STUB_ENABLED: ""
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/property_control
       AVISO_VERSION: "2026-10-21"

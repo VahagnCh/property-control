@@ -100,7 +100,7 @@ pnpm workspaces. Node 22.13 or newer (`.nvmrc` pins 22). Expo SDK 58 requires th
 
 | Path | What it is today |
 | :---- | :---- |
-| `apps/api` | Boots without a database. `GET /v1/health` checks the database. Collection reads return an empty stub list. Mutations return **501**. OCR is in memory and also returns **501** unless `OCR_STUB_ENABLED` is set. The stub maps **57** routes. |
+| `apps/api` | Boots without a database. `GET /v1/health` checks the database. Collection reads return an empty stub list. Mutations return **501**. OCR is in memory and also returns **501** unless `OCR_STUB_ENABLED` is set. The stub maps **62** routes. |
 | `apps/api/prisma/schema.prisma` | PostgreSQL schema and the init migration. Nest reads it for `GET /v1/health` only. |
 | `apps/mobile` | Bottom tabs and placeholder copy. No data fetching. |
 | `docs/` | The written contract for this repo, summarized from the Drive sources. |
@@ -153,7 +153,7 @@ pnpm api:dev
 
 Nest 12 ships as ESM, so `apps/api` is a native ES module: `"type": "module"`, `nodenext` resolution, and `.js` extensions on relative imports. `tsc` builds it and `tsx` runs it in watch mode.
 
-The process listens on port **3000** unless `PORT` is set. Copy `apps/api/.env.example` to `apps/api/.env` when you need `PORT`, `DATABASE_URL`, or `DIRECT_URL`. `main.ts` also requires `AVISO_VERSION` and an http(s) `AVISO_URL` before it listens. The test app does not load that check.
+The process listens on port **3000** unless `PORT` is set. Copy `apps/api/.env.example` to `apps/api/.env` when you need `PORT`, `DATABASE_URL`, `DIRECT_URL`, or `APP_ENV`. Production deploy sets `APP_ENV=production`. Staging sets `APP_ENV=staging`. A missing value is treated as production. `main.ts` also requires `AVISO_VERSION` and an http(s) `AVISO_URL` before it listens. The test app does not load that check.
 
 ```bash
 curl -s http://localhost:3000/health
